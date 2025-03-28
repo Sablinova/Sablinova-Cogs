@@ -42,7 +42,6 @@ class StatusRole(commands.Cog):
                     has_role = role in member.roles
                     contains_keyword = keyword.lower() in full_text
 
-                    # ✅ Only log role changes, no extra debug messages
                     if contains_keyword and not has_role:
                         await member.add_roles(role)
                         if log_channel:
@@ -93,7 +92,7 @@ class StatusRole(commands.Cog):
         if not role:
             return await ctx.send("⚠️ No valid role set. Use `statusrole roleset <role>` first.")
 
-        debug_message = ""
+        debug_message = f"🔍 **Debug Info:** Checking for keyword `{keyword}` and role `{role.name}`\n\n"
 
         for member in guild.members:
             if member.bot:
@@ -111,17 +110,17 @@ class StatusRole(commands.Cog):
             elif not contains_keyword and has_role:
                 debug_message += f"❌ {member.display_name} **has `{role.name}` but doesn't match `{keyword}`**.\n"
 
-        if debug_message:
-            await ctx.send(f"```{debug_message}```")
-        else:
+        if debug_message.strip() == "🔍 **Debug Info:** Checking for keyword `{keyword}` and role `{role.name}`":
             await ctx.send("✅ No mismatches found. Everything is correctly assigned.")
+        else:
+            await ctx.send(f"```{debug_message}```")
 
     @statusrole.command()
     async def active(self, ctx):
         """Show users who have the role and match the keyword."""
         guild = ctx.guild
-        keyword = await self.config.guild(guild).keyword()
-        role_id = await self.config.guild(guild).role_id()
+        keyword = await self.config.guild(ctx.guild).keyword()
+        role_id = await self.config.guild(ctx.guild).role_id()
         role = guild.get_role(role_id) if role_id else None
 
         if not keyword or not role:
