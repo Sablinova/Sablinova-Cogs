@@ -1,6 +1,7 @@
 import discord
 from redbot.core import commands, Config
 import asyncio
+import time  # Import time to get current timestamp
 
 class StatusRole(commands.Cog):
     """Cog that assigns roles based on status/about me."""
@@ -41,15 +42,20 @@ class StatusRole(commands.Cog):
 
                     has_role = role in member.roles
                     contains_keyword = keyword.lower() in full_text
+                    timestamp = int(time.time())  # Get current timestamp
 
                     if contains_keyword and not has_role:
                         await member.add_roles(role)
                         if log_channel:
-                            await log_channel.send(f"✅ {member.mention} has been given `{role.name}`.")
+                            await log_channel.send(
+                                f"✅ {member.mention} has been given `{role.name}` at <t:{timestamp}:F>."
+                            )
                     elif not contains_keyword and has_role:
                         await member.remove_roles(role)
                         if log_channel:
-                            await log_channel.send(f"❌ {member.mention} lost `{role.name}`.")
+                            await log_channel.send(
+                                f"❌ {member.mention} lost `{role.name}` at <t:{timestamp}:F>."
+                            )
 
             await asyncio.sleep(60)  # Run every 60 seconds
 
