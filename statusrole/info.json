@@ -1,0 +1,10 @@
+{
+    "name": "StatusRole",
+    "author": ["Sablinova"],
+    "description": "Assigns roles based on user status or bio.",
+    "install_msg": "Thanks for installing StatusRole! Use `[p]statusrole` to configure.",
+    "short": "Auto-role based on status or bio.",
+    "requirements": [],
+    "tags": ["role", "status", "bio", "automation"],
+    "type": "COG"
+}
