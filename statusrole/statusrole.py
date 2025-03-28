@@ -8,19 +8,17 @@ class StatusRole(commands.Cog):
     
     Commands:
     - `statusrole set <keyword>`: Set the keyword to monitor.
-    - `statusrole roleset <role>`: Set the role to assign.
+    - `statusrole roleset <role>`: Set the role to assign when the keyword is found.
     - `statusrole logset <channel>`: Set the logging channel.
-    - `statusrole active`: Show users who match the keyword and have the role.
-    - `statusrole deactivate`: Disable status role tracking for the server.
-    - `statusrole activate`: Re-enable status role tracking for the server.
-    - `statusrole debug`: Show debug info.
+    - `statusrole debug`: Show debug information for keyword and role.
+    - `statusrole active`: Show active users with the role and keyword.
+    - `statusrole deactivate`: Disable status role tracking in this guild.
     """
 
     def __init__(self, bot: Red):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=1234567890)
         self.config.register_guild(keyword=None, role_id=None, log_channel=None, active=True)
-        self.debug_mode = False
         self.task = self.bot.loop.create_task(self.check_status())
 
     async def check_status(self):
@@ -29,7 +27,7 @@ class StatusRole(commands.Cog):
             for guild in self.bot.guilds:
                 active = await self.config.guild(guild).active()
                 if not active:
-                    continue
+                    continue  # Skip checking if disabled
 
                 keyword = await self.config.guild(guild).keyword()
                 role_id = await self.config.guild(guild).role_id()
@@ -49,29 +47,21 @@ class StatusRole(commands.Cog):
 
                     status_text = member.activity.name if member.activity else ""
                     about_me = getattr(member, "about_me", "")
-                    full_text = f"{status_text} {about_me}".lower()
+                    full_text = f"{status_text} {about_me}".strip().lower()
 
                     has_role = role in member.roles
                     contains_keyword = keyword.lower() in full_text
 
                     if contains_keyword and not has_role:
-                        try:
-                            await member.add_roles(role)
-                            if log_channel:
-                                await log_channel.send(f"✅ {member.mention} has been given the `{role.name}` role.")
-                        except discord.Forbidden:
-                            if log_channel:
-                                await log_channel.send(f"⚠️ Error: Missing permissions to add {role.name} to {member.mention}.")
+                        await member.add_roles(role)
+                        if log_channel:
+                            await log_channel.send(f"✅ {member.mention} has been given the `{role.name}` role.")
                     elif not contains_keyword and has_role:
-                        try:
-                            await member.remove_roles(role)
-                            if log_channel:
-                                await log_channel.send(f"❌ {member.mention} no longer has `{role.name}` role.")
-                        except discord.Forbidden:
-                            if log_channel:
-                                await log_channel.send(f"⚠️ Error: Missing permissions to remove {role.name} from {member.mention}.")
+                        await member.remove_roles(role)
+                        if log_channel:
+                            await log_channel.send(f"❌ {member.mention} no longer has `{role.name}` role.")
 
-                await asyncio.sleep(60)  # Runs every 60 seconds
+            await asyncio.sleep(60)  # Runs every 60 seconds
 
     @commands.guild_only()
     @commands.admin()
@@ -116,49 +106,58 @@ class StatusRole(commands.Cog):
 
         for member in guild.members:
             if member.bot:
-                continue
+                continue  # Ignore bots
 
+            # Get status and about me
             status_text = member.activity.name if member.activity else ""
             about_me = getattr(member, "about_me", "")
-            full_text = f"{status_text} {about_me}".lower()
+            full_text = f"{status_text} {about_me}".strip().lower()
 
+            # Check conditions
             contains_keyword = keyword.lower() in full_text
             has_role = role in member.roles
 
-            debug_message += f"👤 {member.name}: `{full_text}` -> {'✅ Match' if contains_keyword else '❌ No Match'} | {'🎭 Has Role' if has_role else '🚫 No Role'}\n"
+            # Add formatted info to debug message
+            debug_message += f"👤 {member.display_name}: `{full_text or ' '}` -> "
+            debug_message += f"{'✅ Match' if contains_keyword else '❌ No Match'} | "
+            debug_message += f"{'🎭 Has Role' if has_role else '🚫 No Role'}\n"
 
+        # Ensure message doesn't exceed Discord's 2000-character limit
         for chunk in [debug_message[i:i+1900] for i in range(0, len(debug_message), 1900)]:
             await ctx.send(f"```{chunk}```")
 
     @statusrole.command()
     async def active(self, ctx):
-        """Show users who currently match the keyword and have the role."""
+        """Show users who have the role and match the keyword."""
         guild = ctx.guild
         keyword = await self.config.guild(guild).keyword()
         role_id = await self.config.guild(guild).role_id()
         role = guild.get_role(role_id) if role_id else None
 
         if not keyword or not role:
-            return await ctx.send("⚠️ No keyword or role is set.")
+            return await ctx.send("⚠️ No keyword or role set. Use `statusrole set` and `statusrole roleset` first.")
 
-        active_members = [m for m in guild.members if role in m.roles and keyword.lower() in (m.activity.name.lower() if m.activity else "")]
-        if not active_members:
-            return await ctx.send("No active members found.")
+        matching_members = [
+            member.mention for member in guild.members
+            if role in member.roles and keyword.lower() in (member.activity.name.lower() if member.activity else "")
+        ]
 
-        member_list = ", ".join([m.mention for m in active_members])
-        await ctx.send(f"👥 Members with `{role.name}` and keyword `{keyword}`: {member_list}")
+        if matching_members:
+            await ctx.send(f"✅ **Active Members with `{role.name}`:** {', '.join(matching_members)}")
+        else:
+            await ctx.send(f"❌ No active members currently match `{keyword}`.")
 
     @statusrole.command()
     async def deactivate(self, ctx):
-        """Disable status role tracking for this server."""
+        """Disable status role tracking in this guild."""
         await self.config.guild(ctx.guild).active.set(False)
-        await ctx.send("🚫 Status role tracking has been disabled for this server.")
+        await ctx.send("🚫 Status role tracking has been **disabled** for this server.")
 
     @statusrole.command()
     async def activate(self, ctx):
-        """Re-enable status role tracking for this server."""
+        """Enable status role tracking in this guild."""
         await self.config.guild(ctx.guild).active.set(True)
-        await ctx.send("✅ Status role tracking has been re-enabled for this server.")
+        await ctx.send("✅ Status role tracking has been **enabled** for this server.")
 
 async def setup(bot):
     await bot.add_cog(StatusRole(bot))
