@@ -4,7 +4,7 @@ from redbot.core.bot import Red
 import asyncio
 
 class StatusRole(commands.Cog):
-    """Cog that assigns roles based on status/about me.
+    """Status Cog v1 that assigns roles based on status/about me.
     
     Commands:
     - `statusrole set <keyword>`: Set the keyword to monitor.
