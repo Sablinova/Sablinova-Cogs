@@ -13,6 +13,7 @@ class StatusRole(commands.Cog):
     - `statusrole debug`: Show users matching the keyword and role status.
     - `statusrole active`: Show users currently holding the role and matching the keyword.
     - `statusrole deactivate`: Disable the feature for the current server.
+    - `statusrole useless`: A dummy command that does nothing.
     """
 
     def __init__(self, bot: Red):
@@ -144,6 +145,11 @@ class StatusRole(commands.Cog):
         await self.config.guild(ctx.guild).role_id.set(None)
         await self.config.guild(ctx.guild).log_channel.set(None)
         await ctx.send("Status role tracking has been **deactivated** for this server.")
+
+    @statusrole.command()
+    async def useless(self, ctx):
+        """A useless command that does nothing."""
+        await ctx.send("This command does nothing.")
 
 async def setup(bot):
     await bot.add_cog(StatusRole(bot))
