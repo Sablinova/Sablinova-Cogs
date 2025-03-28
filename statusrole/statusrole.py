@@ -1,21 +1,11 @@
 import discord
-from redbot.core import commands, Config, checks
-from redbot.core.bot import Red
+from redbot.core import commands, Config
 import asyncio
 
 class StatusRole(commands.Cog):
-    """Cog that assigns roles based on status/about me.
-    
-    Commands:
-    - `statusrole set <keyword>`: Set the keyword to monitor.
-    - `statusrole roleset <role>`: Set the role to assign when the keyword is found.
-    - `statusrole logset <channel>`: Set the logging channel.
-    - `statusrole debug`: Show debug information for keyword and role.
-    - `statusrole active`: Show active users with the role and keyword.
-    - `statusrole deactivate`: Disable status role tracking in this guild.
-    """
+    """Cog that assigns roles based on status/about me."""
 
-    def __init__(self, bot: Red):
+    def __init__(self, bot):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=1234567890)
         self.config.register_guild(keyword=None, role_id=None, log_channel=None, active=True)
@@ -27,7 +17,7 @@ class StatusRole(commands.Cog):
             for guild in self.bot.guilds:
                 active = await self.config.guild(guild).active()
                 if not active:
-                    continue  # Skip checking if disabled
+                    continue  # Skip if deactivated
 
                 keyword = await self.config.guild(guild).keyword()
                 role_id = await self.config.guild(guild).role_id()
@@ -55,13 +45,13 @@ class StatusRole(commands.Cog):
                     if contains_keyword and not has_role:
                         await member.add_roles(role)
                         if log_channel:
-                            await log_channel.send(f"✅ {member.mention} has been given the `{role.name}` role.")
+                            await log_channel.send(f"✅ {member.mention} has been given `{role.name}`.")
                     elif not contains_keyword and has_role:
                         await member.remove_roles(role)
                         if log_channel:
-                            await log_channel.send(f"❌ {member.mention} no longer has `{role.name}` role.")
+                            await log_channel.send(f"❌ {member.mention} lost `{role.name}`.")
 
-            await asyncio.sleep(60)  # Runs every 60 seconds
+            await asyncio.sleep(60)  # Run every 60 seconds
 
     @commands.guild_only()
     @commands.admin()
@@ -90,41 +80,40 @@ class StatusRole(commands.Cog):
 
     @statusrole.command()
     async def debug(self, ctx):
-        """Debugging command to check status and about me."""
+        """Debugging command to check users affected by the keyword."""
         guild = ctx.guild
         keyword = await self.config.guild(guild).keyword()
         role_id = await self.config.guild(guild).role_id()
         role = guild.get_role(role_id) if role_id else None
 
         if not keyword:
-            return await ctx.send("No keyword is set. Use `statusrole set <keyword>` first.")
+            return await ctx.send("⚠️ No keyword set. Use `statusrole set <keyword>` first.")
         
         if not role:
-            return await ctx.send("⚠️ Error: No valid role is set. Use `statusrole roleset <role>` first.")
+            return await ctx.send("⚠️ No valid role set. Use `statusrole roleset <role>` first.")
 
-        debug_message = f"🔍 **Debug Info:** Checking for keyword `{keyword}` and role `{role.name}`\n\n"
+        debug_message = ""
 
         for member in guild.members:
             if member.bot:
                 continue  # Ignore bots
 
-            # Get status and about me
             status_text = member.activity.name if member.activity else ""
             about_me = getattr(member, "about_me", "")
             full_text = f"{status_text} {about_me}".strip().lower()
 
-            # Check conditions
             contains_keyword = keyword.lower() in full_text
             has_role = role in member.roles
 
-            # Add formatted info to debug message
-            debug_message += f"👤 {member.display_name}: `{full_text or ' '}` -> "
-            debug_message += f"{'✅ Match' if contains_keyword else '❌ No Match'} | "
-            debug_message += f"{'🎭 Has Role' if has_role else '🚫 No Role'}\n"
+            if contains_keyword and not has_role:
+                debug_message += f"✅ {member.display_name} matches `{keyword}` but **doesn't have `{role.name}`**.\n"
+            elif not contains_keyword and has_role:
+                debug_message += f"❌ {member.display_name} **has `{role.name}` but doesn't match `{keyword}`**.\n"
 
-        # Ensure message doesn't exceed Discord's 2000-character limit
-        for chunk in [debug_message[i:i+1900] for i in range(0, len(debug_message), 1900)]:
-            await ctx.send(f"```{chunk}```")
+        if debug_message:
+            await ctx.send(f"```{debug_message}```")
+        else:
+            await ctx.send("✅ No mismatches found. Everything is correctly assigned.")
 
     @statusrole.command()
     async def active(self, ctx):
