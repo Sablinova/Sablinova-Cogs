@@ -42,6 +42,7 @@ class StatusRole(commands.Cog):
                     has_role = role in member.roles
                     contains_keyword = keyword.lower() in full_text
 
+                    # ✅ Only log role changes, no extra debug messages
                     if contains_keyword and not has_role:
                         await member.add_roles(role)
                         if log_channel:
