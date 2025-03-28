@@ -26,6 +26,8 @@ class StatusRole(commands.Cog):
                 role = guild.get_role(role_id)
                 log_channel = self.bot.get_channel(log_channel_id) if log_channel_id else None
                 if not role:
+                    if log_channel:
+                        await log_channel.send("⚠️ Error: The assigned role no longer exists. Use `-roleset` to set a new role.")
                     continue
 
                 for member in guild.members:
@@ -40,15 +42,30 @@ class StatusRole(commands.Cog):
                     contains_keyword = keyword.lower() in full_text
 
                     if contains_keyword and not has_role:
-                        await member.add_roles(role)
-                        if log_channel:
-                            await log_channel.send(f"✅ {member.mention} has been given the `{role.name}` role.")
-                    elif not contains_keyword and has_role:
-                        await member.remove_roles(role)
-                        if log_channel:
-                            await log_channel.send(f"❌ {member.mention} no longer has `{role.name}` role.")
+                        try:
+                            await member.add_roles(role)
+                            if log_channel:
+                                await log_channel.send(f"✅ {member.mention} has been given the `{role.name}` role.")
+                        except discord.Forbidden:
+                            if log_channel:
+                                await log_channel.send(f"⚠️ Error: Missing permissions to add `{role.name}` to {member.mention}.")
+                        except discord.HTTPException as e:
+                            if log_channel:
+                                await log_channel.send(f"❌ Unexpected error while adding role: {str(e)}")
 
-            await asyncio.sleep(60)
+                    elif not contains_keyword and has_role:
+                        try:
+                            await member.remove_roles(role)
+                            if log_channel:
+                                await log_channel.send(f"❌ {member.mention} no longer has `{role.name}` role.")
+                        except discord.Forbidden:
+                            if log_channel:
+                                await log_channel.send(f"⚠️ Error: Missing permissions to remove `{role.name}` from {member.mention}.")
+                        except discord.HTTPException as e:
+                            if log_channel:
+                                await log_channel.send(f"❌ Unexpected error while removing role: {str(e)}")
+
+            await asyncio.sleep(60)  # Runs every 60 seconds
 
     @commands.guild_only()
     @commands.admin()
@@ -68,11 +85,16 @@ class StatusRole(commands.Cog):
         """Debugging command to check status and about me."""
         guild = ctx.guild
         keyword = await self.config.guild(guild).keyword()
+        role_id = await self.config.guild(guild).role_id()
+        role = guild.get_role(role_id) if role_id else None
 
         if not keyword:
             return await ctx.send("No keyword is set. Use `statusrole set <keyword>` first.")
+        
+        if not role:
+            return await ctx.send("⚠️ Error: No valid role is set. Use `roleset <role>` first.")
 
-        debug_message = f"🔍 **Debug Info:** Checking for keyword `{keyword}`\n\n"
+        debug_message = f"🔍 **Debug Info:** Checking for keyword `{keyword}` and role `{role.name}`\n\n"
 
         for member in guild.members:
             if member.bot:
@@ -83,7 +105,9 @@ class StatusRole(commands.Cog):
             full_text = f"{status_text} {about_me}".lower()
 
             contains_keyword = keyword.lower() in full_text
-            debug_message += f"👤 {member.name}: `{full_text}` -> {'✅ Match' if contains_keyword else '❌ No Match'}\n"
+            has_role = role in member.roles
+
+            debug_message += f"👤 {member.name}: `{full_text}` -> {'✅ Match' if contains_keyword else '❌ No Match'} | {'🎭 Has Role' if has_role else '🚫 No Role'}\n"
 
         # Ensure we don’t exceed Discord's 2000-character message limit
         for chunk in [debug_message[i:i+1900] for i in range(0, len(debug_message), 1900)]:
@@ -107,4 +131,3 @@ class StatusRole(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(StatusRole(bot))
-
