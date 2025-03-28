@@ -1,16 +1,10 @@
 import discord
-from redbot.core import commands, Config, checks
+from redbot.core import commands, Config
 from redbot.core.bot import Red
 import asyncio
 
 class StatusRole(commands.Cog):
-    """Cog that assigns roles based on status/about me.
-    
-    Commands:
-    - `statusrole set <keyword>`: Set the keyword to monitor.
-    - `roleset <role>`: Set the role to assign when the keyword is found.
-    - `logset <channel>`: Set the logging channel.
-    """
+    """Cog that assigns roles based on status/about me."""
 
     def __init__(self, bot: Red):
         self.bot = bot
@@ -38,8 +32,8 @@ class StatusRole(commands.Cog):
                     if member.bot:
                         continue
 
-                    status_text = (member.activity.name if member.activity else "")
-                    about_me = member.public_flags.hypesquad_balance if hasattr(member, 'public_flags') else ""
+                    status_text = member.activity.name if member.activity else ""
+                    about_me = getattr(member, "about_me", "")
                     full_text = f"{status_text} {about_me}".lower()
 
                     has_role = role in member.roles
@@ -54,7 +48,7 @@ class StatusRole(commands.Cog):
                         if log_channel:
                             await log_channel.send(f"❌ {member.mention} no longer has `{role.name}` role.")
 
-            await asyncio.sleep(60)  # Runs every 60 seconds
+            await asyncio.sleep(60)
 
     @commands.guild_only()
     @commands.admin()
@@ -68,6 +62,32 @@ class StatusRole(commands.Cog):
         """Set the keyword to monitor in status/about me."""
         await self.config.guild(ctx.guild).keyword.set(keyword)
         await ctx.send(f"Keyword set to `{keyword}`.")
+
+    @statusrole.command()
+    async def debug(self, ctx):
+        """Debugging command to check status and about me."""
+        guild = ctx.guild
+        keyword = await self.config.guild(guild).keyword()
+
+        if not keyword:
+            return await ctx.send("No keyword is set. Use `statusrole set <keyword>` first.")
+
+        debug_message = f"🔍 **Debug Info:** Checking for keyword `{keyword}`\n\n"
+
+        for member in guild.members:
+            if member.bot:
+                continue
+
+            status_text = member.activity.name if member.activity else ""
+            about_me = getattr(member, "about_me", "")
+            full_text = f"{status_text} {about_me}".lower()
+
+            contains_keyword = keyword.lower() in full_text
+            debug_message += f"👤 {member.name}: `{full_text}` -> {'✅ Match' if contains_keyword else '❌ No Match'}\n"
+
+        # Ensure we don’t exceed Discord's 2000-character message limit
+        for chunk in [debug_message[i:i+1900] for i in range(0, len(debug_message), 1900)]:
+            await ctx.send(f"```{chunk}```")
 
     @commands.guild_only()
     @commands.admin()
@@ -87,3 +107,4 @@ class StatusRole(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(StatusRole(bot))
+
