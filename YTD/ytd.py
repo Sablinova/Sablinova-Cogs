@@ -23,86 +23,33 @@ class YTD(commands.Cog):
 
     # Removed async notification methods; using print statements instead
 
-    @commands.command(help="Download YouTube video or audio. Usage: -ytd <link>. You'll be prompted to select format and quality via buttons.")
-    async def ytd(self, ctx, link: str = None):
+    @commands.command(help="Download YouTube video or audio. Usage: -ytd <link> [mp3|mp4] [quality]")
+    async def ytd(self, ctx, link: str = None, format_choice: str = "mp3", quality: str = "best"):
         """
         Download YouTube video or audio.
 
         Usage:
-        -ytd <link>
-        After running, you'll get an embed with buttons to select format (mp3/mp4) and quality (720p/1080p/best).
+        -ytd <link> [mp3|mp4] [quality]
+        Example: -ytd https://youtube.com/watch?v=xxxx mp3 best
         """
         if not link:
-            await ctx.send("Please provide a YouTube link. Usage: `-ytd <link>`")
+            await ctx.send("Please provide a YouTube link. Usage: `-ytd <link> [mp3|mp4] [quality]`")
             return
-
-        embed = discord.Embed(title="YouTube Downloader", description=f"Link: {link}", color=discord.Color.red())
-        embed.add_field(name="Format", value="Choose mp3 for audio or mp4 for video.", inline=False)
-        embed.add_field(name="Quality", value="Choose quality: 720p, 1080p, best, etc.", inline=False)
-        embed.add_field(name="Help", value="Use `-ytd <link>` to start. Then select format and quality using the buttons below.", inline=False)
-        embed.set_footer(text="Click a button below to select format and quality.")
-
-        view = YTDView(link, self)
-        await ctx.send(embed=embed, view=view)
-
-    @commands.command(name="ytdhelp", help="Show help for the YouTube Downloader cog.")
-    async def ytdhelp(self, ctx):
-        """
-        Show help for the YouTube Downloader cog.
-        """
-        embed = discord.Embed(title="YouTube Downloader Help", color=discord.Color.green())
-        embed.add_field(name="Usage", value="`-ytd <link>`\nStarts an interactive download session.", inline=False)
-        embed.add_field(name="How it works", value="After you provide a link, you'll get an embed with buttons to select format (mp3/mp4) and quality (720p/1080p/best). The bot will download and send the file if possible.", inline=False)
-        embed.add_field(name="Debugging", value="If something fails, you'll get a detailed error message in Discord and the bot console.", inline=False)
-        embed.set_footer(text="Made by Sablinova. Powered by yt-dlp.")
-        await ctx.send(embed=embed)
-
-class YTDView(discord.ui.View):
-    def __init__(self, link, cog):
-        super().__init__(timeout=60)
-        self.link = link
-        self.cog = cog
-        self.format_choice = None
-        self.quality_choice = None
-
-    @discord.ui.button(label="MP3", style=discord.ButtonStyle.primary)
-    async def mp3_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.format_choice = "mp3"
-        await interaction.response.send_message("Choose quality: 720p, 1080p, best, etc.", ephemeral=True)
-
-    @discord.ui.button(label="MP4", style=discord.ButtonStyle.primary)
-    async def mp4_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.format_choice = "mp4"
-        await interaction.response.send_message("Choose quality: 720p, 1080p, best, etc.", ephemeral=True)
-
-    @discord.ui.button(label="720p", style=discord.ButtonStyle.secondary)
-    async def q720p_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.quality_choice = "720"
-        await self._download(interaction)
-
-    @discord.ui.button(label="1080p", style=discord.ButtonStyle.secondary)
-    async def q1080p_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.quality_choice = "1080"
-        await self._download(interaction)
-
-    @discord.ui.button(label="Best", style=discord.ButtonStyle.secondary)
-    async def qbest_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.quality_choice = "best"
-        await self._download(interaction)
-
-    async def _download(self, interaction):
-        if not self.format_choice or not self.quality_choice:
-            await interaction.response.send_message("Please select both format and quality.", ephemeral=True)
+        if format_choice not in ["mp3", "mp4"]:
+            await ctx.send("Invalid format. Please choose mp3 or mp4.")
             return
-        await interaction.response.send_message(f"Downloading... Format: {self.format_choice}, Quality: {self.quality_choice}", ephemeral=True)
-        file_path, error_msg = await self.cog.download_youtube_debug(self.link, self.format_choice, self.quality_choice)
+        await ctx.send(f"Downloading... Format: {format_choice}, Quality: {quality}")
+        file_path, error_msg = await self.download_youtube_debug(link, format_choice, quality)
         if file_path:
             try:
-                await interaction.followup.send(file=discord.File(file_path))
+                await ctx.send(file=discord.File(file_path))
             except Exception as e:
-                await interaction.followup.send(f"File too large to send or error occurred: {e}")
+                await ctx.send(f"File too large to send or error occurred: {e}")
         else:
-            await interaction.followup.send(f"Download failed. Error: {error_msg}")
+            await ctx.send(f"Download failed. Error: {error_msg}")
+
+    # Removed ytdhelp command and all button UI
+
 
 
     async def download_youtube_debug(self, link, format_choice, quality):
