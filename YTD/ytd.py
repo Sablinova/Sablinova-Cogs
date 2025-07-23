@@ -26,23 +26,17 @@ class YTD(commands.Cog):
             except Exception as e:
                 print("yt-dlp installation failed:", e)
 
-    def is_admin_or_owner():
-        async def predicate(ctx):
-            if await ctx.bot.is_owner(ctx.author):
-                return True
-            if ctx.guild:
-                perms = ctx.author.guild_permissions
-                return perms.administrator or perms.manage_messages
-            return False
-        return commands.check(predicate)
-
     @commands.hybrid_command(name="ytd", with_app_command=True)
-    @is_admin_or_owner()
     async def ytd(self, ctx: commands.Context, link: str = None, format_choice: str = "mp3", quality: str = "best"):
-        """Download YouTube video/audio (mp3 or mp4). Run with no args to open a modal."""
+        """
+        Download YouTube video/audio (mp3 or mp4).
+        Run with no args to open a modal form.
+        Permissions are handled by Redbot's `-permissions` system.
+        """
         now = datetime.utcnow()
         cooldown = await self.config.cooldown_seconds()
 
+        # Cooldown applies only to non-owners
         if not await self.bot.is_owner(ctx.author):
             if self.last_used and (now - self.last_used).total_seconds() < cooldown:
                 wait_time = cooldown - (now - self.last_used).total_seconds()
