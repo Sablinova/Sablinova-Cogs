@@ -46,12 +46,12 @@ class YTD(commands.Cog):
             except Exception as e:
                 await ctx.send(f"File too large to send or error occurred: {e}")
         else:
-            # If error message is too long, send in multiple messages
+            # Send error message in code blocks, chunked to 1990 chars
             if error_msg:
-                chunks = [error_msg[i:i+3900] for i in range(0, len(error_msg), 3900)]
+                chunks = [error_msg[i:i+1990] for i in range(0, len(error_msg), 1990)]
                 for idx, chunk in enumerate(chunks):
-                    prefix = "Download failed. Error: " if idx == 0 else "(cont.) "
-                    await ctx.send(f"{prefix}{chunk}")
+                    prefix = "Download failed. Error:\n" if idx == 0 else "(cont.)\n"
+                    await ctx.send(f"{prefix}```\n{chunk}\n```")
             else:
                 await ctx.send("Download failed. Error: Unknown error")
 
