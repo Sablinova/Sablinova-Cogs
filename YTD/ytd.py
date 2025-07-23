@@ -62,8 +62,7 @@ class YTD(commands.Cog):
             await ctx.send("❌ Invalid format. Use `mp3` or `mp4`.")
             return
 
-        await ctx.send(f"⏬ Downloading `{format_choice}` at `{quality}` quality...")
-        file_path, debug_log = await self.download_youtube(link, format_choice, quality)
+        file_path, debug_log = await self.download_youtube(ctx, link, format_choice, quality)
 
         if file_path:
             try:
@@ -96,6 +95,8 @@ class YTD(commands.Cog):
         units = {"s": 1, "m": 60, "h": 3600}
         num = int(text[:-1])
         unit = text[-1].lower()
+        if unit not in units:
+            raise ValueError("Invalid time unit")
         return num * units[unit]
 
     @commands.command()
@@ -131,11 +132,26 @@ class YTD(commands.Cog):
         except Exception as e:
             print("[YTD LOG ERROR]", e)
 
-    async def download_youtube(self, link, format_choice, quality):
+    async def download_youtube(self, ctx, link, format_choice, quality):
         import yt_dlp
         tmp_dir = tempfile.gettempdir()
         output_template = os.path.join(tmp_dir, "ytdl_%(title)s.%(ext)s")
         log = []
+
+        progress_message = await ctx.send("⏳ Download starting... 0%")
+
+        def progress_hook(d):
+            # Runs in separate thread; update progress message via event loop
+            if d['status'] == 'downloading':
+                pct = d.get('progress_percent')
+                if pct is None:
+                    pct = 0
+                msg = f"⏳ Downloading... {pct:.1f}%"
+                coro = progress_message.edit(content=msg)
+                fut = asyncio.run_coroutine_threadsafe(coro, self.bot.loop)
+            elif d['status'] == 'finished':
+                coro = progress_message.edit(content="✅ Download complete, processing...")
+                fut = asyncio.run_coroutine_threadsafe(coro, self.bot.loop)
 
         class Logger:
             def debug(self, msg): log.append(f"[DEBUG] {msg}")
@@ -148,6 +164,7 @@ class YTD(commands.Cog):
             'noplaylist': True,
             'quiet': True,
             'logger': Logger(),
+            'progress_hooks': [progress_hook],
         }
 
         if format_choice == 'mp3':
@@ -169,7 +186,15 @@ class YTD(commands.Cog):
                 log.append(traceback.format_exc())
                 return None, "\n".join(log)
 
-        return await asyncio.get_event_loop().run_in_executor(None, run)
+        file_path, debug_log = await asyncio.get_event_loop().run_in_executor(None, run)
+
+        try:
+            await progress_message.delete()
+        except:
+            pass
+
+        return file_path, debug_log
+
 
 class YTDModal(discord.ui.Modal, title="YouTube Downloader"):
     link = discord.ui.TextInput(label="YouTube Link", style=discord.TextStyle.short, required=True)
@@ -190,8 +215,7 @@ class YTDModal(discord.ui.Modal, title="YouTube Downloader"):
             await interaction.followup.send("❌ Invalid format. Use `mp3` or `mp4`.", ephemeral=True)
             return
 
-        await interaction.followup.send(f"⏬ Downloading `{fmt}` at `{qual}`...", ephemeral=True)
-        file_path, debug_log = await self.cog.download_youtube(link, fmt, qual)
+        file_path, debug_log = await self.cog.download_youtube(interaction, link, fmt, qual)
 
         if file_path:
             try:
