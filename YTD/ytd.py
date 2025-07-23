@@ -63,7 +63,14 @@ class YTD(commands.Cog):
         file_path, error_msg = await self.download_youtube(link, format_choice, quality, msg)
         if not file_path:
             await msg.delete()
-            return await ctx.send(f"❌ Download failed.\n{box(error_msg or 'Unknown error')}")
+            if error_msg:
+                chunks = [error_msg[i:i+1900] for i in range(0, len(error_msg), 1900)]
+                for i, chunk in enumerate(chunks):
+                    prefix = "❌ Download failed. Error: " if i == 0 else "(cont.) "
+                    await ctx.send(prefix + box(chunk))
+            else:
+                await ctx.send("❌ Download failed. Unknown error.")
+            return
 
         upload_link = None
         try:
