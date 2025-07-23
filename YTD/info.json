@@ -1,0 +1,10 @@
+{
+    "author": ["YourName"],
+    "name": "YTD",
+    "description": "A cog to download YouTube videos or audio.",
+    "install_msg": "YTD cog installed!",
+    "requirements": [],
+    "tags": ["youtube", "downloader", "media"],
+    "type": "COG",
+    "end_user_data_statement": "This cog does not store any user data."
+}
