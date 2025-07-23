@@ -46,7 +46,9 @@ class YTD(commands.Cog):
             except Exception as e:
                 await ctx.send(f"File too large to send or error occurred: {e}")
         else:
-            await ctx.send(f"Download failed. Error: {error_msg}")
+            # Truncate error message to 4000 characters for Discord
+            short_error = error_msg[:4000] if error_msg else "Unknown error"
+            await ctx.send(f"Download failed. Error: {short_error}")
 
     # Removed ytdhelp command and all button UI
 
