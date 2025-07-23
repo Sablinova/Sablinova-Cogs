@@ -3,13 +3,19 @@ import discord
 import asyncio
 import traceback
 import tempfile
-from redbot.core import commands
+from redbot.core import commands, Config
+from datetime import datetime
 
 class YTD(commands.Cog):
     """YouTube Downloader Cog"""
 
     def __init__(self, bot):
         self.bot = bot
+        self.config = Config.get_conf(self, identifier=142020230713)
+        self.config.register_global(cooldown_seconds=300)
+        self.config.register_global(log_channel=None)
+        self.last_used = None
+
         try:
             import yt_dlp
         except ImportError:
@@ -20,20 +26,34 @@ class YTD(commands.Cog):
             except Exception as e:
                 print("yt-dlp installation failed:", e)
 
-    @commands.hybrid_command(name="ytd", with_app_command=True)
-    async def ytd(self, ctx: commands.Context, link: str = None, format_choice: str = "mp3", quality: str = "best"):
-        """
-        Download YouTube video or audio.
+    def is_admin_or_owner():
+        async def predicate(ctx):
+            if await ctx.bot.is_owner(ctx.author):
+                return True
+            if ctx.guild:
+                perms = ctx.author.guild_permissions
+                return perms.administrator or perms.manage_messages
+            return False
+        return commands.check(predicate)
 
-        `/ytd` will open a modal form.
-        `-ytd <link> [format] [quality]` will download directly.
-        """
-        # Slash command → open modal form
+    @commands.hybrid_command(name="ytd", with_app_command=True)
+    @is_admin_or_owner()
+    async def ytd(self, ctx: commands.Context, link: str = None, format_choice: str = "mp3", quality: str = "best"):
+        """Download YouTube video/audio (mp3 or mp4). Run with no args to open a modal."""
+        now = datetime.utcnow()
+        cooldown = await self.config.cooldown_seconds()
+
+        if not await self.bot.is_owner(ctx.author):
+            if self.last_used and (now - self.last_used).total_seconds() < cooldown:
+                wait_time = cooldown - (now - self.last_used).total_seconds()
+                mins, secs = divmod(int(wait_time), 60)
+                return await ctx.send(f"⏳ This command is on cooldown. Try again in {mins}m {secs}s.")
+            self.last_used = now
+
         if ctx.interaction is not None and link is None:
             await ctx.interaction.response.send_modal(YTDModal(self))
             return
 
-        # Text fallback command: `-ytd <link> mp3 720`
         if not link:
             await ctx.send("❌ Please provide a YouTube link.\nUsage: `-ytd <link> [mp3|mp4] [quality]`")
             return
@@ -51,17 +71,68 @@ class YTD(commands.Cog):
             except Exception as e:
                 await ctx.send(f"⚠️ File too large or error occurred: `{e}`")
             finally:
+                await self.send_log(ctx, link, format_choice, quality, file_path)
                 try:
                     os.remove(file_path)
                 except:
                     pass
         else:
-            print("[YTD DEBUG] Error log:\n", debug_log)
-            await ctx.send("❌ Download failed. Check bot console logs.", ephemeral=False)
+            await ctx.send("❌ Download failed. Check logs.")
+            print("[YTD ERROR]", debug_log)
+            await self.send_log(ctx, link, format_choice, quality, None)
+
+    @commands.command()
+    @commands.is_owner()
+    async def ytdcooldown(self, ctx, time: str):
+        """Owner only: Set cooldown (e.g. 5m, 30s, 1h)."""
+        try:
+            seconds = self.parse_time_to_seconds(time)
+            await self.config.cooldown_seconds.set(seconds)
+            await ctx.send(f"✅ Cooldown set to {time} ({seconds} seconds).")
+        except Exception:
+            await ctx.send("❌ Invalid format. Use like `30s`, `5m`, or `1h`.")
+
+    def parse_time_to_seconds(self, text):
+        units = {"s": 1, "m": 60, "h": 3600}
+        num = int(text[:-1])
+        unit = text[-1].lower()
+        return num * units[unit]
+
+    @commands.command()
+    @commands.is_owner()
+    async def ytdlogchannel(self, ctx, channel: discord.TextChannel = None):
+        """Owner only: Set log channel to send YTD usage logs. Omit to clear."""
+        if channel:
+            await self.config.log_channel.set(channel.id)
+            await ctx.send(f"✅ YTD log channel set to {channel.mention}")
+        else:
+            await self.config.log_channel.set(None)
+            await ctx.send("❌ Log channel cleared.")
+
+    async def send_log(self, ctx, link, fmt, quality, file_path):
+        try:
+            log_id = await self.config.log_channel()
+            if not log_id:
+                return
+            channel = self.bot.get_channel(log_id)
+            if not channel:
+                return
+            msg = (
+                f"📥 **YTD Used**\n"
+                f"👤 {ctx.author} (`{ctx.author.id}`)\n"
+                f"🌐 Server: {ctx.guild.name if ctx.guild else 'DM'}\n"
+                f"🔗 Link: {link}\n"
+                f"🎞️ Format: `{fmt}` | Quality: `{quality}`"
+            )
+            if file_path and os.path.exists(file_path):
+                await channel.send(msg, file=discord.File(file_path))
+            else:
+                await channel.send(msg + "\n⚠️ File not sent.")
+        except Exception as e:
+            print("[YTD LOG ERROR]", e)
 
     async def download_youtube(self, link, format_choice, quality):
         import yt_dlp
-
         tmp_dir = tempfile.gettempdir()
         output_template = os.path.join(tmp_dir, "ytdl_%(title)s.%(ext)s")
         log = []
@@ -93,15 +164,12 @@ class YTD(commands.Cog):
                     filename = ydl.prepare_filename(info)
                     if format_choice == 'mp3':
                         filename = filename.rsplit('.', 1)[0] + '.mp3'
-                    abs_path = os.path.abspath(filename)
-                    return abs_path if os.path.exists(abs_path) else None, "\n".join(log)
+                    return os.path.abspath(filename) if os.path.exists(filename) else None, "\n".join(log)
             except Exception:
                 log.append(traceback.format_exc())
                 return None, "\n".join(log)
 
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, run)
-
+        return await asyncio.get_event_loop().run_in_executor(None, run)
 
 class YTDModal(discord.ui.Modal, title="YouTube Downloader"):
     link = discord.ui.TextInput(label="YouTube Link", style=discord.TextStyle.short, required=True)
@@ -122,23 +190,24 @@ class YTDModal(discord.ui.Modal, title="YouTube Downloader"):
             await interaction.followup.send("❌ Invalid format. Use `mp3` or `mp4`.", ephemeral=True)
             return
 
-        await interaction.followup.send(f"⏬ Downloading `{fmt}` at `{qual}` quality...", ephemeral=True)
+        await interaction.followup.send(f"⏬ Downloading `{fmt}` at `{qual}`...", ephemeral=True)
         file_path, debug_log = await self.cog.download_youtube(link, fmt, qual)
 
         if file_path:
             try:
                 await interaction.followup.send(file=discord.File(file_path))
             except Exception as e:
-                await interaction.followup.send(f"⚠️ File too large or error occurred: `{e}`", ephemeral=True)
+                await interaction.followup.send(f"⚠️ Error sending file: `{e}`", ephemeral=True)
             finally:
+                await self.cog.send_log(interaction, link, fmt, qual, file_path)
                 try:
                     os.remove(file_path)
                 except:
                     pass
         else:
-            print("[YTD DEBUG] Error log:\n", debug_log)
-            await interaction.followup.send("❌ Download failed. Check bot logs for debug info.", ephemeral=True)
+            print("[YTD MODAL ERROR]", debug_log)
+            await interaction.followup.send("❌ Download failed. Check logs.", ephemeral=True)
 
-    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
-        print("[YTD ERROR] Modal error:", traceback.format_exc())
-        await interaction.followup.send("Something went wrong. Check the logs.", ephemeral=True)
+    async def on_error(self, interaction: discord.Interaction, error: Exception):
+        print("[YTD MODAL EXCEPTION]", traceback.format_exc())
+        await interaction.followup.send("❌ Unexpected error occurred. Check logs.", ephemeral=True)
