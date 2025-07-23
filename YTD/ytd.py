@@ -1,159 +1,228 @@
 import discord
-from discord.ext import commands
-from redbot.core import Config, commands
-from redbot.core.bot import Red
-from redbot.core.utils.chat_formatting import bold, box
-import os
+from redbot.core import commands, Config
+from redbot.core.utils.chat_formatting import box
 import asyncio
-import requests
-import subprocess
-import sys
+import os
+import tempfile
+import shutil
 import traceback
-import time
+import aiohttp
 
 class YTD(commands.Cog):
     """YouTube Downloader Cog"""
 
-    def __init__(self, bot: Red):
+    def __init__(self, bot):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=1234567890)
         default_global = {
-            "cooldown": 0,
-            "last_used": 0,
             "log_channel": None,
-        }
-        default_user = {
-            "last_used": 0,
+            "cooldown_seconds": 0,
+            "last_run": 0,
         }
         self.config.register_global(**default_global)
-        self.config.register_user(**default_user)
 
+        # Try install yt_dlp if missing
         try:
-            import yt_dlp
+            import yt_dlp  # noqa
         except ImportError:
-            subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'yt-dlp'])
+            import subprocess, sys
+            try:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "yt-dlp"])
+                print("yt-dlp installed automatically.")
+            except Exception:
+                print("yt-dlp installation failed. Please install manually with 'pip install yt-dlp'.")
 
-    @commands.command()
-    async def ytd(self, ctx: commands.Context, link: str = None, format_choice: str = "mp4", quality: str = "best", *, flags: str = ""):
+    def cog_unload(self):
+        # cleanup if needed
+        pass
+
+    @commands.group()
+    async def ytd(self, ctx):
+        """YouTube downloader commands group."""
+        if ctx.invoked_subcommand is None:
+            # fallback: download with args
+            await self.ytd_download(ctx, None, "mp3", "best")
+
+    @ytd.command(name="cooldown")
+    @commands.is_owner()
+    async def ytd_cooldown(self, ctx, cooldown: str):
+        """Set cooldown for ytd command. Example: 5m, 30s, 1h."""
+        seconds = self.parse_time_to_seconds(cooldown)
+        if seconds is None:
+            await ctx.send("Invalid cooldown format! Use formats like '5m', '30s', '1h'.")
+            return
+        await self.config.cooldown_seconds.set(seconds)
+        await ctx.send(f"Cooldown set to {cooldown} ({seconds} seconds).")
+
+    def parse_time_to_seconds(self, time_str):
+        try:
+            units = {"s": 1, "m": 60, "h": 3600}
+            unit = time_str[-1]
+            if unit not in units:
+                return None
+            num = int(time_str[:-1])
+            return num * units[unit]
+        except Exception:
+            return None
+
+    @ytd.command(name="log")
+    @commands.is_owner()
+    async def ytd_log(self, ctx, channel: discord.TextChannel = None):
+        """Set or clear the global log channel for YTD usage logs."""
+        if channel is None:
+            await self.config.log_channel.set(None)
+            await ctx.send("YTD log channel cleared.")
+        else:
+            await self.config.log_channel.set(channel.id)
+            await ctx.send(f"YTD log channel set to {channel.mention}.")
+
+    @commands.cooldown(1, 1, commands.BucketType.user)  # per user basic cooldown
+    @commands.has_permissions(administrator=True)  # or replace with your permission logic
+    @ytd.command(name="download")
+    async def ytd_download(self, ctx, link: str = None, format_choice: str = "mp3", quality: str = "best", *, flags: str = ""):
         """
-        Download YouTube videos. Example:
-        -ytd <link> mp4 720p --discord
+        Download YouTube video or audio.
+        Usage:
+        -ytd download <link> [mp3|mp4] [quality] [flags]
+
+        Flags:
+        --discord : upload file directly to Discord instead of PixelDrain upload.
         """
-        # Permission: owner or mod/admin
-        if not (await self.bot.is_owner(ctx.author) or await self.bot.is_mod(ctx.author)):
-            return await ctx.send("You don't have permission to use this command.")
-
-        owner = await self.bot.is_owner(ctx.author)
-        now = time.time()
-        cooldown = await self.config.cooldown()
-        last_used = await self.config.last_used()
-        remaining = cooldown - (now - last_used)
-
-        if not owner and remaining > 0:
-            return await ctx.send(f"⏳ Cooldown active. Try again in {int(remaining)}s.")
+        # Owner bypasses global cooldown
+        cd_seconds = await self.config.cooldown_seconds()
+        if ctx.author.id != self.bot.owner_id and cd_seconds > 0:
+            import time
+            last = await self.config.last_run()
+            now = time.time()
+            diff = now - last
+            if diff < cd_seconds:
+                await ctx.send(f"Cooldown active. Try again in {int(cd_seconds - diff)} seconds.")
+                return
+            await self.config.last_run.set(now)
 
         if not link:
-            return await ctx.send("Usage: `-ytd <link> [mp3/mp4] [quality] [--discord]`")
-
-        if format_choice not in ["mp3", "mp4"]:
-            return await ctx.send("❌ Invalid format. Choose `mp3` or `mp4`.")
-
-        msg = await ctx.send(f"📥 Downloading `{format_choice}` at `{quality}` quality...")
-
-        file_path, error_msg = await self.download_youtube(link, format_choice, quality, msg)
-        if not file_path:
-            await msg.delete()
-            if error_msg:
-                chunks = [error_msg[i:i+1900] for i in range(0, len(error_msg), 1900)]
-                for i, chunk in enumerate(chunks):
-                    prefix = "❌ Download failed. Error: " if i == 0 else "(cont.) "
-                    await ctx.send(prefix + box(chunk))
-            else:
-                await ctx.send("❌ Download failed. Unknown error.")
+            await ctx.send("You must provide a YouTube link.")
+            return
+        format_choice = format_choice.lower()
+        if format_choice not in ("mp3", "mp4"):
+            await ctx.send("Invalid format choice! Must be mp3 or mp4.")
             return
 
-        upload_link = None
+        flag_direct = "--discord" in flags.lower()
+
+        progress_msg = await ctx.send("Starting download... 0%")
+
+        file_path, error = await self.download_youtube(link, format_choice, quality, progress_msg)
+        if not file_path:
+            await progress_msg.edit(content=f"❌ Download failed:\n{box(error or 'Unknown error')}")
+            return
+
         try:
-            if "--discord" in flags:
+            if flag_direct:
+                # Upload file directly to discord
+                if os.path.getsize(file_path) > 8 * 1024 * 1024:  # 8MB limit fallback
+                    await progress_msg.edit(content="❌ File too large to upload directly to Discord. Try without --discord flag.")
+                    return
+                await progress_msg.delete()
                 await ctx.send(file=discord.File(file_path))
-                upload_link = "(uploaded to Discord)"
+                link_url = None
             else:
-                upload_link = await self.upload_to_pixeldrain(file_path)
-                await ctx.send(f"✅ Uploaded: {upload_link}")
+                # Upload to PixelDrain
+                link_url = await self.upload_to_pixeldrain(file_path)
+                await progress_msg.delete()
+                if link_url:
+                    await ctx.send(f"✅ Uploaded to PixelDrain: {link_url}")
+                else:
+                    await ctx.send("❌ Upload to PixelDrain failed.")
         except Exception as e:
-            await ctx.send(f"⚠️ Upload error: {e}")
+            await progress_msg.edit(content=f"❌ Upload error: {e}")
+            return
+        finally:
+            try:
+                os.remove(file_path)
+            except Exception:
+                pass
 
-        if upload_link:
-            log_channel_id = await self.config.log_channel()
-            if log_channel_id:
-                log_channel = self.bot.get_channel(log_channel_id)
-                if log_channel:
-                    await log_channel.send(f"📤 `{ctx.author}` downloaded `{format_choice}` | {link}\n🔗 {upload_link}")
+        # Log usage if log channel set
+        log_channel_id = await self.config.log_channel()
+        if log_channel_id:
+            log_channel = self.bot.get_channel(log_channel_id)
+            if log_channel:
+                user = ctx.author
+                msg = f"User {user} ({user.id}) downloaded: {link}\nFormat: {format_choice}, Quality: {quality}"
+                if link_url:
+                    msg += f"\nPixelDrain link: {link_url}"
+                else:
+                    msg += f"\nUploaded directly to Discord."
+                try:
+                    await log_channel.send(msg)
+                except Exception:
+                    pass
 
-        if not owner:
-            await self.config.last_used.set(now)
-        await msg.delete()
-        if os.path.exists(file_path):
-            os.remove(file_path)
-
-    async def download_youtube(self, link, format_choice, quality, msg):
+    async def download_youtube(self, link, format_choice, quality, progress_msg):
         import yt_dlp
-        outtmpl = f"ytdl_%(title)s.%(ext)s"
-        ydl_opts = {
-            'format': f'bestaudio/best' if format_choice == 'mp3' else f'bestvideo[height<={quality}]+bestaudio/best',
-            'outtmpl': outtmpl,
-            'noplaylist': True,
-            'quiet': True,
-            'progress_hooks': [self.make_progress_hook(msg)],
-        }
-        if format_choice == 'mp3':
-            ydl_opts['postprocessors'] = [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }]
+        loop = asyncio.get_event_loop()
 
-        try:
-            loop = asyncio.get_event_loop()
-            def run():
+        def progress_hook(d):
+            if d['status'] == 'downloading':
+                total_bytes = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
+                downloaded_bytes = d.get('downloaded_bytes', 0)
+                if total_bytes > 0:
+                    percent = int(downloaded_bytes / total_bytes * 100)
+                    asyncio.run_coroutine_threadsafe(
+                        progress_msg.edit(content=f"Downloading... {percent}%"), self.bot.loop
+                    )
+            elif d['status'] == 'finished':
+                asyncio.run_coroutine_threadsafe(
+                    progress_msg.edit(content="Download finished, processing..."), self.bot.loop
+                )
+
+        def run():
+            with tempfile.TemporaryDirectory() as tmpdir:
+                outtmpl = os.path.join(tmpdir, "ytdl_%(title)s.%(ext)s")
+                ydl_opts = {
+                    'format': f'bestaudio/best' if format_choice == 'mp3' else f'bestvideo[height<={quality}]+bestaudio/best',
+                    'outtmpl': outtmpl,
+                    'noplaylist': True,
+                    'quiet': True,
+                    'progress_hooks': [progress_hook],
+                }
+                if format_choice == 'mp3':
+                    ydl_opts['postprocessors'] = [{
+                        'key': 'FFmpegExtractAudio',
+                        'preferredcodec': 'mp3',
+                        'preferredquality': '192',
+                    }]
+                import yt_dlp
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(link, download=True)
-                    return ydl.prepare_filename(info).rsplit('.', 1)[0] + ('.mp3' if format_choice == 'mp3' else '.mp4')
-            return await loop.run_in_executor(None, run), None
-        except Exception as e:
+                    filename = ydl.prepare_filename(info)
+                    if format_choice == 'mp3':
+                        filename = filename.rsplit('.', 1)[0] + '.mp3'
+                    # Copy file out of temp before context ends
+                    dest = os.path.join(os.getcwd(), os.path.basename(filename))
+                    shutil.copyfile(filename, dest)
+                    return dest
+
+        try:
+            filepath = await loop.run_in_executor(None, run)
+            return filepath, None
+        except Exception:
             return None, traceback.format_exc()
 
-    def make_progress_hook(self, msg):
-        async def hook(d):
-            if d['status'] == 'downloading':
-                percent = d.get('_percent_str', '').strip()
-                if percent:
-                    try:
-                        await msg.edit(content=f"📥 Downloading... {percent}")
-                    except:
-                        pass
-        return hook
-
-    async def upload_to_pixeldrain(self, file_path):
-        with open(file_path, 'rb') as f:
-            res = requests.post("https://pixeldrain.com/api/file", files={'file': f})
-        if res.status_code != 200:
-            raise Exception(f"Upload failed with HTTP {res.status_code}")
+    async def upload_to_pixeldrain(self, filepath):
+        url = "https://pixeldrain.com/api/file"
         try:
-            data = res.json()
-            file_id = data.get("id") or data.get("file", {}).get("id")
-            return f"https://pixeldrain.com/api/file/{file_id}?download"
-        except Exception as e:
-            raise Exception(f"Failed to parse upload response: {e}")
-
-    @commands.command()
-    @commands.is_owner()
-    async def ytdcooldown(self, ctx: commands.Context, seconds: int):
-        await self.config.cooldown.set(seconds)
-        await ctx.send(f"✅ Set global cooldown to {seconds} seconds.")
-
-    @commands.command()
-    @commands.is_owner()
-    async def ytdlogchannel(self, ctx: commands.Context, channel: discord.TextChannel):
-        await self.config.log_channel.set(channel.id)
-        await ctx.send(f"✅ Log channel set to {channel.mention}.")
+            async with aiohttp.ClientSession() as session:
+                with open(filepath, "rb") as f:
+                    data = f.read()
+                async with session.post(url, data=data) as resp:
+                    if resp.status != 200:
+                        return None
+                    j = await resp.json()
+                    file_id = j.get("id")
+                    if not file_id:
+                        return None
+                    return f"https://pixeldrain.com/u/{file_id}"
+        except Exception:
+            return None
