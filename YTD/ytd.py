@@ -2,6 +2,7 @@ import os
 import discord
 import asyncio
 import traceback
+import tempfile
 from redbot.core import commands
 
 class YTD(commands.Cog):
@@ -54,7 +55,8 @@ class YTD(commands.Cog):
     async def download_youtube(self, link, format_choice, quality):
         import yt_dlp
 
-        output_template = "ytdl_%(title)s.%(ext)s"
+        tmp_dir = tempfile.gettempdir()
+        output_template = os.path.join(tmp_dir, "ytdl_%(title)s.%(ext)s")
         log = []
 
         class Logger:
@@ -84,7 +86,8 @@ class YTD(commands.Cog):
                     filename = ydl.prepare_filename(info)
                     if format_choice == 'mp3':
                         filename = filename.rsplit('.', 1)[0] + '.mp3'
-                    return filename if os.path.exists(filename) else None, "\n".join(log)
+                    abs_path = os.path.abspath(filename)
+                    return abs_path if os.path.exists(abs_path) else None, "\n".join(log)
             except Exception:
                 log.append(traceback.format_exc())
                 return None, "\n".join(log)
