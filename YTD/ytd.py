@@ -39,7 +39,8 @@ class YTD(commands.Cog):
         Download YouTube videos. Example:
         -ytd <link> mp4 720p --discord
         """
-        if not await self.bot.is_mod(ctx.author):
+        # Permission: owner or mod/admin
+        if not (await self.bot.is_owner(ctx.author) or await self.bot.is_mod(ctx.author)):
             return await ctx.send("You don't have permission to use this command.")
 
         owner = await self.bot.is_owner(ctx.author)
