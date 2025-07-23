@@ -2,7 +2,12 @@ import discord
 from redbot.core import commands
 
 class YTD(commands.Cog):
-    """YouTube Downloader Cog"""
+    """
+    YouTube Downloader Cog
+
+    Commands:
+    -ytd <link>: Starts an interactive YouTube download session. You will be prompted to select format and quality via buttons.
+    """
     def __init__(self, bot):
         self.bot = bot
         # Check and install yt-dlp if missing
@@ -18,9 +23,15 @@ class YTD(commands.Cog):
 
     # Removed async notification methods; using print statements instead
 
-    @commands.command()
+    @commands.command(help="Download YouTube video or audio. Usage: -ytd <link>. You'll be prompted to select format and quality via buttons.")
     async def ytd(self, ctx, link: str = None):
-        """Download YouTube video or audio. Usage: -ytd <link>"""
+        """
+        Download YouTube video or audio.
+
+        Usage:
+        -ytd <link>
+        After running, you'll get an embed with buttons to select format (mp3/mp4) and quality (720p/1080p/best).
+        """
         if not link:
             await ctx.send("Please provide a YouTube link. Usage: `-ytd <link>`")
             return
@@ -28,10 +39,23 @@ class YTD(commands.Cog):
         embed = discord.Embed(title="YouTube Downloader", description=f"Link: {link}", color=discord.Color.red())
         embed.add_field(name="Format", value="Choose mp3 for audio or mp4 for video.", inline=False)
         embed.add_field(name="Quality", value="Choose quality: 720p, 1080p, best, etc.", inline=False)
+        embed.add_field(name="Help", value="Use `-ytd <link>` to start. Then select format and quality using the buttons below.", inline=False)
         embed.set_footer(text="Click a button below to select format and quality.")
 
         view = YTDView(link, self)
         await ctx.send(embed=embed, view=view)
+
+    @commands.command(name="ytdhelp", help="Show help for the YouTube Downloader cog.")
+    async def ytdhelp(self, ctx):
+        """
+        Show help for the YouTube Downloader cog.
+        """
+        embed = discord.Embed(title="YouTube Downloader Help", color=discord.Color.green())
+        embed.add_field(name="Usage", value="`-ytd <link>`\nStarts an interactive download session.", inline=False)
+        embed.add_field(name="How it works", value="After you provide a link, you'll get an embed with buttons to select format (mp3/mp4) and quality (720p/1080p/best). The bot will download and send the file if possible.", inline=False)
+        embed.add_field(name="Debugging", value="If something fails, you'll get a detailed error message in Discord and the bot console.", inline=False)
+        embed.set_footer(text="Made by Sablinova. Powered by yt-dlp.")
+        await ctx.send(embed=embed)
 
 class YTDView(discord.ui.View):
     def __init__(self, link, cog):
