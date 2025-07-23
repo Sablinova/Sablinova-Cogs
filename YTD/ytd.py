@@ -80,16 +80,19 @@ class YTDView(discord.ui.View):
         else:
             await interaction.followup.send(f"Download failed. Error: {error_msg}")
 
+
     async def download_youtube_debug(self, link, format_choice, quality):
         import yt_dlp
         import asyncio
         import os
+        import traceback
         outtmpl = f"ytdl_%(title)s.%(ext)s"
         ydl_opts = {
             'format': f'bestaudio/best' if format_choice == 'mp3' else f'bestvideo[height<={quality}]+bestaudio/best',
             'outtmpl': outtmpl,
             'noplaylist': True,
-            'quiet': True,
+            'quiet': False,  # Make yt-dlp verbose
+            'logger': YTDLogger(),
         }
         if format_choice == 'mp3':
             ydl_opts['postprocessors'] = [{
@@ -101,16 +104,31 @@ class YTDView(discord.ui.View):
             loop = asyncio.get_event_loop()
             def run_dl():
                 try:
+                    print(f"[YTD DEBUG] Downloading: link={link}, format={format_choice}, quality={quality}")
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         info = ydl.extract_info(link, download=True)
+                        print(f"[YTD DEBUG] yt-dlp info: {info}")
                         if format_choice == 'mp3':
                             filename = ydl.prepare_filename(info).rsplit('.', 1)[0] + '.mp3'
                         else:
                             filename = ydl.prepare_filename(info)
+                        print(f"[YTD DEBUG] Downloaded file: {filename}")
                         return filename if os.path.exists(filename) else None, None
                 except Exception as e:
-                    return None, str(e)
+                    tb = traceback.format_exc()
+                    print(f"[YTD ERROR] Exception: {e}\nTraceback:\n{tb}")
+                    return None, f"{e}\nTraceback:\n{tb}"
             file_path, error_msg = await loop.run_in_executor(None, run_dl)
             return file_path, error_msg
         except Exception as e:
-            return None, str(e)
+            tb = traceback.format_exc()
+            print(f"[YTD ERROR] Outer Exception: {e}\nTraceback:\n{tb}")
+            return None, f"{e}\nTraceback:\n{tb}"
+
+class YTDLogger:
+    def debug(self, msg):
+        print(f"[yt-dlp DEBUG] {msg}")
+    def warning(self, msg):
+        print(f"[yt-dlp WARNING] {msg}")
+    def error(self, msg):
+        print(f"[yt-dlp ERROR] {msg}")
