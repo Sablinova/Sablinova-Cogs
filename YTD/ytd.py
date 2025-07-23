@@ -9,13 +9,16 @@ from redbot.core import commands, Config
 
 
 class YTD(commands.Cog):
-    """YouTube Downloader Cog (Anonfiles by default)"""
+    """YouTube Downloader Cog (Anonfiles API version)"""
 
     def __init__(self, bot):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=142020230713)
-        self.config.register_global(cooldown_seconds=300)
-        self.config.register_global(log_channel=None)
+        self.config.register_global(
+            cooldown_seconds=300,
+            log_channel=None,
+            anonfiles_api_key=None
+        )
         self.last_used = None
 
         try:
@@ -40,10 +43,6 @@ class YTD(commands.Cog):
                 return await ctx.send(f"⏳ Cooldown active. Try again in {m}m {s}s.")
             self.last_used = now
 
-        if ctx.interaction is not None and link is None:
-            await ctx.interaction.response.send_modal(YTDModal(self))
-            return
-
         if not link:
             return await ctx.send("❌ Provide a YouTube link. Example:\n`-ytd <link> [mp3|mp4] [quality] [--discord]`")
 
@@ -64,7 +63,7 @@ class YTD(commands.Cog):
                     await ctx.send(f"⚠️ File too large or error: `{e}`")
             else:
                 try:
-                    url = await self.upload_to_anonfiles(file_path)
+                    url = await self.upload_to_anonfiles_api(file_path)
                     if url:
                         await ctx.send(f"✅ Uploaded: {url}")
                     else:
@@ -82,13 +81,23 @@ class YTD(commands.Cog):
             print("[YTD DEBUG]", debug_log)
             await self.send_log(ctx, link, format_choice, quality, None, uploaded_to_anon=False)
 
-    async def upload_to_anonfiles(self, file_path):
+    @commands.command()
+    @commands.is_owner()
+    async def ytdapikey(self, ctx, key: str):
+        """Set the Anonfiles API key."""
+        await self.config.anonfiles_api_key.set(key)
+        await ctx.send("✅ API key set.")
+
+    async def upload_to_anonfiles_api(self, file_path):
+        api_key = await self.config.anonfiles_api_key()
+        if not api_key:
+            raise Exception("Anonfiles API key not set. Use `-ytdapikey <key>`.")
+
         with open(file_path, 'rb') as f:
-            files = {'file': f}
-            r = requests.post('https://api.anonfiles.com/upload', files=files)
-            if r.status_code == 200:
-                data = r.json()
-                return data.get("data", {}).get("file", {}).get("url", {}).get("short")
+            response = requests.post(f"https://api.anonfiles.ch/upload?key={api_key}", files={'file': f})
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("data", {}).get("file", {}).get("url", {}).get("short")
         return None
 
     @commands.command()
@@ -134,7 +143,7 @@ class YTD(commands.Cog):
             f"👤 {ctx.author} (`{ctx.author.id}`)\n"
             f"🔗 Link: {link}\n"
             f"🎞️ Format: `{fmt}` | Quality: `{quality}`\n"
-            f"🧭 Method: {'Anonfiles' if uploaded_to_anon else 'Discord Upload'}"
+            f"🧭 Method: {'Anonfiles API' if uploaded_to_anon else 'Discord Upload'}"
         )
 
         if file_path and os.path.exists(file_path) and not uploaded_to_anon:
@@ -195,39 +204,3 @@ class YTD(commands.Cog):
         except:
             pass
         return file_path, debug_log
-
-
-class YTDModal(discord.ui.Modal, title="YouTube Downloader"):
-    link = discord.ui.TextInput(label="YouTube Link", required=True)
-    format_choice = discord.ui.TextInput(label="Format (mp3 or mp4)", default="mp4", required=True)
-    quality = discord.ui.TextInput(label="Quality (e.g. 720, best)", default="best", required=True)
-
-    def __init__(self, cog):
-        super().__init__()
-        self.cog = cog
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(thinking=True)
-        link = self.link.value.strip()
-        fmt = self.format_choice.value.lower().strip()
-        qual = self.quality.value.strip()
-
-        if fmt not in ["mp3", "mp4"]:
-            return await interaction.followup.send("❌ Invalid format. Use `mp3` or `mp4`.", ephemeral=True)
-
-        msg = await interaction.followup.send("⏳ Starting download...", wait=True)
-        file_path, debug_log = await self.cog.download_youtube(interaction, link, fmt, qual, msg)
-
-        if file_path:
-            try:
-                url = await self.cog.upload_to_anonfiles(file_path)
-                if url:
-                    await interaction.followup.send(f"✅ Uploaded: {url}")
-                else:
-                    await interaction.followup.send("⚠️ Upload failed.")
-                await self.cog.send_log(interaction, link, fmt, qual, file_path, uploaded_to_anon=True)
-                os.remove(file_path)
-            except Exception as e:
-                await interaction.followup.send(f"❌ Error: {e}")
-        else:
-            await interaction.followup.send("❌ Download failed. Check logs.")
