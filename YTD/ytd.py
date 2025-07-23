@@ -1,113 +1,231 @@
+import os
 import discord
-from redbot.core import commands
+import asyncio
+import traceback
+import tempfile
+from redbot.core import commands, Config
+from datetime import datetime
 
 class YTD(commands.Cog):
-    """
-    YouTube Downloader Cog
+    """YouTube Downloader Cog"""
 
-    Commands:
-    -ytd <link>: Starts an interactive YouTube download session. You will be prompted to select format and quality via buttons.
-    """
     def __init__(self, bot):
         self.bot = bot
-        # Check and install yt-dlp if missing
+        self.config = Config.get_conf(self, identifier=142020230713)
+        self.config.register_global(cooldown_seconds=300)
+        self.config.register_global(log_channel=None)
+        self.last_used = None
+
         try:
             import yt_dlp
         except ImportError:
             import subprocess, sys
             try:
                 subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'yt-dlp'])
-                print("yt-dlp was installed automatically.")
-            except Exception:
-                print("yt-dlp installation failed. Please install manually with 'pip install yt-dlp'.")
+                print("yt-dlp installed.")
+            except Exception as e:
+                print("yt-dlp installation failed:", e)
 
-    # Removed async notification methods; using print statements instead
-
-    @commands.command(help="Download YouTube video or audio. Usage: -ytd <link> [mp3|mp4] [quality]")
-    async def ytd(self, ctx, link: str = None, format_choice: str = "mp3", quality: str = "best"):
+    @commands.hybrid_command(name="ytd", with_app_command=True)
+    async def ytd(self, ctx: commands.Context, link: str = None, format_choice: str = "mp3", quality: str = "best"):
         """
-        Download YouTube video or audio.
-
-        Usage:
-        -ytd <link> [mp3|mp4] [quality]
-        Example: -ytd https://youtube.com/watch?v=xxxx mp3 best
+        Download YouTube video/audio (mp3 or mp4).
+        Run with no args to open a modal form.
+        Permissions are handled by Redbot's `-permissions` system.
         """
+        now = datetime.utcnow()
+        cooldown = await self.config.cooldown_seconds()
+
+        # Cooldown applies only to non-owners
+        if not await self.bot.is_owner(ctx.author):
+            if self.last_used and (now - self.last_used).total_seconds() < cooldown:
+                wait_time = cooldown - (now - self.last_used).total_seconds()
+                mins, secs = divmod(int(wait_time), 60)
+                return await ctx.send(f"⏳ This command is on cooldown. Try again in {mins}m {secs}s.")
+            self.last_used = now
+
+        if ctx.interaction is not None and link is None:
+            await ctx.interaction.response.send_modal(YTDModal(self))
+            return
+
         if not link:
-            await ctx.send("Please provide a YouTube link. Usage: `-ytd <link> [mp3|mp4] [quality]`")
+            await ctx.send("❌ Please provide a YouTube link.\nUsage: `-ytd <link> [mp3|mp4] [quality]`")
             return
+
         if format_choice not in ["mp3", "mp4"]:
-            await ctx.send("Invalid format. Please choose mp3 or mp4.")
+            await ctx.send("❌ Invalid format. Use `mp3` or `mp4`.")
             return
-        await ctx.send(f"Downloading... Format: {format_choice}, Quality: {quality}")
-        file_path, error_msg = await self.download_youtube_debug(link, format_choice, quality)
+
+        file_path, debug_log = await self.download_youtube(ctx, link, format_choice, quality)
+
         if file_path:
             try:
                 await ctx.send(file=discord.File(file_path))
             except Exception as e:
-                await ctx.send(f"File too large to send or error occurred: {e}")
+                await ctx.send(f"⚠️ File too large or error occurred: `{e}`")
+            finally:
+                await self.send_log(ctx, link, format_choice, quality, file_path)
+                try:
+                    os.remove(file_path)
+                except:
+                    pass
         else:
-            # Send error message in code blocks, chunked to 1990 chars
-            if error_msg:
-                chunks = [error_msg[i:i+1990] for i in range(0, len(error_msg), 1990)]
-                for idx, chunk in enumerate(chunks):
-                    prefix = "Download failed. Error:\n" if idx == 0 else "(cont.)\n"
-                    await ctx.send(f"{prefix}```\n{chunk}\n```")
+            await ctx.send("❌ Download failed. Check logs.")
+            print("[YTD ERROR]", debug_log)
+            await self.send_log(ctx, link, format_choice, quality, None)
+
+    @commands.command()
+    @commands.is_owner()
+    async def ytdcooldown(self, ctx, time: str):
+        """Owner only: Set cooldown (e.g. 5m, 30s, 1h)."""
+        try:
+            seconds = self.parse_time_to_seconds(time)
+            await self.config.cooldown_seconds.set(seconds)
+            await ctx.send(f"✅ Cooldown set to {time} ({seconds} seconds).")
+        except Exception:
+            await ctx.send("❌ Invalid format. Use like `30s`, `5m`, or `1h`.")
+
+    def parse_time_to_seconds(self, text):
+        units = {"s": 1, "m": 60, "h": 3600}
+        num = int(text[:-1])
+        unit = text[-1].lower()
+        if unit not in units:
+            raise ValueError("Invalid time unit")
+        return num * units[unit]
+
+    @commands.command()
+    @commands.is_owner()
+    async def ytdlogchannel(self, ctx, channel: discord.TextChannel = None):
+        """Owner only: Set log channel to send YTD usage logs. Omit to clear."""
+        if channel:
+            await self.config.log_channel.set(channel.id)
+            await ctx.send(f"✅ YTD log channel set to {channel.mention}")
+        else:
+            await self.config.log_channel.set(None)
+            await ctx.send("❌ Log channel cleared.")
+
+    async def send_log(self, ctx, link, fmt, quality, file_path):
+        try:
+            log_id = await self.config.log_channel()
+            if not log_id:
+                return
+            channel = self.bot.get_channel(log_id)
+            if not channel:
+                return
+            msg = (
+                f"📥 **YTD Used**\n"
+                f"👤 {ctx.author} (`{ctx.author.id}`)\n"
+                f"🌐 Server: {ctx.guild.name if ctx.guild else 'DM'}\n"
+                f"🔗 Link: {link}\n"
+                f"🎞️ Format: `{fmt}` | Quality: `{quality}`"
+            )
+            if file_path and os.path.exists(file_path):
+                await channel.send(msg, file=discord.File(file_path))
             else:
-                await ctx.send("Download failed. Error: Unknown error")
+                await channel.send(msg + "\n⚠️ File not sent.")
+        except Exception as e:
+            print("[YTD LOG ERROR]", e)
 
-    # Removed ytdhelp command and all button UI
-
-
-
-    async def download_youtube_debug(self, link, format_choice, quality):
+    async def download_youtube(self, ctx, link, format_choice, quality):
         import yt_dlp
-        import asyncio
-        import os
-        import traceback
-        outtmpl = f"ytdl_%(title)s.%(ext)s"
+        tmp_dir = tempfile.gettempdir()
+        output_template = os.path.join(tmp_dir, "ytdl_%(title)s.%(ext)s")
+        log = []
+
+        progress_message = await ctx.send("⏳ Download starting... 0%")
+
+        def progress_hook(d):
+            # Runs in separate thread; update progress message via event loop
+            if d['status'] == 'downloading':
+                pct = d.get('progress_percent')
+                if pct is None:
+                    pct = 0
+                msg = f"⏳ Downloading... {pct:.1f}%"
+                coro = progress_message.edit(content=msg)
+                fut = asyncio.run_coroutine_threadsafe(coro, self.bot.loop)
+            elif d['status'] == 'finished':
+                coro = progress_message.edit(content="✅ Download complete, processing...")
+                fut = asyncio.run_coroutine_threadsafe(coro, self.bot.loop)
+
+        class Logger:
+            def debug(self, msg): log.append(f"[DEBUG] {msg}")
+            def warning(self, msg): log.append(f"[WARNING] {msg}")
+            def error(self, msg): log.append(f"[ERROR] {msg}")
+
         ydl_opts = {
-            'format': f'bestaudio/best' if format_choice == 'mp3' else f'bestvideo[height<={quality}]+bestaudio/best',
-            'outtmpl': outtmpl,
+            'format': 'bestaudio/best' if format_choice == 'mp3' else f'bestvideo[height<={quality}]+bestaudio/best',
+            'outtmpl': output_template,
             'noplaylist': True,
-            'quiet': False,  # Make yt-dlp verbose
-            'logger': YTDLogger(),
+            'quiet': True,
+            'logger': Logger(),
+            'progress_hooks': [progress_hook],
         }
+
         if format_choice == 'mp3':
             ydl_opts['postprocessors'] = [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
                 'preferredquality': '192',
             }]
-        try:
-            loop = asyncio.get_event_loop()
-            def run_dl():
-                try:
-                    print(f"[YTD DEBUG] Downloading: link={link}, format={format_choice}, quality={quality}")
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        info = ydl.extract_info(link, download=True)
-                        print(f"[YTD DEBUG] yt-dlp info: {info}")
-                        if format_choice == 'mp3':
-                            filename = ydl.prepare_filename(info).rsplit('.', 1)[0] + '.mp3'
-                        else:
-                            filename = ydl.prepare_filename(info)
-                        print(f"[YTD DEBUG] Downloaded file: {filename}")
-                        return filename if os.path.exists(filename) else None, None
-                except Exception as e:
-                    tb = traceback.format_exc()
-                    print(f"[YTD ERROR] Exception: {e}\nTraceback:\n{tb}")
-                    return None, f"{e}\nTraceback:\n{tb}"
-            file_path, error_msg = await loop.run_in_executor(None, run_dl)
-            return file_path, error_msg
-        except Exception as e:
-            tb = traceback.format_exc()
-            print(f"[YTD ERROR] Outer Exception: {e}\nTraceback:\n{tb}")
-            return None, f"{e}\nTraceback:\n{tb}"
 
-class YTDLogger:
-    def debug(self, msg):
-        print(f"[yt-dlp DEBUG] {msg}")
-    def warning(self, msg):
-        print(f"[yt-dlp WARNING] {msg}")
-    def error(self, msg):
-        print(f"[yt-dlp ERROR] {msg}")
-        progress_msg = await ctx.send("Starting download... 0%")
+        def run():
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(link, download=True)
+                    filename = ydl.prepare_filename(info)
+                    if format_choice == 'mp3':
+                        filename = filename.rsplit('.', 1)[0] + '.mp3'
+                    return os.path.abspath(filename) if os.path.exists(filename) else None, "\n".join(log)
+            except Exception:
+                log.append(traceback.format_exc())
+                return None, "\n".join(log)
+
+        file_path, debug_log = await asyncio.get_event_loop().run_in_executor(None, run)
+
+        try:
+            await progress_message.delete()
+        except:
+            pass
+
+        return file_path, debug_log
+
+
+class YTDModal(discord.ui.Modal, title="YouTube Downloader"):
+    link = discord.ui.TextInput(label="YouTube Link", style=discord.TextStyle.short, required=True)
+    format_choice = discord.ui.TextInput(label="Format (mp3 or mp4)", default="mp3", required=True)
+    quality = discord.ui.TextInput(label="Quality (e.g. 720, 1080, best)", default="best", required=True)
+
+    def __init__(self, cog):
+        super().__init__()
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(thinking=True)
+        link = self.link.value.strip()
+        fmt = self.format_choice.value.strip().lower()
+        qual = self.quality.value.strip()
+
+        if fmt not in ["mp3", "mp4"]:
+            await interaction.followup.send("❌ Invalid format. Use `mp3` or `mp4`.", ephemeral=True)
+            return
+
+        file_path, debug_log = await self.cog.download_youtube(interaction, link, fmt, qual)
+
+        if file_path:
+            try:
+                await interaction.followup.send(file=discord.File(file_path))
+            except Exception as e:
+                await interaction.followup.send(f"⚠️ Error sending file: `{e}`", ephemeral=True)
+            finally:
+                await self.cog.send_log(interaction, link, fmt, qual, file_path)
+                try:
+                    os.remove(file_path)
+                except:
+                    pass
+        else:
+            print("[YTD MODAL ERROR]", debug_log)
+            await interaction.followup.send("❌ Download failed. Check logs.", ephemeral=True)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception):
+        print("[YTD MODAL EXCEPTION]", traceback.format_exc())
+        await interaction.followup.send("❌ Unexpected error occurred. Check logs.", ephemeral=True)
