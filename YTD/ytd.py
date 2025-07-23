@@ -12,16 +12,11 @@ class YTD(commands.Cog):
             import subprocess, sys
             try:
                 subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'yt-dlp'])
-                bot.loop.create_task(self._notify_install_success())
+                print("yt-dlp was installed automatically.")
             except Exception:
-                bot.loop.create_task(self._notify_install_fail())
+                print("yt-dlp installation failed. Please install manually with 'pip install yt-dlp'.")
 
-    async def _notify_install_success(self):
-        # Optionally notify bot owner or log channel
-        print("yt-dlp was installed automatically.")
-
-    async def _notify_install_fail(self):
-        print("yt-dlp installation failed. Please install manually with 'pip install yt-dlp'.")
+    # Removed async notification methods; using print statements instead
 
     @commands.command()
     async def ytd(self, ctx):
