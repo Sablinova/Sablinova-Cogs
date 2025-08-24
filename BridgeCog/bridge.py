@@ -258,13 +258,83 @@ class Bridge(commands.Cog):
                             webhook, message, message.guild.name
                         )
 
-    @commands.group(name="bridge", aliases=["bdg"])
+    @commands.group(name="bridge", aliases=["bdg"])  # Changed from "br" to "bdg"
     @checks.is_owner()
     async def bridge(self, ctx):
-        pass
+        """
+        Bridge channels together to relay messages between them.
+        
+        This command group allows you to create, manage, and remove bridges
+        between Discord channels. Messages sent in one bridged channel will
+        be forwarded to the other channel using webhooks.
+        """
+        if ctx.invoked_subcommand is None:
+            embed = discord.Embed(
+                title="🌉 Bridge Commands",
+                description="Create and manage channel bridges to relay messages between channels.",
+                color=discord.Color.blue(),
+            )
+            
+            embed.add_field(
+                name="📝 Setup",
+                value="`[p]bridge setup <channel1> <channel2>`\n"
+                      "Create a new bridge between two channels.\n"
+                      "Requires webhook permissions in both channels.",
+                inline=False,
+            )
+            
+            embed.add_field(
+                name="📋 List",
+                value="`[p]bridge list`\n"
+                      "Show all active bridges with their channel information.",
+                inline=False,
+            )
+            
+            embed.add_field(
+                name="🗑️ Remove",
+                value="`[p]bridge remove <bridge_id>`\n"
+                      "Remove an existing bridge by its ID number.\n"
+                      "Use `[p]bridge list` to find bridge IDs.",
+                inline=False,
+            )
+            
+            embed.add_field(
+                name="ℹ️ How it works",
+                value="• Messages are relayed using webhooks\n"
+                      "• Replies, attachments, and stickers are supported\n"
+                      "• Mentions are sanitized to prevent unwanted pings\n"
+                      "• Each message shows which server it came from",
+                inline=False,
+            )
+            
+            embed.add_field(
+                name="⚠️ Requirements",
+                value="• Bot must have 'Manage Webhooks' permission\n"
+                      "• Bot must be able to read messages in both channels\n"
+                      "• Only bot owners can manage bridges",
+                inline=False,
+            )
+            
+            embed.set_footer(text="Use [p]help bridge <command> for detailed help on specific commands")
+            
+            await ctx.send(embed=embed)
 
     @bridge.command(name="setup")
     async def bridge_setup(self, ctx, channel1, channel2):
+        """
+        Create a bridge between two channels.
+        
+        Parameters:
+        - channel1: First channel to bridge (mention, ID, or name)
+        - channel2: Second channel to bridge (mention, ID, or name)
+        
+        Example:
+        - `[p]bridge setup #general #announcements`
+        - `[p]bridge setup 123456789 987654321`
+        
+        The bot will create webhooks in both channels and start relaying
+        messages between them. Both channels can be on different servers.
+        """
         if isinstance(channel1, str) and channel1.isdigit():
             channel1 = self.bot.get_channel(int(channel1))
         elif isinstance(channel1, int):
@@ -350,6 +420,16 @@ class Bridge(commands.Cog):
 
     @bridge.command(name="list")
     async def bridge_list(self, ctx):
+        """
+        Show all active bridges.
+        
+        Displays a list of all currently active bridges with:
+        - Bridge ID numbers
+        - Channel names and server information
+        - Status of each channel (accessible or not)
+        
+        Use the bridge IDs shown here with the remove command.
+        """
         bridges = await self.config.bridges()
 
         if not bridges:
@@ -382,6 +462,22 @@ class Bridge(commands.Cog):
 
     @bridge.command(name="remove", aliases=["delete", "rm"])
     async def bridge_remove(self, ctx, bridge_id: int):
+        """
+        Remove an active bridge.
+        
+        Parameters:
+        - bridge_id: The ID number of the bridge to remove
+        
+        Example:
+        - `[p]bridge remove 1`
+        - `[p]bridge delete 2`
+        
+        This will stop message relaying between the bridged channels.
+        Note: The webhooks may still exist in the channels but will
+        no longer be used by the bridge.
+        
+        Use `[p]bridge list` to see bridge IDs.
+        """
         bridges = await self.config.bridges()
 
         if str(bridge_id) not in bridges:
@@ -405,4 +501,3 @@ class Bridge(commands.Cog):
         )
 
         await ctx.send(embed=embed)
-
