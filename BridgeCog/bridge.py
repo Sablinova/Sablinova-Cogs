@@ -258,7 +258,7 @@ class Bridge(commands.Cog):
                             webhook, message, message.guild.name
                         )
 
-    @commands.group(name="bridge", aliases=["br"])
+    @commands.group(name="bridge", aliases=["bdg"])
     @checks.is_owner()
     async def bridge(self, ctx):
         pass
@@ -405,3 +405,4 @@ class Bridge(commands.Cog):
         )
 
         await ctx.send(embed=embed)
+
