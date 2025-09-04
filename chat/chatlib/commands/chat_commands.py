@@ -10,7 +10,7 @@ class ChatCommands(ChatBase):
     @commands.command()
     async def chat(self, ctx: commands.Context) -> None:
         """
-        Engages in a chat conversation using a custom GPT-4 prompt and create an active thread if not already in one.
+        Engages in a chat conversation using Gemini and create an active thread if not already in one.
         Usage:
         [p]chat <your_message>
         Example:
@@ -38,7 +38,7 @@ class ChatCommands(ChatBase):
         except ValueError:
             await ctx.send("Something went wrong!")
             return
-        token = await self.get_openai_token()
+        token = await self.get_gemini_token()
         prompt = await self.config.guild(ctx.guild).prompt()
         model = await self.config.guild(ctx.guild).model()
         endpoint = await self.config.guild(ctx.guild).endpoint()

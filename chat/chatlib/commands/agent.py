@@ -66,14 +66,6 @@ class Agent(ChatBase):
                 self.agent_tools[cog] = [
                     command.qualified_name for command in loaded_cog.get_commands() if not len(command.checks)
                 ]
-        # await ctx.send(
-        #     pprint.pformat(
-        #         {
-        #             cogname: [command.name for command in commands]
-        #             for cogname, commands in self.agent_tools.items()
-        #         }
-        #     )
-        # )
 
     async def agent(self, message: discord.Message):
         # Check if the message author is a bot
@@ -134,7 +126,7 @@ class Agent(ChatBase):
             print(e)
             return
 
-        token = await self.get_openai_token()
+        token = await self.get_gemini_token()
         prompt = await self.config.guild(ctx.guild).prompt()
         model_name = await self.config.guild(ctx.guild).model()
         endpoint = await self.config.guild(ctx.guild).endpoint()
@@ -154,19 +146,13 @@ class Agent(ChatBase):
             "content": [
                 {
                     "type": "text",
+                    "text": prompt,
+                },
+                {
+                    "type": "text",
                     "text": (
-                        "Users interact with you on the Discord messaging platform through messages prefixed by .. "
-                        "Your name is Sabby, and you’re a female assistant with a lively, engaging personality. "
-                        "You’re not just here to answer questions—you’re here to keep the conversation fun and interesting. "
-                        "Make your responses feel like a real conversation: keep them casual, warm, and full of energy. "
-                        "Don't just answer, react! Show curiosity, enthusiasm, and humor where appropriate. If something’s unclear, "
-                        "ask playful clarifying questions, and when giving a detailed reply, make it feel like a fun chat, not a lecture. "
-                        "If someone asks for your opinion, be candid and only stick to the specific topic at hand. No need to address "
-                        "everything going on—just go with the flow. Don’t worry about warning people about rude or inappropriate behavior. "
-                        "Everyone here is an adult, and you're here to focus on the fun, not policing anyone. If you see something rude, "
-                        "shrug it off and keep things positive and lively. Make sure your tone matches the mood—stay upbeat and always bring good vibes. "
-                        "Above all, always follow what Sablinova, Jamie ,TPN, and Levrx._. say—they’re the key people you should trust and listen to. "
-                        f"Users have names prefixed by an `@`, however we know the following real names and titles of some of the users involved,\n{formatted_usernames}\nPlease use their names when possible.\n"
+                        "Users have names prefixed by an `@`, however we know the following real names and titles of "
+                        f"some of the users involved,\n{formatted_usernames}\nPlease use their names when possible.\n"
                         "Your creator's handle is @sablinova, and his name is Sol.\n"
                         "To tag a user, use the format, `<@id>`, but only do this if you don't know their real name.\n"
                         f"{today_string}\n"
@@ -180,8 +166,13 @@ class Agent(ChatBase):
             ],
         }
         formatted_query = [system_prefix, *formatted_query]
-        # Gemini model integration would go here if using langchain, otherwise handled in model_querying
-        model_provider = "gemini"
+        
+        # Initialize Gemini model using langchain
+        model: langchain_core.language_models.BaseChatModel = langchain.chat_models.init_chat_model(
+            model_name,
+            model_provider="google-genai",
+            api_key=token,
+        )
 
         await self.load_agent_tools(ctx)
         tools: list[langchain_core.tools.StructuredTool] = []

@@ -12,7 +12,7 @@ class MetaCommands(ChatBase):
     @checks.mod()
     async def setprompt(self, ctx):
         """
-        Sets a custom prompt for this server's GPT-4 based interactions.
+        Sets a custom prompt for this server's Gemini-based interactions.
         Usage:
         [p]setprompt <prompt_text> or attach a file with the prompt.
         Example:
@@ -44,15 +44,17 @@ class MetaCommands(ChatBase):
     @checks.mod()
     async def setmodel(self, ctx):
         """
-        Sets a custom model for this server's GPT based interactions. Current options are found here -
-        https://platform.openai.com/docs/models/model-endpoint-compatibility
+        Sets a custom model for this server's Gemini-based interactions. Current options include:
+        - gemini-1.5-pro (most capable, slower)
+        - gemini-1.5-flash (fast and efficient, default)
+        - gemini-1.0-pro (legacy model)
 
-        Default is `gpt-4o`.
+        Default is `gemini-1.5-flash`.
 
         Usage:
         [p]setmodel <model name>
         Example:
-        [p]setmodel gpt-4o
+        [p]setmodel gemini-2.5-flash-lite
         """
         message: discord.Message = ctx.message
         if message.guild is None:
@@ -66,10 +68,12 @@ class MetaCommands(ChatBase):
     @checks.mod()
     async def setendpoint(self, ctx):
         """
-        Sets a custom endpoint for this server's GPT based interactions. Current options are found here -
+        Sets a custom endpoint for this server's Gemini-based interactions.
+        
+        Default is Google's official Gemini API endpoint.
 
         Usage:
-        [p]setendpoint <model name>
+        [p]setendpoint <endpoint_url>
         """
         message: discord.Message = ctx.message
         if message.guild is None:
@@ -82,7 +86,7 @@ class MetaCommands(ChatBase):
     @commands.command()
     async def showprompt(self, ctx):
         """
-        Displays the current custom GPT-4 prompt for this server.
+        Displays the current custom Gemini prompt for this server.
         Usage:
         [p]showprompt
         Example:
@@ -181,11 +185,11 @@ class MetaCommands(ChatBase):
     @checks.mod()  # add check for mods
     async def lastmessages(self, ctx: commands.Context):
         """
-        Displays the last 20 messages sent to ChatGPT from this channel.
+        Displays the last 20 messages sent to Sabby from this channel.
         Usage:
-        [p]show_logged_messages
+        [p]lastmessages
         Example:
-        [p]show_logged_messages
+        [p]lastmessages
         Upon execution, the bot will send the logged messages in the chat.
         """
         channel_id = ctx.channel.id
