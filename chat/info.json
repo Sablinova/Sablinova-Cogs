@@ -1,0 +1,21 @@
+{
+  "author": [
+    "Eris"
+  ],
+  "description": "Usage: [p]chat. Tarot reference soured from https://www.kaggle.com/datasets/lsind18/tarot-json",
+  "name": "Chat",
+  "short": "Use OpenAI's ChatGPT to respond to the conversation",
+  "requirements": [
+    "async-lru>=2.0.5",
+    "beautifulsoup4>=4.13.4",
+    "langchain[openai]>=0.3.27",
+    "langgraph>=0.5.4",
+    "markdownify>=1.1.0",
+    "openai>=1.97.1",
+    "pillow>=11.2.1",
+    "pyyaml>=6",
+    "rich>=14.0.0"
+  ],
+  "install_msg": "Ensure that you set the openAI token, using `[p]set api`, and then the name of the secret should be `openai`, while the value needs to be in the format `key <token>`",
+  "ready": true
+}
