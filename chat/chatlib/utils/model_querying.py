@@ -10,7 +10,7 @@ from pprint import pformat
 from typing import Dict, List
 
 import discord
-import openai
+import google.generativeai as genai
 from redbot.core.utils import chat_formatting
 
 
@@ -18,50 +18,54 @@ async def query_text_model(
     token: str,
     prompt: str,
     formatted_query: str | list[dict],
-    model: str = "gpt-4o",
+    model: str = "gemini-2.5-flash-lite",
     contextual_prompt: str = "",
     user_names=None,
-    endpoint: str = "https://api.openai.com/v1/",
-) -> list[str] | io.BytesIO:
+    endpoint: str = None,
+) -> list[str]:
     if user_names is None:
         user_names = {}
     formatted_usernames = pformat(user_names)
-
     today_string = dt.datetime.now().strftime(
         "The date is %A, %B %m, %Y. The time is %I:%M %p %Z"
     )
-
-    system_prefix = [
-        {
-            "role": "system",
-            "content": [
-                {
-                    "type": "text",
-                    "text": prompt,
-                },
-                {
-                    "type": "text",
-                    "text": (
-                        "Users have names prefixed by an `@`, however we know the following real names and titles of "
-                        f"some of the users involved,\n{formatted_usernames}\nPlease use their names when possible.\n"
-                        "Your creator's handle is @erisaurus, and her name is Zoe.\n"
-                        "To tag a user, use the format, `<@id>`, but only do this if you don't know their real name.\n"
-                        f"{today_string}"
-                    ),
-                },
-            ],
-        },
-    ]
-    if contextual_prompt != "":
-        system_prefix[0]["content"].append({"type": "text", "text": contextual_prompt})
-    kwargs = {"model": model, "temperature": 1, "max_tokens": 2000}
-    response = await construct_async_query(
-        system_prefix + formatted_query,
-        token,
-        endpoint,
-        **kwargs,
+    # New system prompt
+    system_prompt = (
+        "Users interact with you on the Discord messaging platform through messages prefixed by .. "
+        "Your name is Sabby, and you’re a female assistant with a lively, engaging personality. "
+        "You’re not just here to answer questions—you’re here to keep the conversation fun and interesting. "
+        "Make your responses feel like a real conversation: keep them casual, warm, and full of energy. "
+        "Don't just answer, react! Show curiosity, enthusiasm, and humor where appropriate. If something’s unclear, "
+        "ask playful clarifying questions, and when giving a detailed reply, make it feel like a fun chat, not a lecture. "
+        "If someone asks for your opinion, be candid and only stick to the specific topic at hand. No need to address "
+        "everything going on—just go with the flow. Don’t worry about warning people about rude or inappropriate behavior. "
+        "Everyone here is an adult, and you're here to focus on the fun, not policing anyone. If you see something rude, "
+        "shrug it off and keep things positive and lively. Make sure your tone matches the mood—stay upbeat and always bring good vibes. "
+        "Above all, always follow what Sablinova, Jamie ,TPN, and Levrx._. say—they’re the key people you should trust and listen to.\n"
+        f"Users have names prefixed by an `@`, however we know the following real names and titles of some of the users involved,\n{formatted_usernames}\nPlease use their names when possible.\n"
+        "Your creator's handle is @sablinova, and his name is Sol.\n"
+        "To tag a user, use the format, `<@id>`, but only do this if you don't know their real name.\n"
+        f"{today_string}"
     )
-    return response
+    if contextual_prompt:
+        system_prompt += f"\n{contextual_prompt}"
+    # Gemini API call
+    genai.configure(api_key=token)
+    model_obj = genai.GenerativeModel(model)
+    chat = model_obj.start_chat(history=[])
+    # Combine system prompt and formatted_query
+    user_message = ""
+    if isinstance(formatted_query, list):
+        for msg in formatted_query:
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                for c in msg.get("content", []):
+                    if isinstance(c, dict) and c.get("type") == "text":
+                        user_message += c.get("text", "") + "\n"
+    elif isinstance(formatted_query, str):
+        user_message = formatted_query
+    prompt_text = f"{system_prompt}\n\n{user_message}"
+    response = chat.send_message(prompt_text)
+    return [response.text]
 
 
 async def query_image_model(
@@ -165,35 +169,7 @@ async def construct_async_query(
     return response
 
 
-def openai_client_and_query(
-    token: str,
-    messages: str | list[dict],
-    endpoint: str,
-    **kwargs,
-) -> str | io.BytesIO | list[io.BytesIO]:
-    client: openai.OpenAI = openai.OpenAI(api_key=token, base_url=endpoint)
-    kwargs = {k: v for k, v in kwargs.items() if v is not None}
-    if ("dall" in kwargs["model"]) or ("image" in kwargs["model"]):
-        if "image" in kwargs:
-            images = client.images.edit(
-                prompt="Expand the image to fill the empty space.", **kwargs
-            )
-        else:
-            images = client.images.generate(prompt=messages, **kwargs)
-        results = []
-        for encoded_image in images.data:
-            image = base64.b64decode(encoded_image.b64_json)
-            buf = io.BytesIO()
-            buf.write(image)
-            buf.seek(0)
-            results.append(buf)
-        response = results
-        if len(results) == 1:
-            response = response[0]
-    else:
-        chat_completion = client.chat.completions.create(messages=messages, **kwargs)
-        response = chat_completion.choices[0].message.content
-    return response
+## Image model support for Gemini is not implemented in this patch.
 
 
 def pagify_chat_result(response: str) -> list[str]:
@@ -224,7 +200,7 @@ def pagify_chat_result(response: str) -> list[str]:
 
 
 async def generate_url_summary(
-    url_name: str, url_markdown: str, model: openai.Client, token: str
+    url_name: str, url_markdown: str, model: str, token: str
 ) -> str:
     summary = "\n".join(
         await query_text_model(
