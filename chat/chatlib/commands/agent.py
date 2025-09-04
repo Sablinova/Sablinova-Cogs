@@ -10,14 +10,21 @@ import discord
 import discord.ext.commands
 from redbot.core import commands, checks
 from rich import print
-import langchain
-import langchain.chat_models
-import langchain_core
-import langchain_core.language_models
-import langchain_core.messages
-import langchain_core.tools
-import langgraph
-import langgraph.prebuilt
+
+# Optional imports with fallbacks
+try:
+    import langchain
+    import langchain.chat_models
+    import langchain_core
+    import langchain_core.language_models
+    import langchain_core.messages
+    import langchain_core.tools
+    import langgraph
+    import langgraph.prebuilt
+    LANGCHAIN_AVAILABLE = True
+except ImportError:
+    LANGCHAIN_AVAILABLE = False
+    print("Warning: Langchain not available, agent functionality will be limited")
 
 from .base import ChatBase
 from ..utils import model_querying
@@ -38,6 +45,10 @@ class Agent(ChatBase):
     @checks.is_owner()
     @commands.command()
     async def enable_cog_for_agentic_actions(self, ctx: commands.Context):
+        if not LANGCHAIN_AVAILABLE:
+            await ctx.send("Agent functionality requires langchain. Please install: `pip install langchain langchain-google-genai langgraph`")
+            return
+            
         message: discord.Message = ctx.message
         cog_to_load = " ".join(message.clean_content.split(" ")[1:])
         previously_enabled_cogs = await self.config.guild(ctx.guild).agent_enabled_cogs()
@@ -58,6 +69,9 @@ class Agent(ChatBase):
         await self.config.guild(ctx.guild).agent_enabled_cogs.set(previously_enabled_cogs)
 
     async def load_agent_tools(self, ctx: commands.Context):
+        if not LANGCHAIN_AVAILABLE:
+            return
+            
         async with self.config.guild(ctx.guild).agent_enabled_cogs() as enabled_cogs:
             for cog in enabled_cogs:
                 loaded_cog = self.bot_instance.get_cog(cog)
@@ -167,47 +181,73 @@ class Agent(ChatBase):
         }
         formatted_query = [system_prefix, *formatted_query]
         
-        # Initialize Gemini model using langchain
-        model: langchain_core.language_models.BaseChatModel = langchain.chat_models.init_chat_model(
-            model_name,
-            model_provider="google-genai",
-            api_key=token,
-        )
-
-        await self.load_agent_tools(ctx)
-        tools: list[langchain_core.tools.StructuredTool] = []
-        for cog_name, cog_commands in self.agent_tools.items():
-            loaded_cog = self.bot_instance.get_cog(cog_name)
-            lookup = {cmd.qualified_name: cmd for cmd in loaded_cog.__cog_commands__}
-            for command_name in cog_commands:
-                loaded_command: discord.ext.commands.Command = lookup[command_name]
-
-                tool_def = functools.partial(loaded_command.callback, loaded_cog, ctx)
-
-                schema = langchain_core.tools.create_schema_from_function(
-                    command_name,
-                    loaded_command.callback,
-                    filter_args=["self", "ctx", "context"],
+        if not LANGCHAIN_AVAILABLE:
+            # Fallback to simple text generation without agent tools
+            response = await model_querying.query_text_model(
+                token,
+                prompt,
+                formatted_query,
+                model=model_name,
+                user_names=user_names,
+                endpoint=endpoint,
+            )
+            formatted_response = model_querying.pagify_chat_result(re.sub(r"\n{2,}", r"\n", "\n".join(response)))
+        else:
+            # Use full agent functionality
+            try:
+                # Initialize Gemini model using langchain
+                model: langchain_core.language_models.BaseChatModel = langchain.chat_models.init_chat_model(
+                    model_name,
+                    model_provider="google-genai",
+                    api_key=token,
                 )
 
-                tool = langchain_core.tools.StructuredTool.from_function(
-                    coroutine=tool_def,
-                    name=command_name,
-                    description=loaded_command.description,
-                    args_schema=schema,
-                    return_direct=True,
+                await self.load_agent_tools(ctx)
+                tools: list[langchain_core.tools.StructuredTool] = []
+                for cog_name, cog_commands in self.agent_tools.items():
+                    loaded_cog = self.bot_instance.get_cog(cog_name)
+                    lookup = {cmd.qualified_name: cmd for cmd in loaded_cog.__cog_commands__}
+                    for command_name in cog_commands:
+                        loaded_command: discord.ext.commands.Command = lookup[command_name]
+
+                        tool_def = functools.partial(loaded_command.callback, loaded_cog, ctx)
+
+                        schema = langchain_core.tools.create_schema_from_function(
+                            command_name,
+                            loaded_command.callback,
+                            filter_args=["self", "ctx", "context"],
+                        )
+
+                        tool = langchain_core.tools.StructuredTool.from_function(
+                            coroutine=tool_def,
+                            name=command_name,
+                            description=loaded_command.description,
+                            args_schema=schema,
+                            return_direct=True,
+                        )
+                        tools.append(tool)
+
+                agent = langgraph.prebuilt.create_react_agent(model, tools)
+                response = await agent.ainvoke({"messages": formatted_query})
+                messages: list[langchain_core.messages.BaseMessage] = response["messages"]
+                agent_response: str = messages[-1].content
+                if isinstance(agent_response, dict):
+                    agent_response: str = agent_response.get("text")
+
+                # strip multiple newlines
+                formatted_response = model_querying.pagify_chat_result(re.sub(r"\n{2,}", r"\n", agent_response))
+            except Exception as e:
+                print(f"Agent error: {e}")
+                # Fallback to simple response
+                response = await model_querying.query_text_model(
+                    token,
+                    prompt,
+                    formatted_query,
+                    model=model_name,
+                    user_names=user_names,
+                    endpoint=endpoint,
                 )
-                tools.append(tool)
-
-        agent = langgraph.prebuilt.create_react_agent(model, tools)
-        response = await agent.ainvoke({"messages": formatted_query})
-        messages: list[langchain_core.messages.BaseMessage] = response["messages"]
-        agent_response: str = messages[-1].content
-        if isinstance(agent_response, dict):
-            agent_response: str = agent_response.get("text")
-
-        # strip multiple newlines
-        formatted_response = model_querying.pagify_chat_result(re.sub(r"\n{2,}", r"\n", agent_response))
+                formatted_response = model_querying.pagify_chat_result(re.sub(r"\n{2,}", r"\n", "\n".join(response)))
 
         # pagify for discord and send
         for chunk in formatted_response:

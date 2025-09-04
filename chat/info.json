@@ -9,14 +9,11 @@
     "async-lru>=2.0.5",
     "beautifulsoup4>=4.13.4",
     "google-generativeai>=0.8.0",
-    "langchain-google-genai>=2.1.0",
-    "langchain>=0.3.27",
-    "langgraph>=0.5.4",
     "markdownify>=1.1.0",
     "pillow>=11.2.1",
     "pyyaml>=6",
     "rich>=14.0.0"
   ],
-  "install_msg": "Ensure that you set the Gemini API key, using `[p]set api`, and then the name of the secret should be `gemini`, while the value needs to be in the format `key <token>`",
+  "install_msg": "Ensure that you set the Gemini API key, using `[p]set api`, and then the name of the secret should be `gemini`, while the value needs to be in the format `key <token>`. For advanced agent functionality, also install: pip install langchain-google-genai langgraph",
   "ready": true
 }
