@@ -1,503 +1,300 @@
 import discord
-import asyncio
+from discord.ext import commands
+from redbot.core import Config, checks, commands
 import logging
-from typing import Dict, List, Optional, Tuple
-from redbot.core import commands, Config, checks
-from redbot.core.utils.chat_formatting import box, pagify
-
-log = logging.getLogger("red.bridge")
-
+from typing import Dict, Any
 
 class Bridge(commands.Cog):
+    """
+    A cog to create and manage message bridges between text channels.
+
+    This cog allows authorized users to bridge two channels together,
+    so messages sent in one channel are automatically forwarded to the other.
+    """
 
     def __init__(self, bot):
         self.bot = bot
-        self.config = Config.get_conf(
-            self, identifier=1234567890, force_registration=True
-        )
-
-        default_global = {"bridges": {}, "next_bridge_id": 1}
-
-        self.config.register_global(**default_global)
-
+        self.config = Config.get_conf(self, identifier=1234567890)
+        self.config.register_global(bridges={}, next_bridge_id=1, authorized_users=[])
         self.webhook_cache: Dict[int, discord.Webhook] = {}
+        self.logger = logging.getLogger("red.bridge")
 
-    async def cog_load(self):
-        await self._initialize_webhooks()
-
-    async def _initialize_webhooks(self):
-        bridges = await self.config.bridges()
-        for bridge_id, bridge_data in bridges.items():
-            for webhook_key in ["webhook1", "webhook2"]:
-                if webhook_key in bridge_data and bridge_data[webhook_key]:
-                    try:
-                        webhook = discord.Webhook.from_url(
-                            bridge_data[webhook_key],
-                            session=self.bot.http._HTTPClient__session,
-                        )
-                        cache_key = int(bridge_id) * 10 + (
-                            1 if webhook_key == "webhook1" else 2
-                        )
-                        self.webhook_cache[cache_key] = webhook
-                    except Exception as e:
-                        log.error(
-                            f"Failed to initialize webhook for bridge {bridge_id}: {e}"
-                        )
-
-    async def _get_or_create_webhook(
-        self, channel: discord.TextChannel, name: str = "Bridge Webhook"
-    ) -> Optional[discord.Webhook]:
-        try:
-            webhooks = await channel.webhooks()
-            for webhook in webhooks:
-                if webhook.name == name and webhook.user == self.bot.user:
-                    return webhook
-
-            webhook = await channel.create_webhook(
-                name=name, reason="Bridge channel setup"
-            )
-            return webhook
-        except discord.Forbidden:
-            log.error(f"No permission to manage webhooks in {channel.mention}")
-            return None
-        except Exception as e:
-            log.error(f"Failed to create webhook in {channel.mention}: {e}")
-            return None
+    async def _is_authorized(self, ctx: commands.Context) -> bool:
+        """
+        Check if the user is authorized to use bridge commands.
+        Owners are always authorized.
+        """
+        if await self.bot.is_owner(ctx.author):
+            return True
+        authorized_users = await self.config.authorized_users()
+        return ctx.author.id in authorized_users
 
     def _break_mentions(self, text: str) -> str:
-        import re
-
-        invis = "\u200b"
-
-        # no pings
-        text = re.sub(r"<@!?(\d+)>", rf"<@{invis}\1>", text)
-        text = re.sub(r"<@&(\d+)>", rf"<@&{invis}\1>", text)
-
-        # no @everyone or @here
-        text = text.replace("@everyone", f"@{invis}everyone")
-        text = text.replace("@here", f"@{invis}here")
-
-        # no invite links
-        text = re.sub(r"discord\.gg/(\w+)", r"discord\.gg/[REDACTED]", text)
-        text = re.sub(
-            r"discord\.com/invite/(\w+)", r"discord\.com/invite/[REDACTED]", text
-        )
-
-        return text
+        """
+        Break mentions to avoid accidental pings.
+        """
+        return text.replace("@", "@ ")
 
     def _process_emojis(self, text: str) -> str:
-        import re
+        """
+        Convert custom emojis into markdown-style image links.
+        """
+        return discord.utils.escape_mentions(text)
 
-        def emoji_replacer(match):
-            animated = match.group(1) == "a"
-            name = match.group(2)
-            emoji_id = match.group(3)
+    async def _get_or_create_webhook(self, channel: discord.TextChannel) -> discord.Webhook:
+        """
+        Get or create a webhook for the given channel.
 
-            if animated:
-                emoji_url = f"https://cdn.discordapp.com/emojis/{emoji_id}.gif?size=48"
-            else:
-                emoji_url = f"https://cdn.discordapp.com/emojis/{emoji_id}.png?size=48"
+        Caches the webhook for efficiency.
+        """
+        key = self._get_webhook_cache_key(channel)
+        if key in self.webhook_cache:
+            return self.webhook_cache[key]
 
-            return f"[:{name}:]({emoji_url})"
+        webhooks = await channel.webhooks()
+        webhook = discord.utils.get(webhooks, name="Bridge")
+        if webhook is None:
+            try:
+                webhook = await channel.create_webhook(name="Bridge")
+            except discord.Forbidden:
+                self.logger.error("Failed to create webhook in %s", channel.name)
+                return None
+        self.webhook_cache[key] = webhook
+        return webhook
 
-        text = re.sub(r"<(a)?:(\w+):(\d+)>", emoji_replacer, text)
+    def _get_webhook_cache_key(self, channel: discord.TextChannel) -> int:
+        """
+        Generate a cache key for a webhook in a given channel.
+        """
+        return channel.id
 
-        return text
+    @commands.group()
+    async def bridge(self, ctx: commands.Context):
+        """
+        Manage channel bridges.
 
-    def _get_webhook_cache_key(self, bridge_id: int, is_webhook1: bool) -> int:
-        return bridge_id * 10 + (1 if is_webhook1 else 2)
+        Use subcommands to create, remove, list, or clear bridges.
+        """
+        pass
 
-    async def _send_webhook_message(
-        self, webhook: discord.Webhook, message: discord.Message, server_name: str
-    ):
-        try:
-            content = message.content
+    @bridge.command(name="authorize")
+    async def bridge_authorize(self, ctx: commands.Context, user: discord.User):
+        """
+        Authorize a user to use bridge commands.
 
-            if message.reference and message.reference.message_id:
-                try:
-                    referenced_msg = None
-                    if message.reference.cached_message:
-                        referenced_msg = message.reference.cached_message
-                    else:
-                        try:
-                            channel = message.channel
-                            referenced_msg = await channel.fetch_message(
-                                message.reference.message_id
-                            )
-                        except:
-                            pass
+        **Arguments:**
+        - `user`: The Discord user to authorize.
 
-                    if referenced_msg:
-                        original_author = referenced_msg.author.display_name
-                        original_content = referenced_msg.content
+        **Examples:**
+        - `[p]bridge authorize @Sol`
+        - `[p]bridge authorize 123456789012345678`
 
-                        if referenced_msg.author.bot and referenced_msg.webhook_id:
-                            lines = original_content.split("\n")
-                            cleaned_lines = []
+        **Details:**
+        - Owners always have access by default.
+        - Authorized users can manage bridges just like the owner.
+        """
+        if not await self.bot.is_owner(ctx.author):
+            return await ctx.send("Only the bot owner can authorize users.")
 
-                            for line in lines:
-                                if (
-                                    line.startswith("> **")
-                                    and ":**" in line
-                                    and len(cleaned_lines) == 0
-                                ):
-                                    continue
-                                elif line.startswith("-# [User from "):
-                                    continue
-                                else:
-                                    cleaned_lines.append(line)
+        async with self.config.authorized_users() as users:
+            if user.id not in users:
+                users.append(user.id)
+        await ctx.send(f"{user} has been authorized.")
 
-                            original_content = "\n".join(cleaned_lines).strip()
+    @bridge.command(name="deauthorize")
+    async def bridge_deauthorize(self, ctx: commands.Context, user: discord.User):
+        """
+        Remove a user's authorization for bridge commands.
 
-                            if not original_content:
-                                original_content = "*[bridged message]*"
+        **Arguments:**
+        - `user`: The Discord user to deauthorize.
 
-                        if len(original_content) > 100:
-                            original_content = original_content[:100] + "..."
+        **Examples:**
+        - `[p]bridge deauthorize @Sol`
+        - `[p]bridge deauthorize 123456789012345678`
 
-                        if original_content:
-                            reply_header = (
-                                f"> **{original_author}:** {original_content}"
-                            )
-                        else:
-                            reply_header = (
-                                f"> **{original_author}:** *[attachment or embed]*"
-                            )
+        **Details:**
+        - Owners cannot be deauthorized.
+        - The user will lose access to bridge setup, removal, and listing.
+        """
+        if not await self.bot.is_owner(ctx.author):
+            return await ctx.send("Only the bot owner can deauthorize users.")
 
-                        if content:
-                            content = f"{reply_header}\n{content}"
-                        else:
-                            content = reply_header
-                    else:
-                        reply_header = f"> *Replying to a message...*"
-                        if content:
-                            content = f"{reply_header}\n{content}"
-                        else:
-                            content = reply_header
-                except Exception as e:
-                    log.error(f"Failed to process reply: {e}")
+        async with self.config.authorized_users() as users:
+            if user.id in users:
+                users.remove(user.id)
+        await ctx.send(f"{user} has been deauthorized.")
 
-            if message.attachments:
-                attachment_info = []
-                for attachment in message.attachments:
-                    attachment_info.append(
-                        f"📎 [{attachment.filename}]({attachment.url})"
-                    )
+    @bridge.command(name="authorized")
+    async def bridge_authorized(self, ctx: commands.Context):
+        """
+        Show the list of currently authorized users.
 
-                if content:
-                    content += f"\n\n{' • '.join(attachment_info)}"
-                else:
-                    content = " • ".join(attachment_info)
+        **Examples:**
+        - `[p]bridge authorized`
 
-            if message.stickers:
-                sticker_info = []
-                for sticker in message.stickers:
-                    sticker_url = None
-                    if sticker.format == discord.StickerFormatType.png:
-                        sticker_url = sticker.url
-                    elif sticker.format == discord.StickerFormatType.apng:
-                        sticker_url = sticker.url
-                    else:
-                        sticker_url = sticker.url
+        **Details:**
+        - Displays all users who can use bridge commands.
+        - Owners are always implicitly authorized.
+        """
+        users = await self.config.authorized_users()
+        if not users:
+            await ctx.send("No authorized users.")
+            return
+        user_mentions = [f"<@{uid}>" for uid in users]
+        await ctx.send("Authorized users: " + ", ".join(user_mentions))
 
-                    sticker_info.append(
-                        f"[Sticker: {sticker.name}]({sticker_url + '?size=160'})"
-                    )
+    @bridge.command(name="setup")
+    async def bridge_setup(self, ctx: commands.Context, channel1: discord.TextChannel, channel2: discord.TextChannel):
+        """
+        Set up a bridge between two channels.
 
-                if content:
-                    content += f"\n\n{' • '.join(sticker_info)}"
-                elif sticker_info:
-                    content = " • ".join(sticker_info)
+        **Arguments:**
+        - `channel1`: The first channel to bridge.
+        - `channel2`: The second channel to bridge.
 
-            if content:
-                content += f"\n-# [User from {server_name}]"
-            else:
-                content = f"-# [User from {server_name}]"
+        **Examples:**
+        - `[p]bridge setup #general #random`
 
-            content = self._break_mentions(content)
-            content = self._process_emojis(content)
+        **Details:**
+        - Prevents bridging the same channel with itself.
+        - Prevents overlapping bridges.
+        """
+        if not await self._is_authorized(ctx):
+            return await ctx.send("You are not authorized to use this command.")
 
-            await webhook.send(
-                content=content,
-                username=message.author.display_name,
-                avatar_url=message.author.display_avatar.url,
-                wait=False,
-            )
+        if channel1.id == channel2.id:
+            return await ctx.send("You cannot bridge the same channel.")
 
-        except Exception as e:
-            log.error(f"Failed to send webhook message: {e}")
+        bridges = await self.config.bridges()
+        for b in bridges.values():
+            if channel1.id in (b["channel1_id"], b["channel2_id"]) or channel2.id in (b["channel1_id"], b["channel2_id"]):
+                return await ctx.send("One of these channels is already bridged.")
+
+        bridge_id = await self.config.next_bridge_id()
+        await self.config.bridges.set_raw(bridge_id, value={
+            "channel1_id": channel1.id,
+            "channel2_id": channel2.id,
+            "channel1_name": channel1.name,
+            "channel2_name": channel2.name,
+        })
+        await self.config.next_bridge_id.set(bridge_id + 1)
+        await ctx.send(f"Bridge {bridge_id} created between {channel1.mention} and {channel2.mention}.")
+
+    @bridge.command(name="remove")
+    async def bridge_remove(self, ctx: commands.Context, bridge_id: int):
+        """
+        Remove a bridge by its ID.
+
+        **Arguments:**
+        - `bridge_id`: The ID of the bridge to remove.
+
+        **Examples:**
+        - `[p]bridge remove 1`
+        """
+        if not await self._is_authorized(ctx):
+            return await ctx.send("You are not authorized to use this command.")
+
+        bridges = await self.config.bridges()
+        if str(bridge_id) not in bridges:
+            return await ctx.send("Invalid bridge ID.")
+
+        bridge = bridges[str(bridge_id)]
+        self.webhook_cache.pop(bridge["channel1_id"], None)
+        self.webhook_cache.pop(bridge["channel2_id"], None)
+
+        async with self.config.bridges() as bridges:
+            del bridges[str(bridge_id)]
+        await ctx.send(f"Bridge {bridge_id} removed.")
+
+    @bridge.command(name="list")
+    async def bridge_list(self, ctx: commands.Context):
+        """
+        List all active bridges.
+
+        **Examples:**
+        - `[p]bridge list`
+        """
+        if not await self._is_authorized(ctx):
+            return await ctx.send("You are not authorized to use this command.")
+
+        bridges = await self.config.bridges()
+        if not bridges:
+            return await ctx.send("No active bridges.")
+
+        lines = []
+        for bridge_id, bridge in bridges.items():
+            channel1 = self.bot.get_channel(bridge["channel1_id"])
+            channel2 = self.bot.get_channel(bridge["channel2_id"])
+            c1_name = channel1.mention if channel1 else bridge.get("channel1_name", "Deleted")
+            c2_name = channel2.mention if channel2 else bridge.get("channel2_name", "Deleted")
+            lines.append(f"ID {bridge_id}: {c1_name} <-> {c2_name}")
+        await ctx.send("\n".join(lines))
+
+    @bridge.command(name="clear")
+    async def bridge_clear(self, ctx: commands.Context):
+        """
+        Remove all bridges.
+
+        **Examples:**
+        - `[p]bridge clear`
+        """
+        if not await self._is_authorized(ctx):
+            return await ctx.send("You are not authorized to use this command.")
+
+        await self.config.bridges.clear()
+        self.webhook_cache.clear()
+        await ctx.send("All bridges cleared.")
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
+        """
+        Forward messages across bridged channels.
+
+        - Sanitizes mentions.
+        - Handles replies with context.
+        - Processes stickers and attachments.
+        """
         if message.author.bot:
             return
 
         bridges = await self.config.bridges()
+        for bridge_id, bridge in bridges.items():
+            if message.channel.id == bridge["channel1_id"]:
+                target_channel_id = bridge["channel2_id"]
+            elif message.channel.id == bridge["channel2_id"]:
+                target_channel_id = bridge["channel1_id"]
+            else:
+                continue
 
-        for bridge_id, bridge_data in bridges.items():
-            channel1_id = bridge_data.get("channel1")
-            channel2_id = bridge_data.get("channel2")
+            target_channel = self.bot.get_channel(target_channel_id)
+            if not target_channel:
+                continue
 
-            if message.channel.id == channel1_id:
-                target_channel = self.bot.get_channel(channel2_id)
-                if target_channel:
-                    cache_key = self._get_webhook_cache_key(int(bridge_id), False)
-                    webhook = self.webhook_cache.get(cache_key)
-                    if webhook:
-                        await self._send_webhook_message(
-                            webhook, message, message.guild.name
-                        )
+            webhook = await self._get_or_create_webhook(target_channel)
+            if not webhook:
+                continue
 
-            elif message.channel.id == channel2_id:
-                target_channel = self.bot.get_channel(channel1_id)
-                if target_channel:
-                    cache_key = self._get_webhook_cache_key(int(bridge_id), True)
-                    webhook = self.webhook_cache.get(cache_key)
-                    if webhook:
-                        await self._send_webhook_message(
-                            webhook, message, message.guild.name
-                        )
+            content = self._break_mentions(message.content)
+            content = self._process_emojis(content)
 
-    @commands.group(name="bridge", aliases=["bdg"])  # Changed from "br" to "bdg"
-    @checks.is_owner()
-    async def bridge(self, ctx):
-        """
-        Bridge channels together to relay messages between them.
-        
-        This command group allows you to create, manage, and remove bridges
-        between Discord channels. Messages sent in one bridged channel will
-        be forwarded to the other channel using webhooks.
-        """
-        if ctx.invoked_subcommand is None:
-            embed = discord.Embed(
-                title="🌉 Bridge Commands",
-                description="Create and manage channel bridges to relay messages between channels.",
-                color=discord.Color.blue(),
-            )
-            
-            embed.add_field(
-                name="📝 Setup",
-                value="`[p]bridge setup <channel1> <channel2>`\n"
-                      "Create a new bridge between two channels.\n"
-                      "Requires webhook permissions in both channels.",
-                inline=False,
-            )
-            
-            embed.add_field(
-                name="📋 List",
-                value="`[p]bridge list`\n"
-                      "Show all active bridges with their channel information.",
-                inline=False,
-            )
-            
-            embed.add_field(
-                name="🗑️ Remove",
-                value="`[p]bridge remove <bridge_id>`\n"
-                      "Remove an existing bridge by its ID number.\n"
-                      "Use `[p]bridge list` to find bridge IDs.",
-                inline=False,
-            )
-            
-            embed.add_field(
-                name="ℹ️ How it works",
-                value="• Messages are relayed using webhooks\n"
-                      "• Replies, attachments, and stickers are supported\n"
-                      "• Mentions are sanitized to prevent unwanted pings\n"
-                      "• Each message shows which server it came from",
-                inline=False,
-            )
-            
-            embed.add_field(
-                name="⚠️ Requirements",
-                value="• Bot must have 'Manage Webhooks' permission\n"
-                      "• Bot must be able to read messages in both channels\n"
-                      "• Only bot owners can manage bridges",
-                inline=False,
-            )
-            
-            embed.set_footer(text="Use [p]help bridge <command> for detailed help on specific commands")
-            
-            await ctx.send(embed=embed)
+            if message.reference:
+                ref_msg = await message.channel.fetch_message(message.reference.message_id)
+                if ref_msg:
+                    content = f"> **{ref_msg.author.display_name}:** {ref_msg.content}\n{content}"
 
-    @bridge.command(name="setup")
-    async def bridge_setup(self, ctx, channel1, channel2):
-        """
-        Create a bridge between two channels.
-        
-        Parameters:
-        - channel1: First channel to bridge (mention, ID, or name)
-        - channel2: Second channel to bridge (mention, ID, or name)
-        
-        Example:
-        - `[p]bridge setup #general #announcements`
-        - `[p]bridge setup 123456789 987654321`
-        
-        The bot will create webhooks in both channels and start relaying
-        messages between them. Both channels can be on different servers.
-        """
-        if isinstance(channel1, str) and channel1.isdigit():
-            channel1 = self.bot.get_channel(int(channel1))
-        elif isinstance(channel1, int):
-            channel1 = self.bot.get_channel(channel1)
+            if message.stickers:
+                for sticker in message.stickers:
+                    content += f"\n[Sticker: {sticker.name}]({sticker.url})"
 
-        if isinstance(channel2, str) and channel2.isdigit():
-            channel2 = self.bot.get_channel(int(channel2))
-        elif isinstance(channel2, int):
-            channel2 = self.bot.get_channel(channel2)
+            for attachment in message.attachments:
+                content += f"\n📎 [{attachment.filename}]({attachment.url})"
 
-        if not channel1:
-            return await ctx.send(
-                "❌ First channel not found! Make sure the bot has access to it, along with webhook perms."
-            )
-        if not channel2:
-            return await ctx.send(
-                "❌ Second channel not found! Make sure the bot has access to it, along with webhook perms."
-            )
-
-        if not isinstance(channel1, discord.TextChannel):
-            return await ctx.send("❌ First channel must be a text channel!")
-        if not isinstance(channel2, discord.TextChannel):
-            return await ctx.send("❌ Second channel must be a text channel!")
-        if channel1.id == channel2.id:
-            return await ctx.send("❌ Cannot bridge a channel to itself!")
-
-        bridges = await self.config.bridges()
-        for bridge_id, bridge_data in bridges.items():
-            if channel1.id in [
-                bridge_data.get("channel1"),
-                bridge_data.get("channel2"),
-            ] or channel2.id in [
-                bridge_data.get("channel1"),
-                bridge_data.get("channel2"),
-            ]:
-                return await ctx.send(
-                    f"❌ One of these channels is already part of bridge #{bridge_id}"
+            try:
+                await webhook.send(
+                    content=content,
+                    username=message.author.display_name,
+                    avatar_url=message.author.display_avatar.url,
                 )
-
-        webhook1 = await self._get_or_create_webhook(channel1)
-        webhook2 = await self._get_or_create_webhook(channel2)
-
-        if not webhook1:
-            return await ctx.send(
-                f"❌ Failed to create webhook in {channel1.mention}. Check bot permissions."
-            )
-        if not webhook2:
-            return await ctx.send(
-                f"❌ Failed to create webhook in {channel2.mention}. Check bot permissions."
-            )
-
-        bridge_id = await self.config.next_bridge_id()
-
-        bridge_data = {
-            "channel1": channel1.id,
-            "channel2": channel2.id,
-            "webhook1": webhook1.url,
-            "webhook2": webhook2.url,
-            "created_by": ctx.author.id,
-            "channel1_name": f"{channel1.guild.name}#{channel1.name}",
-            "channel2_name": f"{channel2.guild.name}#{channel2.name}",
-        }
-
-        async with self.config.bridges() as bridges:
-            bridges[str(bridge_id)] = bridge_data
-
-        await self.config.next_bridge_id.set(bridge_id + 1)
-
-        cache_key1 = self._get_webhook_cache_key(bridge_id, True)
-        cache_key2 = self._get_webhook_cache_key(bridge_id, False)
-        self.webhook_cache[cache_key1] = webhook1
-        self.webhook_cache[cache_key2] = webhook2
-
-        embed = discord.Embed(
-            title="✅ Bridge Created",
-            description=f"Bridge #{bridge_id} established between:\n"
-            f"📍 {channel1.mention} ({channel1.guild.name})\n"
-            f"📍 {channel2.mention} ({channel2.guild.name})",
-            color=discord.Color.green(),
-        )
-
-        await ctx.send(embed=embed)
-
-    @bridge.command(name="list")
-    async def bridge_list(self, ctx):
-        """
-        Show all active bridges.
-        
-        Displays a list of all currently active bridges with:
-        - Bridge ID numbers
-        - Channel names and server information
-        - Status of each channel (accessible or not)
-        
-        Use the bridge IDs shown here with the remove command.
-        """
-        bridges = await self.config.bridges()
-
-        if not bridges:
-            return await ctx.send("No active bridges found.")
-
-        embed = discord.Embed(title="Active Bridges", color=discord.Color.blue())
-
-        for bridge_id, bridge_data in bridges.items():
-            channel1 = self.bot.get_channel(bridge_data.get("channel1"))
-            channel2 = self.bot.get_channel(bridge_data.get("channel2"))
-
-            channel1_info = (
-                f"{channel1.mention} ({channel1.guild.name})"
-                if channel1
-                else f"❌ {bridge_data.get('channel1_name', 'Unknown')}"
-            )
-            channel2_info = (
-                f"{channel2.mention} ({channel2.guild.name})"
-                if channel2
-                else f"❌ {bridge_data.get('channel2_name', 'Unknown')}"
-            )
-
-            embed.add_field(
-                name=f"Bridge #{bridge_id}",
-                value=f"{channel1_info}\n⬆️⬇️\n{channel2_info}",
-                inline=False,
-            )
-
-        await ctx.send(embed=embed)
-
-    @bridge.command(name="remove", aliases=["delete", "rm"])
-    async def bridge_remove(self, ctx, bridge_id: int):
-        """
-        Remove an active bridge.
-        
-        Parameters:
-        - bridge_id: The ID number of the bridge to remove
-        
-        Example:
-        - `[p]bridge remove 1`
-        - `[p]bridge delete 2`
-        
-        This will stop message relaying between the bridged channels.
-        Note: The webhooks may still exist in the channels but will
-        no longer be used by the bridge.
-        
-        Use `[p]bridge list` to see bridge IDs.
-        """
-        bridges = await self.config.bridges()
-
-        if str(bridge_id) not in bridges:
-            return await ctx.send(f"❌ Bridge #{bridge_id} not found.")
-
-        bridge_data = bridges[str(bridge_id)]
-
-        cache_key1 = self._get_webhook_cache_key(bridge_id, True)
-        cache_key2 = self._get_webhook_cache_key(bridge_id, False)
-        self.webhook_cache.pop(cache_key1, None)
-        self.webhook_cache.pop(cache_key2, None)
-
-        async with self.config.bridges() as bridges:
-            del bridges[str(bridge_id)]
-
-        embed = discord.Embed(
-            title="✅ Bridge Removed",
-            description=f"Bridge #{bridge_id} has been removed.\n"
-            f"Webhooks may still exist in the channels.",
-            color=discord.Color.red(),
-        )
-
-        await ctx.send(embed=embed)
+            except Exception as e:
+                self.logger.error("Failed to send message through webhook: %s", e)
