@@ -1,0 +1,9 @@
+{
+    "name": "Sabby",
+    "short": "Routes Red bot mentions to Sabby (OpenClaw AI)",
+    "description": "Forwards owner mentions to Sabby OpenClaw webhook.",
+    "author": ["Sablinova"],
+    "hidden": false,
+    "disabled": false,
+    "min_bot_permissions": ["send_messages", "add_reactions"]
+}
