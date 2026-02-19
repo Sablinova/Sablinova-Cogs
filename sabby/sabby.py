@@ -1,11 +1,13 @@
 import discord
-from redbot.core import commands
+from redbot.core import commands, Config
+from aiohttp import web
 import aiohttp
 import logging
+import asyncio
 
-# Configuration
+# Configuration Defaults
+DEFAULT_PORT = 5000
 OWNER_ID = 426878496468500493
-# Switch to the /hooks/wake endpoint for main-session injection
 OPENCLAW_HOOK_URL = "https://hooks.2b.sablinova.com/hooks/wake"
 OPENCLAW_HOOK_TOKEN = "b1c7d2aa6977e410eead37f21daaca39f38355f44e5a8bcff089e4a22dc156cf"
 
@@ -13,15 +15,88 @@ log = logging.getLogger("red.sablinova.sabby")
 
 class Sabby(commands.Cog):
     """
-    Routes mentions from Sol to Sabby (OpenClaw AI) and posts replies back.
+    Two-way bridge between Sol and Sabby (OpenClaw AI).
+    - Listens for mentions -> forwards to Sabby.
+    - Runs a webserver -> listens for replies/commands from Sabby.
     """
 
     def __init__(self, bot):
         self.bot = bot
+        self.config = Config.get_conf(self, identifier=4268784964, force_registration=True)
+        self.config.register_global(port=DEFAULT_PORT, openclaw_url=OPENCLAW_HOOK_URL, token=OPENCLAW_HOOK_TOKEN)
         self.session = aiohttp.ClientSession()
+        
+        # Webserver setup
+        self.app = web.Application()
+        self.app.router.add_post("/reply", self.handle_reply)
+        self.runner = None
+        self.site = None
+        
+        # Start server loop
+        self.bot.loop.create_task(self.start_server())
 
     def cog_unload(self):
+        self.bot.loop.create_task(self.stop_server())
         self.bot.loop.create_task(self.session.close())
+
+    async def start_server(self):
+        port = await self.config.port()
+        self.runner = web.AppRunner(self.app)
+        await self.runner.setup()
+        self.site = web.TCPSite(self.runner, "0.0.0.0", port)
+        await self.site.start()
+        log.info(f"Sabby Bridge listening on 0.0.0.0:{port}")
+
+    async def stop_server(self):
+        if self.site:
+            await self.site.stop()
+        if self.runner:
+            await self.runner.cleanup()
+
+    async def handle_reply(self, request):
+        """
+        Handle incoming POST from Sabby (OpenClaw).
+        Payload: { "channel_id": <int>, "content": <str>, "command": <bool> }
+        """
+        try:
+            data = await request.json()
+            channel_id = int(data.get("channel_id", 0))
+            content = data.get("content", "")
+            is_command = data.get("command", False)
+
+            if not channel_id or not content:
+                return web.Response(text="Missing channel_id or content", status=400)
+
+            channel = self.bot.get_channel(channel_id)
+            if not channel:
+                return web.Response(text="Channel not found", status=404)
+
+            if is_command:
+                # Execute as a command (simple text sending for now, but could be ctx.invoke)
+                # For safety, we just send the text, but if it starts with prefix, Red might ignore bot messages.
+                # To truly execute commands, we need to mock a context.
+                # For now, let's just send the message.
+                await channel.send(content)
+            else:
+                # Just a normal reply
+                await channel.send(content)
+
+            return web.Response(text="OK", status=200)
+
+        except Exception as e:
+            log.error(f"Failed to handle Sabby reply: {e}", exc_info=True)
+            return web.Response(text=str(e), status=500)
+
+    @commands.group()
+    async def sabbyconf(self, ctx):
+        """Configure Sabby bridge settings."""
+        pass
+
+    @sabbyconf.command()
+    async def port(self, ctx, port: int):
+        """Set the port for the incoming webserver (Default: 5000)."""
+        await self.config.port.set(port)
+        await ctx.send(f"Port set to {port}. Reload cog to apply.")
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -38,13 +113,10 @@ class Sabby(commands.Cog):
         if not content:
             content = "Hello Sabby"
 
-        log.info(f"Sabby triggered by {message.author}: {content}")
-
-        # Send to OpenClaw /hooks/wake (Main Session Injection)
+        # Construct payload for OpenClaw /hooks/wake
         channel_id = str(message.channel.id)
         
-        # We format the text so Sabby knows where to reply
-        # Context: [RedBot Relay] ChannelID: <id> | User: <name> | Message: <content>
+        # We include the Red Bot's own IP/Port hint if needed, but for now we rely on known static IP
         formatted_text = f"[RedBot Relay] ChannelID: {channel_id} | User: {message.author.name} | Message: {content}"
 
         payload = {
@@ -53,23 +125,21 @@ class Sabby(commands.Cog):
         }
 
         headers = {
-            "Authorization": f"Bearer {OPENCLAW_HOOK_TOKEN}",
+            "Authorization": f"Bearer {await self.config.token()}",
             "Content-Type": "application/json"
         }
 
         try:
-            async with self.session.post(OPENCLAW_HOOK_URL, json=payload, headers=headers) as resp:
+            url = await self.config.openclaw_url()
+            async with self.session.post(url, json=payload, headers=headers) as resp:
                 if resp.status != 200:
-                    response_text = await resp.text()
-                    log.error(f"Sabby wake failed: {resp.status} - {response_text}")
+                    log.error(f"Sabby wake failed: {resp.status}")
                     await message.add_reaction("⚠️")
                 else:
-                    # Success: Sabby's main brain received the event.
-                    # She will see the system log and should proactively reply.
                     await message.add_reaction("🧠")
 
         except Exception as e:
-            log.error(f"Sabby connection error: {e}", exc_info=True)
+            log.error(f"Sabby connection error: {e}")
             await message.add_reaction("❌")
 
 async def setup(bot):
