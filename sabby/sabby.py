@@ -34,6 +34,7 @@ class Sabby(commands.Cog):
 
         # 3. Only respond to the owner (whitelist)
         if message.author.id != OWNER_ID:
+            log.debug(f"Sabby ignored message from {message.author.id} (not owner)")
             return
 
         # 4. Prepare content (strip mention)
@@ -42,6 +43,8 @@ class Sabby(commands.Cog):
         # If empty (just a ping), use a default greeting or context
         if not content:
             content = "Hello Sabby"
+
+        log.info(f"Sabby triggered by {message.author}: {content}")
 
         # 5. Send to OpenClaw Webhook
         channel_id = str(message.channel.id)
@@ -62,19 +65,21 @@ class Sabby(commands.Cog):
         }
 
         try:
+            log.debug(f"Posting to {OPENCLAW_HOOK_URL} with payload: {payload}")
             async with self.session.post(OPENCLAW_HOOK_URL, json=payload, headers=headers) as resp:
+                response_text = await resp.text()
                 if resp.status not in (200, 202):
-                    log.error(f"Sabby hook failed: {resp.status} - {await resp.text()}")
+                    log.error(f"Sabby hook failed: {resp.status} - {response_text}")
                     await message.add_reaction("⚠️")
+                    await message.channel.send(f"⚠️ **Sabby Error:** HTTP {resp.status}\n`{response_text}`")
                 else:
-                    # Success: OpenClaw received it. 
-                    # OpenClaw will reply directly to the channel via its own Discord integration.
-                    # We just react to acknowledge receipt.
+                    log.info(f"Sabby hook success: {resp.status}")
                     await message.add_reaction("👀")
 
         except Exception as e:
-            log.error(f"Sabby hook exception: {e}")
+            log.error(f"Sabby hook exception: {e}", exc_info=True)
             await message.add_reaction("❌")
+            await message.channel.send(f"⚠️ **Sabby Connection Error:** {e}")
 
 async def setup(bot):
     await bot.add_cog(Sabby(bot))
