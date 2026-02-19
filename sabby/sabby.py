@@ -23,7 +23,12 @@ class Sabby(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=4268784964, force_registration=True)
-        self.config.register_global(port=DEFAULT_PORT, openclaw_url=OPENCLAW_HOOK_URL, token=OPENCLAW_HOOK_TOKEN)
+        self.config.register_global(
+            port=DEFAULT_PORT, 
+            openclaw_url=OPENCLAW_HOOK_URL, 
+            token=OPENCLAW_HOOK_TOKEN,
+            public_url=None
+        )
         self.session = aiohttp.ClientSession()
         
         # Webserver setup
@@ -98,6 +103,12 @@ class Sabby(commands.Cog):
         await self.config.port.set(port)
         await ctx.send(f"Port set to {port}. Reload cog to apply.")
 
+    @sabbyconf.command()
+    async def url(self, ctx, url: str):
+        """Set the public URL that Sabby should reply to (e.g. https://sabby.sablinova.com/reply)."""
+        await self.config.public_url.set(url)
+        await ctx.send(f"Reply URL set to: `{url}`")
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot:
@@ -115,9 +126,13 @@ class Sabby(commands.Cog):
 
         # Construct payload for OpenClaw /hooks/wake
         channel_id = str(message.channel.id)
+        public_url = await self.config.public_url()
         
-        # We include the Red Bot's own IP/Port hint if needed, but for now we rely on known static IP
+        # Format the system event text
         formatted_text = f"[RedBot Relay] ChannelID: {channel_id} | User: {message.author.name} | Message: {content}"
+        
+        if public_url:
+            formatted_text += f" | ReplyURL: {public_url}"
 
         payload = {
             "text": formatted_text,
