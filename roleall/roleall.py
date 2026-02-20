@@ -9,7 +9,7 @@ class RoleAll(commands.Cog):
         self.bot = bot
 
     @commands.command()
-    @checks.admin_or_permissions(manage_roles=True)
+    @checks.admin_or_permissions(administrator=True)
     @commands.bot_has_permissions(manage_roles=True)
     async def roleall(self, ctx, role: discord.Role):
         """
