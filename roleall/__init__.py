@@ -1,0 +1,1 @@
+from .roleall import setup

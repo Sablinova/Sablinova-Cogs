@@ -1,0 +1,9 @@
+{
+    "name": "RoleAll",
+    "short": "Give a role to all members",
+    "description": "Mass-assign a specific role to every member in the server.",
+    "author": ["Sablinova"],
+    "hidden": false,
+    "disabled": false,
+    "min_bot_permissions": ["manage_roles"]
+}
