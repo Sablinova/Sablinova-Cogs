@@ -1,5 +1,6 @@
 import discord
-from redbot.core import commands, Config, tasks
+from redbot.core import commands, Config
+from discord.ext import tasks
 import aiohttp
 import logging
 import datetime
@@ -15,7 +16,7 @@ class TidbStats(commands.Cog):
             message_id=None,
             enabled=False,
             url="https://api.theintrodb.org/v2/stats",
-            logo="https://cdn-icons-png.flaticon.com/512/2906/2906274.png"
+            logo="https://cdn.discordapp.com/icons/1457550295742812307/a0259221faeb0133e43760697573577a.webp?format=webp&width=60&height=60"
         )
         self.session = aiohttp.ClientSession()
         self.update_stats.start()
