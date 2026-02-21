@@ -49,7 +49,7 @@ class TidbStats(commands.Cog):
         embed = discord.Embed(title="TIDB Stats", color=0x00FF00) # Green for Online
         embed.set_thumbnail(url=logo_url) 
         
-        embed.add_field(name="TIDB API", value=f"❌ **Failed:** {failed}\n✅ **Succeeded:** {succeeded}\n📊 **Total:** {total}\n📡 **Status:** 🟢 Online", inline=False)
+        embed.add_field(name="TIDB API", value=f"🚫 **Unaccepted:** {failed}\n✅ **Accepted Timestamps:** {succeeded}\n🗃️ **Total Submissions:** {total}\n📡 **Status:** 🟢 Online", inline=False)
         
         embed.set_footer(text=f"Last Checked: {timestamp}")
         return embed
