@@ -5,6 +5,7 @@ import contextlib
 import json
 import re
 import aiohttp
+import logging
 
 from redbot.cogs.downloader import errors
 from redbot.cogs.downloader.converters import InstalledCog
@@ -22,6 +23,7 @@ class Backup(commands.Cog):
 
     def __init__(self, bot):
         self.bot = bot
+        self.logger = logging.getLogger("red.sablinova.backup")
 
     async def send_error(self, ctx, content):
         """Internal helper to replace tidegear.utils.send_error"""
