@@ -16,7 +16,8 @@ class TidbStats(commands.Cog):
             message_id=None,
             enabled=False,
             url="https://api.theintrodb.org/v2/stats",
-            logo="https://cdn.discordapp.com/icons/1457550295742812307/a0259221faeb0133e43760697573577a.webp?format=webp&width=60&height=60"
+            logo="https://cdn.discordapp.com/icons/1457550295742812307/a0259221faeb0133e43760697573577a.webp?format=webp&width=60&height=60",
+            tmdb_api_key="a416278866ffc1357efc0369047cc736"
         )
         self.session = aiohttp.ClientSession()
         self.update_stats.start()
@@ -34,27 +35,81 @@ class TidbStats(commands.Cog):
             logging.error(f"TIDB Fetch Error: {e}")
         return None
 
-    def create_embed(self, data, logo_url):
-        # Mapping:
-        # Succeeded = accepted_timestamps
-        # Total = total_submissions
-        # Failed = Total - Succeeded
-        
-        succeeded = data.get("accepted_timestamps", 0)
-        total = data.get("total_submissions", 0)
-        failed = total - succeeded
-        
-        timestamp = datetime.datetime.now().strftime("%A, %B %d, %Y at %I:%M %p")
+    async def fetch_tmdb_name(self, tmdb_id, media_type, api_key):
+        """Fetch the name of a show/movie from TMDB."""
+        if not api_key:
+            return f"TMDB ID: {tmdb_id}"
+            
+        url = f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}?api_key={api_key}"
+        try:
+            async with self.session.get(url) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    # Return 'name' for TV, 'title' for movie
+                    return data.get("name") or data.get("title") or f"TMDB ID: {tmdb_id}"
+        except Exception as e:
+            logging.error(f"TMDB Fetch Error for {tmdb_id}: {e}")
+        return f"TMDB ID: {tmdb_id}"
 
-        embed = discord.Embed(title="TIDB Stats", color=0x00FF00) # Green for Online
-        embed.set_thumbnail(url=logo_url) 
+    async def create_embed(self, data, logo_url, api_key):
+        # Stats
+        succeeded = data.get("accepted_timestamps", 0)
+        total_submissions = data.get("total_submissions", 0)
+        failed = total_submissions - succeeded
         
-        embed.add_field(name="TIDB API", value=f"🚫 **Unaccepted:** {failed}\n✅ **Accepted Timestamps:** {succeeded}\n🗃️ **Total Submissions:** {total}\n📡 **Status:** 🟢 Online", inline=False)
+        contributors = data.get("contributors", 0)
+        total_shows = data.get("total_shows", 0)
+        total_movies = data.get("total_movies", 0)
+        total_episodes = data.get("total_episodes", 0)
         
-        embed.set_footer(text=f"Last Checked: {timestamp}")
+        # Time saved calculation
+        ms_saved = data.get("total_time_saved_ms", 0)
+        # ms -> seconds -> minutes -> hours
+        hours_saved = int(ms_saved / (1000 * 60 * 60))
+        
+        timestamp = int(datetime.datetime.now().timestamp())
+
+        embed = discord.Embed(title="TIDB Stats", color=0x00FF00)
+        embed.set_thumbnail(url=logo_url)
+        
+        # Main Stats Block
+        stats_text = (
+            f"🚫 **Unaccepted:** {failed:,}\n"
+            f"✅ **Accepted Timestamps:** {succeeded:,}\n"
+            f"🗃️ **Total Submissions:** {total_submissions:,}\n"
+            f"📡 **Status:** 🟢 Online"
+        )
+        embed.add_field(name="TIDB API", value=stats_text, inline=False)
+        
+        # Database Growth Block
+        growth_text = (
+            f"👥 **Contributors:** {contributors}\n"
+            f"📺 **Shows:** {total_shows}\n"
+            f"🎬 **Movies:** {total_movies}\n"
+            f"🎞️ **Episodes:** {total_episodes:,}\n"
+            f"⏳ **Time Saved:** {hours_saved:,} hours"
+        )
+        embed.add_field(name="Database Growth", value=growth_text, inline=False)
+
+        # Top Media Block
+        top_media = data.get("top_media", [])
+        if top_media:
+            top_list = []
+            for i, item in enumerate(top_media[:6], 1): # Top 6
+                name = await self.fetch_tmdb_name(item['tmdb_id'], item['type'], api_key)
+                count = item.get('submissions', 0)
+                top_list.append(f"**{i}. {name}** — {count:,} submissions")
+            
+            embed.add_field(name="Top Contributing Media", value="\n".join(top_list), inline=False)
+        
+        embed.set_footer(text=f"Last Checked:")
+        embed.timestamp = datetime.datetime.now() # This adds the ISO timestamp for the footer
+        # Alternatively, use description for a relative time string:
+        # embed.description = f"Last updated: <t:{timestamp}:R>"
+        
         return embed
 
-    @tasks.loop(minutes=5)
+    @tasks.loop(hours=1)
     async def update_stats(self):
         for guild in self.bot.guilds:
             settings = await self.config.guild(guild).all()
@@ -69,7 +124,7 @@ class TidbStats(commands.Cog):
             if not data:
                 continue
 
-            embed = self.create_embed(data, settings["logo"])
+            embed = await self.create_embed(data, settings["logo"], settings["tmdb_api_key"])
 
             # Try editing existing message
             if settings["message_id"]:
@@ -124,6 +179,13 @@ class TidbStats(commands.Cog):
         """Set the logo URL for the embed."""
         await self.config.guild(ctx.guild).logo.set(url)
         await ctx.send(f"✅ Logo updated. It will appear on the next refresh.")
+        await self.update_stats()
+
+    @tidbstats.command()
+    async def tmdbkey(self, ctx, key: str):
+        """Set the TMDB API key."""
+        await self.config.guild(ctx.guild).tmdb_api_key.set(key)
+        await ctx.send("✅ TMDB API Key updated.")
         await self.update_stats()
 
     @tidbstats.command()
