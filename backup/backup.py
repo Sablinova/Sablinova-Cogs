@@ -4,6 +4,7 @@
 import contextlib
 import json
 import re
+import aiohttp
 
 from redbot.cogs.downloader import errors
 from redbot.cogs.downloader.converters import InstalledCog
@@ -76,16 +77,42 @@ class Backup(commands.Cog):
     @backup.command(name="import")
     @commands.is_owner()
     @commands.bot_has_permissions(attach_files=True)
-    async def backup_import(self, ctx: commands.Context) -> None:
-        """Import your installed repositories and cogs from an export file."""
+    async def backup_import(self, ctx: commands.Context, url: str = None) -> None:
+        """Import your installed repositories and cogs from an export file or URL."""
+        content = None
+        
+        # 1. Try URL if provided
+        if url:
+            async with aiohttp.ClientSession() as session:
+                try:
+                    async with session.get(url) as response:
+                        if response.status != 200:
+                            await self.send_error(ctx, content=f"Failed to download from URL: HTTP {response.status}")
+                            return
+                        content = await response.read()
+                except Exception as e:
+                    await self.send_error(ctx, content=f"Download failed: {e}")
+                    return
+
+        # 2. Try Attachments (Current Message)
+        elif ctx.message.attachments:
+            content = await ctx.message.attachments[0].read()
+
+        # 3. Try Attachments (Replied Message)
+        elif ctx.message.reference and ctx.message.reference.resolved:
+            resolved = ctx.message.reference.resolved
+            if resolved.attachments:
+                content = await resolved.attachments[0].read()
+
+        if not content:
+            await self.send_error(ctx, content="Please provide a JSON export file via **attachment** or **URL**.")
+            return
+
         try:
-            export = json.loads(await ctx.message.attachments[0].read())
-        except (json.JSONDecodeError, IndexError):
-            try:
-                export = json.loads(await ctx.message.reference.resolved.attachments[0].read())  # type: ignore - this is fine to let error because it gets handled
-            except (json.JSONDecodeError, IndexError, AttributeError):
-                await self.send_error(ctx, content="Please provide a valid JSON export file.")
-                return
+            export = json.loads(content)
+        except json.JSONDecodeError:
+            await self.send_error(ctx, content="Invalid JSON format in the provided file.")
+            return
 
         downloader = ctx.bot.get_cog("Downloader")
         if downloader is None:
