@@ -9,15 +9,22 @@ from redbot.cogs.downloader import errors
 from redbot.cogs.downloader.converters import InstalledCog
 from redbot.core import commands
 from redbot.core.utils import chat_formatting as cf
-from tidegear import Cog
-from tidegear.utils import send_error
+# from tidegear import Cog
+# from tidegear.utils import send_error
 
 
 # Disable Ruff complaining about accessing private members
 # That's kind of necessary for this cog to function because the Downloader cog has a limited public API
 # ruff: noqa: SLF001 # Private member access
-class Backup(Cog):
+class Backup(commands.Cog):
     """A utility to make reinstalling repositories and cogs after migrating the bot far easier."""
+
+    def __init__(self, bot):
+        self.bot = bot
+
+    async def send_error(self, ctx, content):
+        """Internal helper to replace tidegear.utils.send_error"""
+        await ctx.send(f"❌ **Error:** {content}")
 
     @commands.group(autohelp=True)  # pyright: ignore[reportArgumentType]
     @commands.is_owner()
@@ -31,7 +38,7 @@ class Backup(Cog):
         """Export your installed repositories and cogs to a file."""
         downloader = ctx.bot.get_cog("Downloader")
         if downloader is None:
-            await send_error(
+            await self.send_error(
                 ctx, content=f"You do not have the `Downloader` cog loaded. Please run `{ctx.clean_prefix}load downloader` and try again."
             )
             return
@@ -77,12 +84,12 @@ class Backup(Cog):
             try:
                 export = json.loads(await ctx.message.reference.resolved.attachments[0].read())  # type: ignore - this is fine to let error because it gets handled
             except (json.JSONDecodeError, IndexError, AttributeError):
-                await send_error(ctx, content="Please provide a valid JSON export file.")
+                await self.send_error(ctx, content="Please provide a valid JSON export file.")
                 return
 
         downloader = ctx.bot.get_cog("Downloader")
         if downloader is None:
-            await send_error(
+            await self.send_error(
                 ctx, content=f"You do not have the `Downloader` cog loaded. Please run `{ctx.clean_prefix}load downloader` and try again."
             )
             return
