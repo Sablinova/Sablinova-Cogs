@@ -1,0 +1,1 @@
+from .tidbstats import setup

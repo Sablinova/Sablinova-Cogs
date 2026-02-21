@@ -1,0 +1,9 @@
+{
+    "name": "TidbStats",
+    "short": "Live stats from The Intro Database API",
+    "description": "Displays live statistics (Failed/Succeeded/Total) from TIDB API in an auto-updating embed.",
+    "author": ["Sablinova"],
+    "hidden": false,
+    "disabled": false,
+    "min_bot_permissions": ["send_messages", "embed_links"]
+}
