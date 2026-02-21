@@ -14,7 +14,8 @@ class TidbStats(commands.Cog):
             channel_id=None,
             message_id=None,
             enabled=False,
-            url="https://api.theintrodb.org/v2/stats"
+            url="https://api.theintrodb.org/v2/stats",
+            logo="https://cdn-icons-png.flaticon.com/512/2906/2906274.png"
         )
         self.session = aiohttp.ClientSession()
         self.update_stats.start()
@@ -32,7 +33,7 @@ class TidbStats(commands.Cog):
             logging.error(f"TIDB Fetch Error: {e}")
         return None
 
-    def create_embed(self, data):
+    def create_embed(self, data, logo_url):
         # Mapping:
         # Succeeded = accepted_timestamps
         # Total = total_submissions
@@ -45,8 +46,7 @@ class TidbStats(commands.Cog):
         timestamp = datetime.datetime.now().strftime("%A, %B %d, %Y at %I:%M %p")
 
         embed = discord.Embed(title="TIDB Stats", color=0x00FF00) # Green for Online
-        # Logo (Generic DB icon for now, user can request change)
-        embed.set_thumbnail(url="https://cdn-icons-png.flaticon.com/512/2906/2906274.png") 
+        embed.set_thumbnail(url=logo_url) 
         
         embed.add_field(name="TIDB API", value=f"❌ **Failed:** {failed}\n✅ **Succeeded:** {succeeded}\n📊 **Total:** {total}\n📡 **Status:** 🟢 Online", inline=False)
         
@@ -68,7 +68,7 @@ class TidbStats(commands.Cog):
             if not data:
                 continue
 
-            embed = self.create_embed(data)
+            embed = self.create_embed(data, settings["logo"])
 
             # Try editing existing message
             if settings["message_id"]:
@@ -117,6 +117,13 @@ class TidbStats(commands.Cog):
         """Disable auto-updates."""
         await self.config.guild(ctx.guild).enabled.set(False)
         await ctx.send("❌ Auto-updates disabled.")
+
+    @tidbstats.command()
+    async def logo(self, ctx, url: str):
+        """Set the logo URL for the embed."""
+        await self.config.guild(ctx.guild).logo.set(url)
+        await ctx.send(f"✅ Logo updated. It will appear on the next refresh.")
+        await self.update_stats()
 
     @tidbstats.command()
     async def refresh(self, ctx):
