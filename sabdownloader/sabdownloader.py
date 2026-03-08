@@ -461,6 +461,15 @@ def _ytdlp_download(
                 "Chrome/120.0.0.0 Safari/537.36"
             ),
         },
+        # Enable JS runtimes for YouTube signature/n-challenge solving.
+        # yt-dlp defaults to only 'deno' if js_runtimes is not set.
+        # We need 'node' since that's what's installed on the VPS.
+        "js_runtimes": {
+            "node": {},
+            "deno": {},
+            "bun": {},
+            "quickjs": {},
+        },
     }
 
     if cookies_file:
