@@ -1,0 +1,1 @@
+from .sabdownloader import setup

@@ -1,0 +1,139 @@
+# SabDownloader
+
+A [Red-DiscordBot](https://github.com/Cog-Creators/Red-DiscordBot) v3 cog that downloads media from Instagram, TikTok, YouTube, Twitter/X, Reddit, and 1000+ other sites, then uploads directly to Discord.
+
+Uses gallery-dl and yt-dlp as download backends. Large videos are automatically compressed with ffmpeg to fit Discord's upload limits. Files that still exceed the limit are uploaded to AnonDrop.net as a fallback.
+
+## Installation
+
+```
+[p]repo add sablinova-cogs https://github.com/Sablinova/Sablinova-Cogs
+[p]cog install sablinova-cogs sabdownloader
+[p]load sabdownloader
+```
+
+**System requirement:** ffmpeg must be installed on the host system for video compression.
+
+## Quick Start
+
+Download media from any supported URL:
+
+```
+[p]dl https://www.youtube.com/watch?v=dQw4w9WgXcQ
+```
+
+Extract audio as MP3:
+
+```
+[p]dl audio https://www.youtube.com/watch?v=dQw4w9WgXcQ
+```
+
+## How It Works
+
+1. User posts `[p]dl <url>` in a channel.
+2. The cog validates the URL (checks scheme, SSRF prevention, cooldown, channel restrictions).
+3. A progress bar message is sent and updated throughout the process.
+4. The URL is downloaded using gallery-dl first (better for images, Instagram, Twitter). If that fails, yt-dlp is tried (better for YouTube, Reddit, video in general).
+5. If the file fits Discord's upload limit, it is uploaded directly.
+6. If the file is too large and is a video, it is compressed with ffmpeg (two-pass libx264 encoding).
+7. If compression is insufficient or the file is not a video, it is uploaded to AnonDrop.net and the link is posted.
+8. The user's command message and the progress message are cleaned up.
+9. The download is logged to Red's modlog.
+
+## Supported Platforms
+
+gallery-dl and yt-dlp together support over 1000 sites. Some highlights:
+
+| Platform | Best Backend | Notes |
+|----------|-------------|-------|
+| Instagram | gallery-dl | Reels, carousels, stories. Requires cookies. |
+| Twitter/X | gallery-dl | Images and video. |
+| YouTube | yt-dlp | All formats, playlists disabled by default. |
+| TikTok | yt-dlp | Single videos. |
+| Reddit | yt-dlp | Muxes separate video+audio DASH streams. |
+| Facebook | yt-dlp | Public videos. |
+| Twitch | yt-dlp | Clips. |
+
+## Commands
+
+### Download (Everyone)
+
+| Command | Description |
+|---------|-------------|
+| `[p]dl <url>` | Download media from a URL and upload to Discord. |
+| `[p]dl audio <url>` | Extract audio from a URL as MP3. |
+
+### Configuration (Admin / manage_guild)
+
+All configuration commands are under `[p]sabdownloader` (alias: `[p]sabdl`).
+
+| Command | Description |
+|---------|-------------|
+| `settings` | Display all current settings. |
+| `toggle` | Enable or disable SabDownloader for this server. |
+| `maxduration <seconds>` | Set maximum allowed video duration (default: 600s). |
+| `cooldown <seconds>` | Set per-user cooldown (default: 30s). |
+| `deletecommand` | Toggle deletion of the user's command message after download. |
+| `allowedchannels add <channel>` | Restrict downloads to specific channels. |
+| `allowedchannels remove <channel>` | Remove a channel from the allowed list. |
+| `anondrop toggle` | Enable or disable AnonDrop fallback for oversized files. |
+
+### Bot Owner
+
+| Command | Description |
+|---------|-------------|
+| `cookies <path>` | Set path to a Netscape cookies.txt file (needed for Instagram). |
+| `maxconcurrent <count>` | Set maximum concurrent downloads (1-10, default: 3). |
+
+## File Size Handling
+
+Discord upload limits vary by server boost tier:
+
+| Boost Tier | Limit |
+|------------|-------|
+| None / 0 / 1 | 10 MB |
+| 2 | 50 MB |
+| 3 | 100 MB |
+
+When a file exceeds the limit:
+
+1. **Video files** are compressed with ffmpeg two-pass encoding. Resolution is scaled down if the target bitrate is too low (1080p to 720p to 480p).
+2. If compression is not enough, or the file is not a video, **AnonDrop.net** is used as a fallback file host.
+3. Admins can disable the AnonDrop fallback with `[p]sabdownloader anondrop toggle`.
+
+## Progress Bar
+
+A text-based progress bar is displayed in the channel while downloading:
+
+```
+Downloading... [████████░░░░░░░░░░░░] 40% | 3.2MB/8.0MB
+```
+
+- yt-dlp downloads show real percentage and size.
+- gallery-dl downloads show an indeterminate status (no progress callback available).
+- The bar updates every 3 seconds to avoid Discord rate limits.
+
+## Instagram Authentication
+
+Instagram requires login cookies for most content. To configure:
+
+1. Export cookies from a logged-in browser session using a cookie export extension (Netscape/cookies.txt format).
+2. Place the file on the bot's host system.
+3. Run: `[p]sabdownloader cookies /path/to/cookies.txt`
+
+Without cookies configured, Instagram URLs will show an error message directing the user to contact the bot owner.
+
+## Security
+
+- **SSRF prevention**: URLs pointing to private/reserved IP ranges (127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, etc.) are rejected.
+- **Disk exhaustion**: Downloads are capped at 3x the guild's file size limit. Temp files are cleaned up in all cases.
+- **CPU abuse**: Global concurrency semaphore, per-user cooldown, 5-minute ffmpeg timeout.
+- **No shell injection**: yt-dlp runs as a Python library, ffmpeg uses `create_subprocess_exec` (no shell).
+- **Cookies file**: Restricted to bot owner only, must be an existing file path.
+
+## Requirements
+
+- Red-DiscordBot >= 3.5.6
+- Python >= 3.9
+- ffmpeg installed on the host system
+- Pip dependencies installed automatically: `yt-dlp`, `gallery-dl`

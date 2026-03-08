@@ -1,0 +1,29 @@
+{
+    "$schema": "https://raw.githubusercontent.com/Cog-Creators/Red-DiscordBot/refs/heads/V3/develop/schema/red_cog.schema.json",
+    "author": [
+        "Sablinova"
+    ],
+    "install_msg": "Thank you for installing SabDownloader!\nUse `[p]dl <url>` to download media from supported platforms.\nRun `[p]sabdownloader settings` to view configuration.\nRequires ffmpeg installed on the system for video compression.",
+    "name": "SabDownloader",
+    "short": "Download media from Instagram, TikTok, YouTube, Twitter, and more.",
+    "description": "All-in-one media downloader for Discord. Downloads video, images, and audio from 1000+ sites using yt-dlp and gallery-dl. Compresses large videos with ffmpeg to fit Discord upload limits. Falls back to AnonDrop file hosting for oversized files.",
+    "end_user_data_statement": "This cog does not persistently store end user data. Download activity is logged to Red's modlog if enabled.",
+    "hidden": false,
+    "disabled": false,
+    "min_bot_version": "3.5.6",
+    "min_python_version": [3, 9, 0],
+    "requirements": [
+        "yt-dlp",
+        "gallery-dl"
+    ],
+    "tags": [
+        "media",
+        "downloader",
+        "youtube",
+        "instagram",
+        "tiktok",
+        "twitter",
+        "video",
+        "audio"
+    ]
+}
