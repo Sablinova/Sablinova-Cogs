@@ -409,6 +409,17 @@ def _ytdlp_download(
             f"duration <= {max_duration}"
         )
 
+    # YouTube-specific: use multiple player clients to work around PO Token
+    # requirements and 403 errors on datacenter IPs.
+    # - "default" works if a PO Token provider plugin is installed
+    # - "mweb" is the recommended client with PO Token plugin
+    # - "tv" does NOT require PO Tokens (fallback for VPS without plugin)
+    opts["extractor_args"] = {
+        "youtube": {
+            "player_client": ["default", "mweb", "tv"],
+        },
+    }
+
     if audio_only:
         opts["format"] = "bestaudio/best"
         opts["postprocessors"] = [
