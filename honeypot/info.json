@@ -1,0 +1,22 @@
+{
+    "$schema": "https://raw.githubusercontent.com/Cog-Creators/Red-DiscordBot/refs/heads/V3/develop/schema/red_cog.schema.json",
+    "author": [
+        "Sablinova"
+    ],
+    "install_msg": "Thank you for installing SabHoneypot!\nUse `[p]honeypot createchannel` or `[p]honeypot choosechannel` to get started.\nIf migrating from AAA3A's Honeypot, use `[p]honeypot migrate`.",
+    "name": "SabHoneypot",
+    "short": "Trap channel to catch self-bots and scammers.",
+    "description": "Creates a decoy channel at the top of your server to automatically detect and act on self-bots and scammers. Supports mute, kick (softban), ban, or log-only actions with full modlog integration. Includes migration from AAA3A's Honeypot cog.",
+    "end_user_data_statement": "This cog does not persistently store end user data. Detected messages are logged to a configured channel and Red's modlog.",
+    "hidden": false,
+    "disabled": false,
+    "min_bot_version": "3.5.6",
+    "min_python_version": [3, 9, 0],
+    "tags": [
+        "moderation",
+        "antispam",
+        "honeypot",
+        "security",
+        "selfbot-detection"
+    ]
+}
