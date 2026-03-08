@@ -12,14 +12,72 @@ When a user posts in the honeypot channel, their message is deleted and a config
 [p]load sabhoneypot
 ```
 
-## Quick Start
+## Getting Started
+
+### Automated Setup (Recommended for Beginners)
+
+Run the interactive setup wizard and follow the prompts:
 
 ```
-[p]sabhoneypot createchannel
-[p]sabhoneypot logchannel #mod-logs
-[p]sabhoneypot action ban
-[p]sabhoneypot enable
+[p]sabhoneypot setup
 ```
+
+The wizard walks you through each step:
+
+1. **Honeypot Channel** -- Type `create` to make a new trap channel, or mention an existing one (e.g. `#honeypot`).
+2. **Log Channel** -- Mention the channel where detection alerts should go (e.g. `#mod-logs`).
+3. **Action** -- Choose what happens when someone gets caught: `ban`, `kick`, `mute`, or `none`.
+4. **Mute Role** -- If you chose `mute`, mention the role to assign (e.g. `@Muted`). Otherwise this step is skipped.
+5. **Ping Role** -- Optionally mention a role to ping on each detection (e.g. `@Moderator`), or type `skip`.
+6. **Enable** -- Type `yes` to activate the trap immediately, or `no` to enable it later.
+
+You can type `cancel` at any point to abort the setup.
+
+### Manual Setup (Step by Step)
+
+If you prefer to configure each setting individually:
+
+1. **Create or choose a honeypot channel.**
+
+   Create a new one (placed at the top of the server):
+   ```
+   [p]sabhoneypot createchannel
+   ```
+   Or designate an existing channel:
+   ```
+   [p]sabhoneypot choosechannel #channel-name
+   ```
+
+2. **Set the log channel** where detection alerts will be sent:
+   ```
+   [p]sabhoneypot logchannel #mod-logs
+   ```
+
+3. **Set the action** to take when someone is caught:
+   ```
+   [p]sabhoneypot action ban
+   ```
+   Options: `ban`, `kick`, `mute`, or `none` (log-only).
+
+4. **If using mute**, set the mute role:
+   ```
+   [p]sabhoneypot muterole @Muted
+   ```
+
+5. **(Optional) Set a ping role** to notify staff on each detection:
+   ```
+   [p]sabhoneypot pingrole @Moderator
+   ```
+
+6. **Enable the trap:**
+   ```
+   [p]sabhoneypot enable
+   ```
+
+7. **Verify your settings:**
+   ```
+   [p]sabhoneypot settings
+   ```
 
 ## Actions
 
@@ -33,6 +91,12 @@ When a user posts in the honeypot channel, their message is deleted and a config
 ## Commands
 
 All commands are under `[p]sabhoneypot` and require `manage_guild` permission.
+
+### Setup
+
+| Command | Description |
+|---------|-------------|
+| `setup` | Interactive guided setup wizard. Walks you through full configuration step by step. |
 
 ### Channel Management
 

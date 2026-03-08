@@ -1,3 +1,5 @@
+import asyncio
+
 import discord
 from redbot.core import commands, Config, modlog
 import logging
@@ -80,6 +82,255 @@ class SabHoneypot(commands.Cog):
         """Manage the honeypot trap channel."""
         if ctx.invoked_subcommand is None:
             await ctx.send_help(ctx.command)
+
+    # ------------------------------------------------------------------
+    # Interactive setup wizard
+    # ------------------------------------------------------------------
+
+    @sabhoneypot.command(name="setup")
+    @commands.bot_has_guild_permissions(manage_channels=True, ban_members=True)
+    async def honeypot_setup(self, ctx):
+        """Interactive guided setup. Walks you through full configuration step by step."""
+        TIMEOUT = 60.0
+        cancelled_msg = "Setup cancelled."
+
+        def wait_check(m):
+            return m.author == ctx.author and m.channel == ctx.channel
+
+        async def ask(prompt: str) -> Optional[discord.Message]:
+            """Send a prompt and wait for a reply. Returns None if cancelled/timed out."""
+            await ctx.send(prompt)
+            try:
+                reply = await self.bot.wait_for(
+                    "message", check=wait_check, timeout=TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                await ctx.send(
+                    "Setup timed out. Run `sabhoneypot setup` to start over."
+                )
+                return None
+            if reply.content.lower() in ("cancel", "stop", "exit"):
+                await ctx.send(cancelled_msg)
+                return None
+            return reply
+
+        # --- Welcome ---
+        await ctx.send(
+            "**SabHoneypot Setup**\n"
+            "I'll walk you through configuring the honeypot step by step.\n"
+            "Type `cancel` at any point to abort.\n"
+            "\u2500" * 40
+        )
+
+        # --- Step 1: Honeypot Channel ---
+        reply = await ask(
+            "**Step 1/5 \u2014 Honeypot Channel**\n"
+            "Mention an existing channel (e.g. `#honeypot`) to use as the trap, "
+            "or type `create` to make a new one."
+        )
+        if reply is None:
+            return
+
+        honeypot_channel = None
+        created_channel = False
+        if reply.content.lower().strip() == "create":
+            # Create the channel (reuse createchannel logic)
+            overwrites = {
+                ctx.guild.me: discord.PermissionOverwrite(
+                    view_channel=True,
+                    read_messages=True,
+                    send_messages=True,
+                    manage_messages=True,
+                    manage_channels=True,
+                ),
+                ctx.guild.default_role: discord.PermissionOverwrite(
+                    view_channel=True,
+                    read_messages=True,
+                    send_messages=True,
+                ),
+            }
+            try:
+                honeypot_channel = await ctx.guild.create_text_channel(
+                    name="honeypot",
+                    overwrites=overwrites,
+                    position=0,
+                    reason="Honeypot trap channel — setup wizard",
+                )
+                created_channel = True
+                embed = await self._build_warning_embed(ctx.guild)
+                warning_msg = await honeypot_channel.send(embed=embed)
+                await self.config.guild(ctx.guild).warning_message_id.set(
+                    warning_msg.id
+                )
+                await ctx.send(f"Created {honeypot_channel.mention}.")
+            except discord.HTTPException as e:
+                await ctx.send(f"Failed to create channel: `{e}`\nSetup cancelled.")
+                return
+        else:
+            # Try to resolve a mentioned channel
+            if reply.channel_mentions:
+                honeypot_channel = reply.channel_mentions[0]
+            else:
+                # Try by name or ID
+                try:
+                    honeypot_channel = await commands.TextChannelConverter().convert(
+                        ctx, reply.content.strip()
+                    )
+                except commands.BadArgument:
+                    await ctx.send("Could not find that channel. Setup cancelled.")
+                    return
+            await ctx.send(f"Using {honeypot_channel.mention} as the honeypot channel.")
+
+        await self.config.guild(ctx.guild).honeypot_channel.set(honeypot_channel.id)
+
+        # --- Step 2: Log Channel ---
+        reply = await ask(
+            "**Step 2/5 \u2014 Log Channel**\n"
+            "Mention the channel where detection logs should be sent (e.g. `#mod-logs`)."
+        )
+        if reply is None:
+            return
+
+        if reply.channel_mentions:
+            logs_channel = reply.channel_mentions[0]
+        else:
+            try:
+                logs_channel = await commands.TextChannelConverter().convert(
+                    ctx, reply.content.strip()
+                )
+            except commands.BadArgument:
+                await ctx.send("Could not find that channel. Setup cancelled.")
+                return
+
+        await self.config.guild(ctx.guild).logs_channel.set(logs_channel.id)
+        await ctx.send(f"Log channel set to {logs_channel.mention}.")
+
+        # --- Step 3: Action ---
+        reply = await ask(
+            "**Step 3/5 \u2014 Action**\n"
+            "What should happen when someone posts in the honeypot?\n"
+            "`ban` \u2014 Permanent ban and delete recent messages\n"
+            "`kick` \u2014 Softban (kick + delete recent messages)\n"
+            "`mute` \u2014 Assign a mute role\n"
+            "`none` \u2014 Log only, no moderation action"
+        )
+        if reply is None:
+            return
+
+        action = reply.content.lower().strip()
+        if action not in ("ban", "kick", "mute", "none"):
+            await ctx.send(
+                "Invalid action. Must be `ban`, `kick`, `mute`, or `none`. Setup cancelled."
+            )
+            return
+
+        action_value = None if action == "none" else action
+        await self.config.guild(ctx.guild).action.set(action_value)
+        await ctx.send(f"Action set to **{action}**.")
+
+        # --- Step 3b: Mute Role (only if mute) ---
+        if action == "mute":
+            reply = await ask(
+                "**Step 3b \u2014 Mute Role**\n"
+                "Mention the role to assign when muting (e.g. `@Muted`)."
+            )
+            if reply is None:
+                return
+
+            if reply.role_mentions:
+                mute_role = reply.role_mentions[0]
+            else:
+                try:
+                    mute_role = await commands.RoleConverter().convert(
+                        ctx, reply.content.strip()
+                    )
+                except commands.BadArgument:
+                    await ctx.send("Could not find that role. Setup cancelled.")
+                    return
+
+            await self.config.guild(ctx.guild).mute_role.set(mute_role.id)
+            await ctx.send(f"Mute role set to **{mute_role.name}**.")
+
+        # --- Step 4: Ping Role ---
+        reply = await ask(
+            "**Step 4/5 \u2014 Ping Role** (optional)\n"
+            "Mention a role to ping on each detection (e.g. `@Moderator`), "
+            "or type `skip` to skip."
+        )
+        if reply is None:
+            return
+
+        if reply.content.lower().strip() == "skip":
+            await ctx.send("Ping role skipped.")
+        else:
+            if reply.role_mentions:
+                ping_role = reply.role_mentions[0]
+            else:
+                try:
+                    ping_role = await commands.RoleConverter().convert(
+                        ctx, reply.content.strip()
+                    )
+                except commands.BadArgument:
+                    await ctx.send("Could not find that role. Skipping ping role.")
+                    ping_role = None
+
+            if ping_role:
+                await self.config.guild(ctx.guild).ping_role.set(ping_role.id)
+                await ctx.send(f"Ping role set to **{ping_role.name}**.")
+
+        # --- Step 5: Enable ---
+        reply = await ask(
+            "**Step 5/5 \u2014 Enable**\n"
+            "Everything is configured. Enable the honeypot now?\n"
+            "Type `yes` or `no`."
+        )
+        if reply is None:
+            return
+
+        if reply.content.lower().strip() in ("yes", "y"):
+            await self.config.guild(ctx.guild).enabled.set(True)
+            await ctx.send("Honeypot trap is now **enabled**.")
+        else:
+            await ctx.send(
+                "Honeypot is configured but **not enabled**. "
+                "Run `sabhoneypot enable` when ready."
+            )
+
+        # --- Summary ---
+        config = await self.config.guild(ctx.guild).all()
+        action_display = config["action"] or "none (log-only)"
+        hp = ctx.guild.get_channel(config["honeypot_channel"])
+        lc = ctx.guild.get_channel(config["logs_channel"])
+
+        summary = discord.Embed(
+            title="Setup Complete",
+            color=discord.Color.green(),
+        )
+        summary.add_field(
+            name="Honeypot Channel", value=hp.mention if hp else "Unknown", inline=True
+        )
+        summary.add_field(
+            name="Log Channel", value=lc.mention if lc else "Unknown", inline=True
+        )
+        summary.add_field(name="Action", value=action_display, inline=True)
+        summary.add_field(name="Enabled", value=str(config["enabled"]), inline=True)
+
+        ping_role_id = config["ping_role"]
+        if ping_role_id:
+            pr = ctx.guild.get_role(ping_role_id)
+            summary.add_field(
+                name="Ping Role", value=pr.mention if pr else "Not set", inline=True
+            )
+
+        mute_role_id = config["mute_role"]
+        if mute_role_id:
+            mr = ctx.guild.get_role(mute_role_id)
+            summary.add_field(
+                name="Mute Role", value=mr.mention if mr else "Not set", inline=True
+            )
+
+        summary.set_footer(text="Use individual commands to adjust settings later.")
+        await ctx.send(embed=summary)
 
     # ------------------------------------------------------------------
     # Channel management
