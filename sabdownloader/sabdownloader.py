@@ -994,8 +994,17 @@ async def _anondrop_register(session: aiohttp.ClientSession) -> Optional[str]:
 
 
 def _parse_anondrop_link(html: str) -> Optional[str]:
-    """Extract the AnonDrop download link from response HTML."""
-    # Look for anondrop.net/<id> pattern
+    """Extract the AnonDrop download link from response HTML.
+
+    Returns the full link including filename if present, e.g.:
+    https://anondrop.net/1480216769674215507/Daddy_Yankee_-_Limbo.mp4
+    """
+    # Look for anondrop.net/<id>/<filename> pattern (with filename)
+    match = re.search(r"(https?://anondrop\.net/\d+/[^\s\"'<>]+)", html)
+    if match:
+        return match.group(1)
+
+    # Fallback: anondrop.net/<id> pattern (without filename)
     match = re.search(r"(https?://anondrop\.net/[a-zA-Z0-9]+)", html)
     if match:
         link = match.group(1)
@@ -1007,6 +1016,7 @@ def _parse_anondrop_link(html: str) -> Optional[str]:
             "initiateupload",
             "uploadchunk",
             "endupload",
+            "embed",
         ):
             return link
     # Also try just the path pattern
@@ -1014,6 +1024,22 @@ def _parse_anondrop_link(html: str) -> Optional[str]:
     if match:
         return f"https://anondrop.net/{match.group(1)}"
     return None
+
+
+def _anondrop_to_embed(link: str) -> str:
+    """Convert a regular AnonDrop link to an embed link.
+
+    Input:  https://anondrop.net/1480216769674215507/filename.mp4
+    Output: https://anondrop.net/embed/1480216769674215507/filename.mp4
+
+    If the link doesn't match the expected pattern, returns the original link.
+    """
+    parsed = urlparse(link)
+    path = parsed.path.lstrip("/")
+    # Only convert if path looks like <id>/<filename> (not already /embed/)
+    if path and not path.startswith("embed/") and "/" in path:
+        return f"https://anondrop.net/embed/{path}"
+    return link
 
 
 # ---------------------------------------------------------------------------
@@ -1323,6 +1349,9 @@ class SabDownloader(commands.Cog):
                     userkey=anondrop_userkey,
                 )
                 if link:
+                    # Use embed URL for video files so Discord auto-embeds the player
+                    if self._is_video(filepath):
+                        link = _anondrop_to_embed(link)
                     log.info("[_handle_file_upload] HD AnonDrop success: %s", link)
                     anondrop_links.append(link)
                     anondrop_used = True
@@ -1504,6 +1533,9 @@ class SabDownloader(commands.Cog):
                     userkey=anondrop_userkey,
                 )
                 if link:
+                    # Use embed URL for video files so Discord auto-embeds
+                    if self._is_video(filepath):
+                        link = _anondrop_to_embed(link)
                     log.debug("[_handle_file_upload]   -> AnonDrop success: %s", link)
                     anondrop_links.append(link)
                     anondrop_used = True
@@ -1547,6 +1579,8 @@ class SabDownloader(commands.Cog):
                                     userkey=anondrop_userkey,
                                 )
                                 if link:
+                                    if self._is_video(fp):
+                                        link = _anondrop_to_embed(link)
                                     anondrop_links.append(link)
                                     anondrop_used = True
 
