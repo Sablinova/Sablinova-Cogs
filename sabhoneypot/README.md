@@ -133,6 +133,7 @@ All commands are under `[p]sabhoneypot` and require `manage_guild` permission.
 | `refresh` | Update the warning message in the honeypot channel with current settings. |
 | `settings` | Display all current honeypot settings. |
 | `migrate` | Import settings from AAA3A's Honeypot cog for the current server. |
+| `migrateall` | **(Bot Owner)** Migrate AAA3A Honeypot settings for all servers at once. |
 
 ## Required Bot Permissions
 
@@ -155,13 +156,26 @@ All commands are under `[p]sabhoneypot` and require `manage_guild` permission.
 
 ## Migrating from AAA3A's Honeypot
 
-If you previously used [AAA3A's Honeypot](https://github.com/AAA3A-AAA3A/AAA3A-cogs) cog, SabHoneypot can import your existing per-server configuration:
+If you previously used [AAA3A's Honeypot](https://github.com/AAA3A-AAA3A/AAA3A-cogs) cog, SabHoneypot can import your existing configuration.
+
+### Migrate All Servers at Once (Bot Owner)
+
+The fastest way to migrate. Imports settings for every server the bot is in with one command:
 
 1. Install and load SabHoneypot.
-2. Run `[p]sabhoneypot migrate` in each server that had the old cog configured.
-3. Review the migration preview embed. Channels or roles that no longer exist will be skipped.
-4. Reply `yes` within 30 seconds to confirm.
+2. Run `[p]sabhoneypot migrateall` from any channel.
+3. The bot will show how many servers have AAA3A Honeypot config. Reply `yes` to confirm.
+4. A summary embed lists all migrated servers and any skipped channels/roles.
 5. Unload the old cog with `[p]unload honeypot` to avoid conflicts.
+
+### Migrate a Single Server
+
+If you only want to migrate one server at a time:
+
+1. Run `[p]sabhoneypot migrate` in the server you want to migrate.
+2. Review the migration preview embed. Channels or roles that no longer exist will be skipped.
+3. Reply `yes` within 30 seconds to confirm.
+4. Unload the old cog with `[p]unload honeypot` to avoid conflicts.
 
 Migrated settings: enabled state, action, honeypot channel, log channel, ping role, mute role, and message deletion days.
 

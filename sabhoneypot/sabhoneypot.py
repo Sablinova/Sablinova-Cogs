@@ -635,10 +635,72 @@ class SabHoneypot(commands.Cog):
     # Migration from AAA3A Honeypot
     # ------------------------------------------------------------------
 
+    def _migrate_guild_settings(self, guild: discord.Guild, old_data: dict):
+        """Map AAA3A Honeypot guild config to SabHoneypot config.
+
+        Returns (mapped: dict, skipped: list[str]).
+        Does NOT write anything — caller is responsible for saving.
+        """
+        mapped = {}
+        skipped = []
+
+        # Honeypot channel
+        if old_data["honeypot_channel"] is not None:
+            ch = guild.get_channel(old_data["honeypot_channel"])
+            if ch is not None:
+                mapped["honeypot_channel"] = old_data["honeypot_channel"]
+            else:
+                skipped.append(
+                    f"Honeypot channel (`{old_data['honeypot_channel']}`) \u2014 no longer exists"
+                )
+
+        # Logs channel
+        if old_data["logs_channel"] is not None:
+            ch = guild.get_channel(old_data["logs_channel"])
+            if ch is not None:
+                mapped["logs_channel"] = old_data["logs_channel"]
+            else:
+                skipped.append(
+                    f"Log channel (`{old_data['logs_channel']}`) \u2014 no longer exists"
+                )
+
+        # Ping role
+        if old_data["ping_role"] is not None:
+            role = guild.get_role(old_data["ping_role"])
+            if role is not None:
+                mapped["ping_role"] = old_data["ping_role"]
+            else:
+                skipped.append(
+                    f"Ping role (`{old_data['ping_role']}`) \u2014 no longer exists"
+                )
+
+        # Mute role
+        if old_data["mute_role"] is not None:
+            role = guild.get_role(old_data["mute_role"])
+            if role is not None:
+                mapped["mute_role"] = old_data["mute_role"]
+            else:
+                skipped.append(
+                    f"Mute role (`{old_data['mute_role']}`) \u2014 no longer exists"
+                )
+
+        # Action
+        old_action = old_data["action"]
+        if old_action in ("mute", "kick", "ban"):
+            mapped["action"] = old_action
+
+        # ban_delete_message_days -> ban_delete_days and kick_delete_days
+        mapped["ban_delete_days"] = old_data["ban_delete_message_days"]
+        mapped["kick_delete_days"] = old_data["ban_delete_message_days"]
+
+        # enabled
+        mapped["enabled"] = old_data["enabled"]
+
+        return mapped, skipped
+
     @sabhoneypot.command(name="migrate")
     async def honeypot_migrate(self, ctx):
         """Migrate settings from AAA3A's Honeypot cog for this server."""
-        # Read old config
         old_config = Config.get_conf(
             None,
             identifier=AAA3A_HONEYPOT_IDENTIFIER,
@@ -648,7 +710,6 @@ class SabHoneypot(commands.Cog):
 
         old_data = await old_config.guild(ctx.guild).all()
 
-        # Check if there's actually any data (all defaults = nothing configured)
         has_data = any(
             old_data[k] != AAA3A_HONEYPOT_DEFAULTS[k] for k in AAA3A_HONEYPOT_DEFAULTS
         )
@@ -656,62 +717,7 @@ class SabHoneypot(commands.Cog):
             await ctx.send("No AAA3A Honeypot configuration found for this server.")
             return
 
-        # Map old settings to new
-        mapped = {}
-        skipped = []
-
-        # Honeypot channel
-        if old_data["honeypot_channel"] is not None:
-            ch = ctx.guild.get_channel(old_data["honeypot_channel"])
-            if ch is not None:
-                mapped["honeypot_channel"] = old_data["honeypot_channel"]
-            else:
-                skipped.append(
-                    f"Honeypot channel (`{old_data['honeypot_channel']}`) — no longer exists"
-                )
-
-        # Logs channel
-        if old_data["logs_channel"] is not None:
-            ch = ctx.guild.get_channel(old_data["logs_channel"])
-            if ch is not None:
-                mapped["logs_channel"] = old_data["logs_channel"]
-            else:
-                skipped.append(
-                    f"Log channel (`{old_data['logs_channel']}`) — no longer exists"
-                )
-
-        # Ping role
-        if old_data["ping_role"] is not None:
-            role = ctx.guild.get_role(old_data["ping_role"])
-            if role is not None:
-                mapped["ping_role"] = old_data["ping_role"]
-            else:
-                skipped.append(
-                    f"Ping role (`{old_data['ping_role']}`) — no longer exists"
-                )
-
-        # Mute role
-        if old_data["mute_role"] is not None:
-            role = ctx.guild.get_role(old_data["mute_role"])
-            if role is not None:
-                mapped["mute_role"] = old_data["mute_role"]
-            else:
-                skipped.append(
-                    f"Mute role (`{old_data['mute_role']}`) — no longer exists"
-                )
-
-        # Action — direct map now (we support ban, kick, mute, and None)
-        old_action = old_data["action"]
-        if old_action in ("mute", "kick", "ban"):
-            mapped["action"] = old_action
-        # None stays as default (log-only)
-
-        # ban_delete_message_days → ban_delete_days and kick_delete_days
-        mapped["ban_delete_days"] = old_data["ban_delete_message_days"]
-        mapped["kick_delete_days"] = old_data["ban_delete_message_days"]
-
-        # enabled
-        mapped["enabled"] = old_data["enabled"]
+        mapped, skipped = self._migrate_guild_settings(ctx.guild, old_data)
 
         # Build preview embed
         def resolve_channel(cid):
@@ -780,7 +786,6 @@ class SabHoneypot(commands.Cog):
         embed.set_footer(text="Reply 'yes' within 30 seconds to confirm migration.")
         await ctx.send(embed=embed)
 
-        # Wait for confirmation
         def check(m):
             return (
                 m.author == ctx.author
@@ -791,15 +796,13 @@ class SabHoneypot(commands.Cog):
         try:
             await self.bot.wait_for("message", check=check, timeout=30.0)
         except Exception:
-            await ctx.send("Migration cancelled — timed out.")
+            await ctx.send("Migration cancelled \u2014 timed out.")
             return
 
-        # Apply settings
         guild_config = self.config.guild(ctx.guild)
         for key, value in mapped.items():
             await getattr(guild_config, key).set(value)
 
-        # Warn about old cog
         old_cog = self.bot.get_cog("Honeypot")
         warning = ""
         if old_cog is not None:
@@ -809,6 +812,119 @@ class SabHoneypot(commands.Cog):
             )
 
         await ctx.send(f"Migration complete. Settings imported successfully.{warning}")
+
+    @sabhoneypot.command(name="migrateall")
+    @commands.is_owner()
+    async def honeypot_migrateall(self, ctx):
+        """(Bot Owner) Migrate AAA3A Honeypot settings for ALL servers at once."""
+        old_config = Config.get_conf(
+            None,
+            identifier=AAA3A_HONEYPOT_IDENTIFIER,
+            cog_name=AAA3A_HONEYPOT_COG_NAME,
+        )
+        old_config.register_guild(**AAA3A_HONEYPOT_DEFAULTS)
+
+        all_old = await old_config.all_guilds()
+        if not all_old:
+            await ctx.send("No AAA3A Honeypot configuration found for any server.")
+            return
+
+        # Filter to guilds the bot is currently in and that have non-default config
+        candidates = []
+        for guild_id, old_data in all_old.items():
+            guild = self.bot.get_guild(guild_id)
+            if guild is None:
+                continue
+            has_data = any(
+                old_data.get(k) != AAA3A_HONEYPOT_DEFAULTS[k]
+                for k in AAA3A_HONEYPOT_DEFAULTS
+                if k in old_data
+            )
+            if has_data:
+                candidates.append((guild, old_data))
+
+        if not candidates:
+            await ctx.send(
+                "No AAA3A Honeypot configuration found for any server the bot is in."
+            )
+            return
+
+        # Preview
+        await ctx.send(
+            f"Found AAA3A Honeypot configuration in **{len(candidates)}** server(s).\n"
+            "Reply `yes` within 30 seconds to migrate all of them."
+        )
+
+        def check(m):
+            return (
+                m.author == ctx.author
+                and m.channel == ctx.channel
+                and m.content.lower() in ("yes", "y")
+            )
+
+        try:
+            await self.bot.wait_for("message", check=check, timeout=30.0)
+        except Exception:
+            await ctx.send("Migration cancelled \u2014 timed out.")
+            return
+
+        migrated = []
+
+        for guild, old_data in candidates:
+            # Fill in any missing keys with defaults
+            for k, v in AAA3A_HONEYPOT_DEFAULTS.items():
+                old_data.setdefault(k, v)
+
+            mapped, skipped = self._migrate_guild_settings(guild, old_data)
+
+            # Apply settings
+            guild_config = self.config.guild(guild)
+            for key, value in mapped.items():
+                await getattr(guild_config, key).set(value)
+
+            entry = f"**{guild.name}** (`{guild.id}`)"
+            if skipped:
+                entry += f" \u2014 skipped: {', '.join(skipped)}"
+            migrated.append(entry)
+
+        # Build result embed
+        embed = discord.Embed(
+            title="Migration Complete",
+            description=f"Migrated settings for **{len(migrated)}** server(s).",
+            color=discord.Color.green(),
+        )
+
+        # Chunk the results to fit embed field limits
+        result_text = "\n".join(f"- {m}" for m in migrated)
+        if len(result_text) <= 4096:
+            embed.description += f"\n\n{result_text}"
+        else:
+            # Split into multiple fields
+            chunks = []
+            current = []
+            current_len = 0
+            for m in migrated:
+                line = f"- {m}\n"
+                if current_len + len(line) > 1024:
+                    chunks.append("".join(current))
+                    current = [line]
+                    current_len = len(line)
+                else:
+                    current.append(line)
+                    current_len += len(line)
+            if current:
+                chunks.append("".join(current))
+            for i, chunk in enumerate(chunks):
+                embed.add_field(name=f"Servers ({i + 1})", value=chunk, inline=False)
+
+        old_cog = self.bot.get_cog("Honeypot")
+        if old_cog is not None:
+            embed.set_footer(
+                text="Warning: The old Honeypot cog is still loaded. "
+                "Unload it with [p]unload honeypot to avoid conflicts."
+            )
+
+        await ctx.send(embed=embed)
 
     # ------------------------------------------------------------------
     # Detection listener
