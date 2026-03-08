@@ -286,6 +286,14 @@ def _gallery_dl_download(
     import gallery_dl
     from gallery_dl import config as gdl_config, job
 
+    log.debug("[gallery-dl] Starting download for URL: %s", url)
+    log.debug(
+        "[gallery-dl] temp_dir=%s cookies=%s max_filesize=%s",
+        temp_dir,
+        cookies_file,
+        max_filesize,
+    )
+
     # Reset config for this run
     gdl_config.clear()
     gdl_config.load()
@@ -305,12 +313,24 @@ def _gallery_dl_download(
         fp = os.path.join(temp_dir, f)
         if os.path.isfile(fp):
             pre_existing.add(fp)
+    log.debug("[gallery-dl] Pre-existing files in temp_dir: %s", pre_existing)
 
     try:
         j = job.DownloadJob(url)
         j.run()
     except Exception as e:
-        log.debug("gallery-dl failed for %s: %s", url, e)
+        log.warning(
+            "[gallery-dl] Exception during download for %s: %s", url, e, exc_info=True
+        )
+
+    # List ALL files in temp_dir after download for debugging
+    all_files_after = []
+    for f in os.listdir(temp_dir):
+        fp = os.path.join(temp_dir, f)
+        if os.path.isfile(fp):
+            sz = os.path.getsize(fp)
+            all_files_after.append(f"{f} ({_human_size(sz)})")
+    log.debug("[gallery-dl] All files in temp_dir after download: %s", all_files_after)
 
     # Collect only NEW, non-temp, non-empty files
     downloaded = []
@@ -321,23 +341,52 @@ def _gallery_dl_download(
         if not os.path.isfile(fp):
             continue
         if _is_temp_file(fp):
-            log.debug("gallery-dl: skipping temp file: %s", f)
+            log.debug("[gallery-dl] Skipping temp file: %s", f)
             continue
         if os.path.getsize(fp) == 0:
-            log.debug("gallery-dl: skipping zero-byte file: %s", f)
+            log.debug("[gallery-dl] Skipping zero-byte file: %s", f)
             continue
         downloaded.append(fp)
 
     # Filter by max filesize if set
     if max_filesize and downloaded:
+        before_filter = len(downloaded)
         downloaded = [f for f in downloaded if os.path.getsize(f) <= max_filesize]
+        if len(downloaded) != before_filter:
+            log.debug(
+                "[gallery-dl] Filtered %d files exceeding max_filesize %s",
+                before_filter - len(downloaded),
+                _human_size(max_filesize),
+            )
 
+    log.debug(
+        "[gallery-dl] Final collected files (%d): %s",
+        len(downloaded),
+        [(os.path.basename(f), _human_size(os.path.getsize(f))) for f in downloaded],
+    )
     return downloaded
 
 
 # ---------------------------------------------------------------------------
 # yt-dlp backend
 # ---------------------------------------------------------------------------
+
+
+class _YtdlpLogger:
+    """Custom logger that routes all yt-dlp output to our Red logger."""
+
+    def debug(self, msg):
+        # yt-dlp sends verbose info via debug
+        log.debug("[yt-dlp] %s", msg)
+
+    def info(self, msg):
+        log.info("[yt-dlp] %s", msg)
+
+    def warning(self, msg):
+        log.warning("[yt-dlp] %s", msg)
+
+    def error(self, msg):
+        log.error("[yt-dlp] %s", msg)
 
 
 def _ytdlp_download(
@@ -354,6 +403,17 @@ def _ytdlp_download(
     Must be called via run_in_executor.
     """
     import yt_dlp
+
+    log.debug("[yt-dlp] === Starting download ===")
+    log.debug("[yt-dlp] URL: %s", url)
+    log.debug("[yt-dlp] temp_dir=%s audio_only=%s", temp_dir, audio_only)
+    log.debug(
+        "[yt-dlp] cookies=%s max_filesize=%s max_duration=%s",
+        cookies_file,
+        max_filesize,
+        max_duration,
+    )
+    log.debug("[yt-dlp] yt-dlp version: %s", yt_dlp.version.__version__)
 
     def progress_hook(d):
         if progress_tracker is None:
@@ -372,14 +432,19 @@ def _ytdlp_download(
         elif status == "finished":
             progress_tracker.percent = 100.0
             progress_tracker.stage = "Processing"
+            log.debug(
+                "[yt-dlp] progress_hook: finished - filename=%s",
+                d.get("filename", "unknown"),
+            )
 
     opts = {
         "outtmpl": os.path.join(temp_dir, "%(title).100B.%(ext)s"),
         "restrictfilenames": True,
         "noplaylist": True,
         "progress_hooks": [progress_hook],
-        "quiet": True,
-        "no_warnings": True,
+        # DEBUG MODE: verbose output routed through our logger
+        "verbose": True,
+        "logger": _YtdlpLogger(),
         "noprogress": True,
         "merge_output_format": "mp4",
         # Prevent .part files - write directly to final filename
@@ -429,6 +494,7 @@ def _ytdlp_download(
                 "preferredquality": "192",
             }
         ]
+        log.debug("[yt-dlp] Format: bestaudio/best (audio_only)")
     else:
         # Prefer mp4 containers, fall back through progressively simpler formats.
         # The broad fallback chain avoids 403 issues where specific format
@@ -440,6 +506,12 @@ def _ytdlp_download(
             "best[ext=mp4]/"
             "best"
         )
+        log.debug("[yt-dlp] Format: %s", opts["format"])
+
+    log.debug(
+        "[yt-dlp] Full options (excluding hooks/logger): %s",
+        {k: v for k, v in opts.items() if k not in ("progress_hooks", "logger")},
+    )
 
     info_dict = None
     try:
@@ -447,15 +519,69 @@ def _ytdlp_download(
             info_dict = ydl.extract_info(url, download=True)
     except yt_dlp.utils.DownloadError as e:
         err_str = str(e).lower()
+        log.error("[yt-dlp] DownloadError: %s", e, exc_info=True)
         if "duration" in err_str or "match_filter" in err_str:
             raise ValueError("Video exceeds maximum allowed duration.") from e
         raise
     except Exception as e:
-        log.debug("yt-dlp failed for %s: %s", url, e)
+        log.error("[yt-dlp] Unexpected exception for %s: %s", url, e, exc_info=True)
         raise
+
+    # Log info_dict details for debugging
+    if info_dict:
+        log.debug("[yt-dlp] === info_dict summary ===")
+        log.debug("[yt-dlp] title: %s", info_dict.get("title"))
+        log.debug("[yt-dlp] extractor: %s", info_dict.get("extractor"))
+        log.debug("[yt-dlp] format: %s", info_dict.get("format"))
+        log.debug("[yt-dlp] format_id: %s", info_dict.get("format_id"))
+        log.debug("[yt-dlp] ext: %s", info_dict.get("ext"))
+        log.debug("[yt-dlp] resolution: %s", info_dict.get("resolution"))
+        log.debug(
+            "[yt-dlp] width: %s, height: %s",
+            info_dict.get("width"),
+            info_dict.get("height"),
+        )
+        log.debug(
+            "[yt-dlp] vcodec: %s, acodec: %s",
+            info_dict.get("vcodec"),
+            info_dict.get("acodec"),
+        )
+        log.debug("[yt-dlp] duration: %s", info_dict.get("duration"))
+        log.debug("[yt-dlp] filesize: %s", info_dict.get("filesize"))
+        log.debug("[yt-dlp] filesize_approx: %s", info_dict.get("filesize_approx"))
+        log.debug("[yt-dlp] _filename: %s", info_dict.get("_filename"))
+        log.debug(
+            "[yt-dlp] requested_downloads count: %s",
+            len(info_dict.get("requested_downloads", [])),
+        )
+        for i, rd in enumerate(info_dict.get("requested_downloads", [])):
+            log.debug(
+                "[yt-dlp]   requested_download[%d]: filepath=%s format=%s ext=%s",
+                i,
+                rd.get("filepath", rd.get("_filename")),
+                rd.get("format"),
+                rd.get("ext"),
+            )
+    else:
+        log.warning("[yt-dlp] info_dict is None after extract_info!")
+
+    # List ALL files in temp_dir for debugging
+    all_files_after = []
+    for f in os.listdir(temp_dir):
+        fp = os.path.join(temp_dir, f)
+        if os.path.isfile(fp):
+            sz = os.path.getsize(fp)
+            all_files_after.append(f"{f} ({_human_size(sz)})")
+    log.debug("[yt-dlp] All files in temp_dir after download: %s", all_files_after)
 
     # Collect output files - filter out temp/partial files and empty files
     downloaded = _collect_real_files(temp_dir)
+
+    log.debug(
+        "[yt-dlp] Final collected files (%d): %s",
+        len(downloaded),
+        [(os.path.basename(f), _human_size(os.path.getsize(f))) for f in downloaded],
+    )
 
     return downloaded, info_dict
 
@@ -970,9 +1096,25 @@ class SabDownloader(commands.Cog):
         if audio_only:
             backends = ["ytdlp"]
 
+        log.debug(
+            "[_try_download] URL=%s domain=%s backends=%s audio_only=%s",
+            url,
+            domain,
+            backends,
+            audio_only,
+        )
+        log.debug(
+            "[_try_download] max_filesize=%s max_duration=%s cookies=%s",
+            _human_size(max_filesize) if max_filesize else None,
+            max_duration,
+            bool(cookies_file),
+        )
+
         last_error = None
 
         for backend in backends:
+            log.debug("[_try_download] Trying backend: %s", backend)
+
             if backend == "gallerydl":
                 try:
                     tracker.stage = "Downloading"
@@ -988,12 +1130,24 @@ class SabDownloader(commands.Cog):
                         ),
                     )
                     if files:
+                        log.debug(
+                            "[_try_download] gallery-dl succeeded with %d files",
+                            len(files),
+                        )
                         return files, None
+                    else:
+                        log.debug("[_try_download] gallery-dl returned no files")
                 except Exception as e:
                     last_error = e
-                    log.debug("gallery-dl failed for %s: %s", url, e)
+                    log.warning(
+                        "[_try_download] gallery-dl failed for %s: %s",
+                        url,
+                        e,
+                        exc_info=True,
+                    )
 
                 # Clean up any leftover files before trying next backend
+                log.debug("[_try_download] Purging temp files before next backend")
                 _purge_temp_files(temp_dir)
 
             elif backend == "ytdlp":
@@ -1014,17 +1168,39 @@ class SabDownloader(commands.Cog):
                         ),
                     )
                     if files:
+                        log.debug(
+                            "[_try_download] yt-dlp succeeded with %d files", len(files)
+                        )
+                        for f in files:
+                            log.debug(
+                                "[_try_download]   -> %s (%s)",
+                                os.path.basename(f),
+                                _human_size(os.path.getsize(f)),
+                            )
                         return files, info_dict
+                    else:
+                        log.debug("[_try_download] yt-dlp returned no files")
                 except ValueError:
                     # Duration exceeded - re-raise as-is
                     raise
                 except Exception as e:
                     last_error = e
-                    log.debug("yt-dlp failed for %s: %s", url, e)
+                    log.warning(
+                        "[_try_download] yt-dlp failed for %s: %s",
+                        url,
+                        e,
+                        exc_info=True,
+                    )
 
                 # Clean up any leftover files before trying next backend
+                log.debug("[_try_download] Purging temp files before next backend")
                 _purge_temp_files(temp_dir)
 
+        log.error(
+            "[_try_download] All backends exhausted for %s. last_error=%s",
+            url,
+            last_error,
+        )
         if last_error:
             raise last_error
         raise RuntimeError("No files were downloaded.")
@@ -1044,6 +1220,14 @@ class SabDownloader(commands.Cog):
         anondrop_enabled = guild_config["anondrop_enabled"]
         anondrop_userkey = await self.config.anondrop_userkey()
 
+        log.debug("[_handle_file_upload] === Starting upload ===")
+        log.debug(
+            "[_handle_file_upload] %d files to process, filesize_limit=%s, anondrop=%s",
+            len(files),
+            _human_size(filesize_limit),
+            anondrop_enabled,
+        )
+
         uploaded_files = []
         anondrop_links = []
         total_original_size = 0
@@ -1054,15 +1238,31 @@ class SabDownloader(commands.Cog):
         for filepath in files:
             file_size = os.path.getsize(filepath)
             total_original_size += file_size
+            fname = os.path.basename(filepath)
+
+            log.debug(
+                "[_handle_file_upload] Processing: %s (%s, %d bytes)",
+                fname,
+                _human_size(file_size),
+                file_size,
+            )
 
             if file_size <= filesize_limit:
                 # Fits directly - upload to Discord
+                log.debug("[_handle_file_upload]   -> Direct upload (fits limit)")
                 uploaded_files.append(filepath)
                 total_compressed_size += file_size
                 continue
 
             # File too large - try compression if it's a video
+            log.debug(
+                "[_handle_file_upload]   -> Too large (%s > %s)",
+                _human_size(file_size),
+                _human_size(filesize_limit),
+            )
+
             if self._is_video(filepath):
+                log.debug("[_handle_file_upload]   -> Attempting ffmpeg compression")
                 tracker.stage = "Compressing"
                 tracker.percent = 0
 
@@ -1076,24 +1276,39 @@ class SabDownloader(commands.Cog):
 
                 if success and os.path.isfile(compressed_path):
                     compressed_size = os.path.getsize(compressed_path)
+                    log.debug(
+                        "[_handle_file_upload]   -> Compressed: %s -> %s",
+                        _human_size(file_size),
+                        _human_size(compressed_size),
+                    )
                     if compressed_size <= filesize_limit:
                         uploaded_files.append(compressed_path)
                         total_compressed_size += compressed_size
                         compression_used = True
                         continue
+                    else:
+                        log.debug(
+                            "[_handle_file_upload]   -> Compressed file still too large"
+                        )
+                else:
+                    log.debug("[_handle_file_upload]   -> Compression failed")
 
             # Still too large or not a video - try AnonDrop
             if anondrop_enabled:
+                log.debug("[_handle_file_upload]   -> Trying AnonDrop upload")
                 link = await _anondrop_upload(
                     file_path=filepath,
                     progress_tracker=tracker,
                     userkey=anondrop_userkey,
                 )
                 if link:
+                    log.debug("[_handle_file_upload]   -> AnonDrop success: %s", link)
                     anondrop_links.append(link)
                     anondrop_used = True
                     total_compressed_size += file_size
                     continue
+                else:
+                    log.debug("[_handle_file_upload]   -> AnonDrop failed")
 
             # Last resort - skip this file
             log.warning(
@@ -1511,7 +1726,29 @@ class SabDownloader(commands.Cog):
             return
 
         # --- Download ---
+        log.debug("[_do_download] === New download request ===")
+        log.debug(
+            "[_do_download] User: %s (%s) | Guild: %s (%s) | Channel: %s",
+            ctx.author,
+            ctx.author.id,
+            ctx.guild.name,
+            ctx.guild.id,
+            ctx.channel.name,
+        )
+        log.debug(
+            "[_do_download] URL: %s | Platform: %s | audio_only: %s",
+            url,
+            platform,
+            audio_only,
+        )
+        log.debug(
+            "[_do_download] Guild filesize_limit: %s (raw: %d bytes)",
+            _human_size(ctx.guild.filesize_limit),
+            ctx.guild.filesize_limit,
+        )
+
         temp_dir = _make_temp_dir()
+        log.debug("[_do_download] temp_dir: %s", temp_dir)
         tracker = ProgressTracker()
         status_msg = await ctx.send(tracker.format_bar())
 
@@ -1528,6 +1765,12 @@ class SabDownloader(commands.Cog):
                 max_filesize = ctx.guild.filesize_limit * 3
                 max_duration = guild_config["max_duration"]
 
+                log.debug(
+                    "[_do_download] Calling _try_download with max_filesize=%s max_duration=%s",
+                    _human_size(max_filesize),
+                    max_duration,
+                )
+
                 files, info_dict = await self._try_download(
                     url=url,
                     temp_dir=temp_dir,
@@ -1539,10 +1782,21 @@ class SabDownloader(commands.Cog):
                 )
 
                 if not files:
+                    log.debug("[_do_download] No files returned from _try_download")
                     done_event.set()
                     await progress_task
                     await status_msg.edit(content="No media found at that URL.")
                     return
+
+                log.debug("[_do_download] Download complete. %d files:", len(files))
+                for f in files:
+                    sz = os.path.getsize(f)
+                    log.debug(
+                        "[_do_download]   %s -> %s (%d bytes)",
+                        os.path.basename(f),
+                        _human_size(sz),
+                        sz,
+                    )
 
                 # Handle upload (compression/anondrop as needed)
                 done_event.set()
@@ -1559,6 +1813,7 @@ class SabDownloader(commands.Cog):
 
         except ValueError as e:
             # Duration exceeded
+            log.debug("[_do_download] ValueError: %s", e)
             done_event.set()
             await progress_task
             try:
@@ -1570,7 +1825,9 @@ class SabDownloader(commands.Cog):
             done_event.set()
             await progress_task
             error_msg = "Failed to download media from that URL."
-            log.error("Download failed for %s: %s", url, e, exc_info=True)
+            log.error(
+                "[_do_download] Download failed for %s: %s", url, e, exc_info=True
+            )
             try:
                 await status_msg.edit(content=error_msg)
             except (discord.NotFound, discord.HTTPException):
@@ -1584,6 +1841,7 @@ class SabDownloader(commands.Cog):
                     await progress_task
                 except asyncio.CancelledError:
                     pass
+            log.debug("[_do_download] Cleaning up temp_dir: %s", temp_dir)
             _cleanup_temp_dir(temp_dir)
 
 
