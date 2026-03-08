@@ -424,6 +424,7 @@ def _ytdlp_download(
     max_filesize: Optional[int] = None,
     max_duration: Optional[int] = None,
     audio_only: bool = False,
+    hd_mode: bool = False,
 ) -> Tuple[List[str], Optional[dict]]:
     """Run yt-dlp synchronously. Returns (list of file paths, info_dict or None).
 
@@ -543,6 +544,12 @@ def _ytdlp_download(
             }
         ]
         log.debug("[yt-dlp] Format: bestaudio/best (audio_only)")
+    elif hd_mode:
+        # HD mode: force highest quality, no resolution/filesize restrictions
+        opts["format"] = "bestvideo+bestaudio/best"
+        # Remove max_filesize - we want the largest quality available
+        opts.pop("max_filesize", None)
+        log.info("[yt-dlp] HD MODE: format=bestvideo+bestaudio/best, no max_filesize")
     else:
         # Prefer mp4 containers, fall back through progressively simpler formats.
         # The broad fallback chain avoids 403 issues where specific format
@@ -1123,6 +1130,7 @@ class SabDownloader(commands.Cog):
         max_filesize: int,
         max_duration: int,
         audio_only: bool = False,
+        hd_mode: bool = False,
     ) -> Tuple[List[str], Optional[dict]]:
         """Try downloading with gallery-dl first, then yt-dlp (or vice versa depending on domain).
 
@@ -1142,6 +1150,10 @@ class SabDownloader(commands.Cog):
 
         # Audio extraction only makes sense with yt-dlp
         if audio_only:
+            backends = ["ytdlp"]
+
+        # HD mode: only use yt-dlp for best quality video+audio
+        if hd_mode:
             backends = ["ytdlp"]
 
         log.info(
@@ -1213,6 +1225,7 @@ class SabDownloader(commands.Cog):
                             max_filesize=max_filesize,
                             max_duration=max_duration,
                             audio_only=audio_only,
+                            hd_mode=hd_mode,
                         ),
                     )
                     if files:
@@ -1262,8 +1275,12 @@ class SabDownloader(commands.Cog):
         url: str,
         platform: str,
         guild_config: dict,
+        hd_mode: bool = False,
     ) -> None:
-        """Handle uploading files to Discord (with compression/anondrop fallback)."""
+        """Handle uploading files to Discord (with compression/anondrop fallback).
+
+        In hd_mode, all files go directly to AnonDrop (no compression, no Discord upload).
+        """
         filesize_limit = ctx.guild.filesize_limit
         anondrop_enabled = guild_config["anondrop_enabled"]
         anondrop_userkey = await self.config.anondrop_userkey()
@@ -1282,6 +1299,143 @@ class SabDownloader(commands.Cog):
         total_compressed_size = 0
         compression_used = False
         anondrop_used = False
+
+        # HD mode: skip Discord upload entirely, send everything to AnonDrop
+        if hd_mode:
+            log.info("[_handle_file_upload] HD MODE: uploading all files to AnonDrop")
+            for filepath in files:
+                file_size = os.path.getsize(filepath)
+                total_original_size += file_size
+                total_compressed_size += file_size
+                fname = os.path.basename(filepath)
+
+                log.info(
+                    "[_handle_file_upload] HD upload: %s (%s)",
+                    fname,
+                    _human_size(file_size),
+                )
+                tracker.stage = "Uploading to AnonDrop"
+                tracker.percent = 0
+
+                link = await _anondrop_upload(
+                    file_path=filepath,
+                    progress_tracker=tracker,
+                    userkey=anondrop_userkey,
+                )
+                if link:
+                    log.info("[_handle_file_upload] HD AnonDrop success: %s", link)
+                    anondrop_links.append(link)
+                    anondrop_used = True
+                else:
+                    log.warning(
+                        "[_handle_file_upload] HD AnonDrop failed for %s", fname
+                    )
+
+            # Post results
+            if anondrop_links:
+                links_text = "\n".join(anondrop_links)
+                await ctx.send(
+                    f"**HD Download** ({_human_size(total_original_size)})\n{links_text}"
+                )
+            else:
+                try:
+                    await status_msg.edit(
+                        content="Failed to upload HD file to AnonDrop."
+                    )
+                except (discord.NotFound, discord.HTTPException):
+                    pass
+                return
+
+            # Delete command message if configured
+            if guild_config["delete_command"]:
+                try:
+                    await ctx.message.delete()
+                except (discord.Forbidden, discord.HTTPException, discord.NotFound):
+                    pass
+
+            # Delete status message
+            try:
+                await status_msg.delete()
+            except (discord.Forbidden, discord.HTTPException, discord.NotFound):
+                pass
+
+            # Log channel + modlog (reuse existing logic below)
+            # Fall through to modlog/log channel section
+            # We need to jump past the normal upload logic, so handle it here
+            try:
+                await modlog.create_case(
+                    bot=self.bot,
+                    guild=ctx.guild,
+                    created_at=ctx.message.created_at,
+                    action_type="mediadownload",
+                    user=ctx.author,
+                    moderator=ctx.guild.me,
+                    reason=(
+                        f"HD Media download | Platform: {platform} | "
+                        f"URL: {url} | "
+                        f"Size: {_human_size(total_original_size)} | "
+                        f"AnonDrop: {', '.join(anondrop_links)} | "
+                        f"Channel: #{ctx.channel.name}"
+                    ),
+                )
+            except Exception as e:
+                log.debug("Failed to create modlog case: %s", e)
+
+            log_channel_id = await self.config.log_channel()
+            if log_channel_id:
+                log_channel = self.bot.get_channel(log_channel_id)
+                if log_channel:
+                    log_embed = discord.Embed(
+                        title="HD Media Download",
+                        color=discord.Color.gold(),
+                        timestamp=ctx.message.created_at,
+                    )
+                    log_embed.set_author(
+                        name=f"{ctx.author} ({ctx.author.id})",
+                        icon_url=ctx.author.display_avatar.url,
+                    )
+                    log_embed.add_field(
+                        name="User",
+                        value=f"{ctx.author.mention} (`{ctx.author.id}`)",
+                        inline=True,
+                    )
+                    log_embed.add_field(name="Platform", value=platform, inline=True)
+                    log_embed.add_field(
+                        name="Channel",
+                        value=f"{ctx.channel.mention}",
+                        inline=True,
+                    )
+                    log_embed.add_field(
+                        name="Server",
+                        value=f"{ctx.guild.name} (`{ctx.guild.id}`)",
+                        inline=True,
+                    )
+                    log_embed.add_field(name="URL", value=url, inline=False)
+                    log_embed.add_field(
+                        name="Size",
+                        value=_human_size(total_original_size),
+                        inline=True,
+                    )
+                    log_embed.add_field(
+                        name="AnonDrop",
+                        value="\n".join(anondrop_links),
+                        inline=False,
+                    )
+                    log_embed.add_field(
+                        name="Files",
+                        value=str(len(files)),
+                        inline=True,
+                    )
+                    log_embed.set_footer(
+                        text=ctx.guild.name,
+                        icon_url=ctx.guild.icon.url if ctx.guild.icon else None,
+                    )
+                    try:
+                        await log_channel.send(embed=log_embed)
+                    except discord.HTTPException as e:
+                        log.debug("Failed to send download log embed: %s", e)
+
+            return  # HD mode complete
 
         for filepath in files:
             file_size = os.path.getsize(filepath)
@@ -1704,8 +1858,31 @@ class SabDownloader(commands.Cog):
         """Extract audio from a URL as MP3."""
         await self._do_download(ctx, url, audio_only=True)
 
+    @dl.command(name="hd")
+    async def dl_hd(self, ctx: commands.Context, url: str):
+        """Download in highest quality and upload to AnonDrop.
+
+        Bypasses Discord's file size limit by uploading directly
+        to AnonDrop.net. No compression is applied - full HD quality
+        is preserved.
+        """
+        # Require AnonDrop to be enabled for HD mode
+        guild_config = await self.config.guild(ctx.guild).all()
+        if not guild_config["anondrop_enabled"]:
+            await ctx.send(
+                "HD downloads require AnonDrop to be enabled. "
+                "An admin can enable it with `[p]sabdownloader anondrop toggle`.",
+                delete_after=15,
+            )
+            return
+        await self._do_download(ctx, url, hd_mode=True)
+
     async def _do_download(
-        self, ctx: commands.Context, url: str, audio_only: bool = False
+        self,
+        ctx: commands.Context,
+        url: str,
+        audio_only: bool = False,
+        hd_mode: bool = False,
     ) -> None:
         """Core download flow."""
         # --- Validation ---
@@ -1784,10 +1961,11 @@ class SabDownloader(commands.Cog):
             ctx.channel.name,
         )
         log.debug(
-            "[_do_download] URL: %s | Platform: %s | audio_only: %s",
+            "[_do_download] URL: %s | Platform: %s | audio_only: %s | hd_mode: %s",
             url,
             platform,
             audio_only,
+            hd_mode,
         )
         log.debug(
             "[_do_download] Guild filesize_limit: %s (raw: %d bytes)",
@@ -1815,7 +1993,11 @@ class SabDownloader(commands.Cog):
                 # have compression and AnonDrop as fallbacks. Use a generous cap
                 # for disk safety, but don't tie it to Discord's upload limit
                 # which is too restrictive (10MB for unboosted guilds).
-                if guild_config["anondrop_enabled"]:
+                if hd_mode:
+                    # HD mode: no practical filesize limit, we want max quality
+                    # Cap at 1GB for disk safety only
+                    max_filesize = 1024 * 1024 * 1024
+                elif guild_config["anondrop_enabled"]:
                     # AnonDrop can handle large files; cap at 500MB for safety
                     max_filesize = 500 * 1024 * 1024
                 else:
@@ -1838,6 +2020,7 @@ class SabDownloader(commands.Cog):
                     max_filesize=max_filesize,
                     max_duration=max_duration,
                     audio_only=audio_only,
+                    hd_mode=hd_mode,
                 )
 
                 if not files:
@@ -1868,6 +2051,7 @@ class SabDownloader(commands.Cog):
                     url=url,
                     platform=platform,
                     guild_config=guild_config,
+                    hd_mode=hd_mode,
                 )
 
         except ValueError as e:

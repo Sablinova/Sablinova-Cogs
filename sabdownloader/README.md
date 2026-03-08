@@ -62,6 +62,7 @@ gallery-dl and yt-dlp together support over 1000 sites. Some highlights:
 |---------|-------------|
 | `[p]dl <url>` | Download media from a URL and upload to Discord. |
 | `[p]dl audio <url>` | Extract audio from a URL as MP3. |
+| `[p]dl hd <url>` | Download in highest quality and upload to AnonDrop. |
 
 ### Configuration (Admin / manage_guild)
 
@@ -112,6 +113,14 @@ Downloading... [████████░░░░░░░░░░░░] 40
 - yt-dlp downloads show real percentage and size.
 - gallery-dl downloads show an indeterminate status (no progress callback available).
 - The bar updates every 3 seconds to avoid Discord rate limits.
+
+## HD Mode
+
+`[p]dl hd <url>` downloads media at the highest available quality with no resolution or file size restrictions. The file is uploaded directly to AnonDrop.net and a download link is posted in the channel.
+
+- No compression is applied. Full quality is preserved.
+- AnonDrop must be enabled for the server (`[p]sabdownloader anondrop toggle`).
+- Useful for YouTube videos where you want 1080p or 4K without Discord's upload limit.
 
 ## Instagram Authentication
 
