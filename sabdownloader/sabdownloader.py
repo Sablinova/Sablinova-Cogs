@@ -29,6 +29,50 @@ PROGRESS_UPDATE_INTERVAL = 3.0  # seconds between progress message edits
 
 ANONDROP_CHUNK_SIZE = 9 * 1024 * 1024  # 9 MB
 
+# File extensions used by yt-dlp / gallery-dl for incomplete or temp files.
+# These MUST be filtered out when collecting downloaded files.
+_TEMP_EXTENSIONS = {
+    ".part",
+    ".ytdl",
+    ".temp",
+    ".tmp",
+    ".partial",
+    ".part-Frag0",
+    ".part-Frag1",
+    ".part-Frag2",
+}
+
+
+def _is_temp_file(filepath: str) -> bool:
+    """Return True if the file looks like an incomplete/temp download."""
+    basename = os.path.basename(filepath)
+    # Check known temp extensions (including compound ones like .mp4.part)
+    for ext in _TEMP_EXTENSIONS:
+        if basename.endswith(ext):
+            return True
+    # yt-dlp fragment pattern: .part-FragN where N is any number
+    if re.search(r"\.part-Frag\d+$", basename):
+        return True
+    return False
+
+
+def _collect_real_files(temp_dir: str) -> List[str]:
+    """Collect non-temp, non-empty files from a directory."""
+    results = []
+    for f in os.listdir(temp_dir):
+        fp = os.path.join(temp_dir, f)
+        if not os.path.isfile(fp):
+            continue
+        if _is_temp_file(fp):
+            log.debug("Skipping temp/partial file: %s", f)
+            continue
+        if os.path.getsize(fp) == 0:
+            log.debug("Skipping zero-byte file: %s", f)
+            continue
+        results.append(fp)
+    return results
+
+
 # Private/reserved IP ranges for SSRF prevention
 _PRIVATE_NETWORKS = [
     ipaddress.ip_network("0.0.0.0/8"),
@@ -204,6 +248,26 @@ def _get_domain(url: str) -> str:
         return ""
 
 
+def _purge_temp_files(temp_dir: str) -> None:
+    """Remove all files from temp_dir (used between backend attempts).
+
+    This prevents one backend's leftover/partial files from being
+    picked up by the next backend's file scan.
+    """
+    try:
+        for f in os.listdir(temp_dir):
+            fp = os.path.join(temp_dir, f)
+            try:
+                if os.path.isfile(fp):
+                    os.unlink(fp)
+                elif os.path.isdir(fp):
+                    shutil.rmtree(fp, ignore_errors=True)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # gallery-dl backend
 # ---------------------------------------------------------------------------
@@ -235,31 +299,34 @@ def _gallery_dl_download(
     if cookies_file:
         gdl_config.set(("extractor",), "cookies", cookies_file)
 
-    # Collect downloaded files
-    downloaded = []
-
-    class CollectJob(job.DownloadJob):
-        def handle_url(self, url, kwdict, fallback=None):
-            result = super().handle_url(url, kwdict, fallback)
-            path = kwdict.get("_path") or kwdict.get("filename")
-            if path:
-                full = os.path.join(temp_dir, os.path.basename(str(path)))
-                if os.path.isfile(full):
-                    downloaded.append(full)
-            return result
+    # Snapshot existing files BEFORE download so we only collect new ones
+    pre_existing = set()
+    for f in os.listdir(temp_dir):
+        fp = os.path.join(temp_dir, f)
+        if os.path.isfile(fp):
+            pre_existing.add(fp)
 
     try:
-        j = CollectJob(url)
+        j = job.DownloadJob(url)
         j.run()
     except Exception as e:
         log.debug("gallery-dl failed for %s: %s", url, e)
 
-    # If CollectJob didn't populate via handle_url, scan the dir
-    if not downloaded:
-        for f in os.listdir(temp_dir):
-            fp = os.path.join(temp_dir, f)
-            if os.path.isfile(fp):
-                downloaded.append(fp)
+    # Collect only NEW, non-temp, non-empty files
+    downloaded = []
+    for f in os.listdir(temp_dir):
+        fp = os.path.join(temp_dir, f)
+        if fp in pre_existing:
+            continue
+        if not os.path.isfile(fp):
+            continue
+        if _is_temp_file(fp):
+            log.debug("gallery-dl: skipping temp file: %s", f)
+            continue
+        if os.path.getsize(fp) == 0:
+            log.debug("gallery-dl: skipping zero-byte file: %s", f)
+            continue
+        downloaded.append(fp)
 
     # Filter by max filesize if set
     if max_filesize and downloaded:
@@ -315,6 +382,20 @@ def _ytdlp_download(
         "no_warnings": True,
         "noprogress": True,
         "merge_output_format": "mp4",
+        # Prevent .part files - write directly to final filename
+        "nopart": True,
+        # Retry logic for transient HTTP errors (403, 429, etc.)
+        "retries": 3,
+        "fragment_retries": 3,
+        "file_access_retries": 3,
+        # Use a realistic User-Agent to reduce 403 blocks
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+        },
     }
 
     if cookies_file:
@@ -338,8 +419,15 @@ def _ytdlp_download(
             }
         ]
     else:
+        # Prefer mp4 containers, fall back through progressively simpler formats.
+        # The broad fallback chain avoids 403 issues where specific format
+        # combinations are blocked by the server.
         opts["format"] = (
-            "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best"
+            "bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/"
+            "bestvideo[ext=mp4]+bestaudio[ext=m4a]/"
+            "bestvideo+bestaudio/"
+            "best[ext=mp4]/"
+            "best"
         )
 
     info_dict = None
@@ -355,12 +443,8 @@ def _ytdlp_download(
         log.debug("yt-dlp failed for %s: %s", url, e)
         raise
 
-    # Collect output files
-    downloaded = []
-    for f in os.listdir(temp_dir):
-        fp = os.path.join(temp_dir, f)
-        if os.path.isfile(fp):
-            downloaded.append(fp)
+    # Collect output files - filter out temp/partial files and empty files
+    downloaded = _collect_real_files(temp_dir)
 
     return downloaded, info_dict
 
@@ -898,6 +982,9 @@ class SabDownloader(commands.Cog):
                     last_error = e
                     log.debug("gallery-dl failed for %s: %s", url, e)
 
+                # Clean up any leftover files before trying next backend
+                _purge_temp_files(temp_dir)
+
             elif backend == "ytdlp":
                 try:
                     tracker.stage = "Downloading"
@@ -923,6 +1010,9 @@ class SabDownloader(commands.Cog):
                 except Exception as e:
                     last_error = e
                     log.debug("yt-dlp failed for %s: %s", url, e)
+
+                # Clean up any leftover files before trying next backend
+                _purge_temp_files(temp_dir)
 
         if last_error:
             raise last_error
