@@ -7,8 +7,8 @@ Uses gallery-dl and yt-dlp as download backends. Large videos are automatically 
 ## Installation
 
 ```
-[p]repo add sablinova-cogs https://github.com/Sablinova/Sablinova-Cogs
-[p]cog install sablinova-cogs sabdownloader
+[p]repo add sablinova https://github.com/Sablinova/Sablinova-Cogs
+[p]cog install sablinova sabdownloader
 [p]load sabdownloader
 ```
 

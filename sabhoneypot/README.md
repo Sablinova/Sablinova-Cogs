@@ -7,8 +7,8 @@ When a user posts in the honeypot channel, their message is deleted and a config
 ## Installation
 
 ```
-[p]repo add sablinova-cogs https://github.com/Sablinova/Sablinova-Cogs
-[p]cog install sablinova-cogs sabhoneypot
+[p]repo add sablinova https://github.com/Sablinova/Sablinova-Cogs
+[p]cog install sablinova sabhoneypot
 [p]load sabhoneypot
 ```
 

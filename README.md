@@ -6,8 +6,8 @@ Custom cogs for [Red-DiscordBot](https://github.com/Cog-Creators/Red-DiscordBot)
 
 ```
 [p]load downloader
-[p]repo add sablinova-cogs https://github.com/Sablinova/Sablinova-Cogs
-[p]cog install sablinova-cogs <cog_name>
+[p]repo add sablinova https://github.com/Sablinova/Sablinova-Cogs
+[p]cog install sablinova <cog_name>
 [p]load <cog_name>
 ```
 
