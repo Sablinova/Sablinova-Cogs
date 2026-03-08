@@ -80,8 +80,7 @@ class SabHoneypot(commands.Cog):
     @commands.admin_or_permissions(manage_guild=True)
     async def sabhoneypot(self, ctx):
         """Manage the honeypot trap channel."""
-        if ctx.invoked_subcommand is None:
-            await ctx.send_help(ctx.command)
+        pass
 
     # ------------------------------------------------------------------
     # Interactive setup wizard
