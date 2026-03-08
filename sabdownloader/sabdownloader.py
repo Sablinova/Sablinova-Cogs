@@ -1153,11 +1153,14 @@ class SabDownloader(commands.Cog):
 
         In hd_mode, all files go directly to AnonDrop (no compression, no Discord upload).
         """
-        filesize_limit = ctx.guild.filesize_limit
+        filesize_limit = ctx.guild.filesize_limit if ctx.guild else 25 * 1024 * 1024
         anondrop_enabled = guild_config["anondrop_enabled"]
         anondrop_userkey = await self.config.anondrop_userkey()
         global_delete = await self.config.delete_command()
-        should_delete = guild_config["delete_command"] and global_delete
+        # Never delete command messages in DMs
+        should_delete = (
+            guild_config["delete_command"] and global_delete if ctx.guild else False
+        )
 
         uploaded_files = []
         anondrop_links = []
@@ -1228,27 +1231,26 @@ class SabDownloader(commands.Cog):
             except (discord.Forbidden, discord.HTTPException, discord.NotFound):
                 pass
 
-            # Log channel + modlog (reuse existing logic below)
-            # Fall through to modlog/log channel section
-            # We need to jump past the normal upload logic, so handle it here
-            try:
-                await modlog.create_case(
-                    bot=self.bot,
-                    guild=ctx.guild,
-                    created_at=ctx.message.created_at,
-                    action_type="mediadownload",
-                    user=ctx.author,
-                    moderator=ctx.guild.me,
-                    reason=(
-                        f"HD Media download | Platform: {platform} | "
-                        f"URL: {url} | "
-                        f"Size: {_human_size(total_original_size)} | "
-                        f"AnonDrop: {', '.join(anondrop_links)} | "
-                        f"Channel: #{ctx.channel.name}"
-                    ),
-                )
-            except Exception as e:
-                log.debug("Failed to create modlog case: %s", e)
+            # Log channel + modlog (HD mode)
+            if ctx.guild:
+                try:
+                    await modlog.create_case(
+                        bot=self.bot,
+                        guild=ctx.guild,
+                        created_at=ctx.message.created_at,
+                        action_type="mediadownload",
+                        user=ctx.author,
+                        moderator=ctx.guild.me,
+                        reason=(
+                            f"HD Media download | Platform: {platform} | "
+                            f"URL: {url} | "
+                            f"Size: {_human_size(total_original_size)} | "
+                            f"AnonDrop: {', '.join(anondrop_links)} | "
+                            f"Channel: #{ctx.channel.name}"
+                        ),
+                    )
+                except Exception as e:
+                    log.debug("Failed to create modlog case: %s", e)
 
             log_channel_id = await self.config.log_channel()
             if log_channel_id:
@@ -1271,12 +1273,16 @@ class SabDownloader(commands.Cog):
                     log_embed.add_field(name="Platform", value=platform, inline=True)
                     log_embed.add_field(
                         name="Channel",
-                        value=f"{ctx.channel.mention}",
+                        value=f"{ctx.channel.mention}" if ctx.guild else "DM",
                         inline=True,
                     )
                     log_embed.add_field(
                         name="Server",
-                        value=f"{ctx.guild.name} (`{ctx.guild.id}`)",
+                        value=(
+                            f"{ctx.guild.name} (`{ctx.guild.id}`)"
+                            if ctx.guild
+                            else "Direct Message"
+                        ),
                         inline=True,
                     )
                     log_embed.add_field(name="URL", value=url, inline=False)
@@ -1295,10 +1301,11 @@ class SabDownloader(commands.Cog):
                         value=str(len(files)),
                         inline=True,
                     )
-                    log_embed.set_footer(
-                        text=ctx.guild.name,
-                        icon_url=ctx.guild.icon.url if ctx.guild.icon else None,
+                    footer_name = ctx.guild.name if ctx.guild else "Direct Message"
+                    footer_icon = (
+                        ctx.guild.icon.url if ctx.guild and ctx.guild.icon else None
                     )
+                    log_embed.set_footer(text=footer_name, icon_url=footer_icon)
                     try:
                         await log_channel.send(embed=log_embed)
                     except discord.HTTPException as e:
@@ -1442,26 +1449,27 @@ class SabDownloader(commands.Cog):
         except (discord.Forbidden, discord.HTTPException, discord.NotFound):
             pass
 
-        # Modlog entry
-        try:
-            await modlog.create_case(
-                bot=self.bot,
-                guild=ctx.guild,
-                created_at=ctx.message.created_at,
-                action_type="mediadownload",
-                user=ctx.author,
-                moderator=ctx.guild.me,
-                reason=(
-                    f"Media download | Platform: {platform} | "
-                    f"URL: {url} | "
-                    f"Original size: {_human_size(total_original_size)} | "
-                    f"{'Compressed to: ' + _human_size(total_compressed_size) + ' | ' if compression_used else ''}"
-                    f"{'AnonDrop fallback used | ' if anondrop_used else ''}"
-                    f"Channel: #{ctx.channel.name}"
-                ),
-            )
-        except Exception as e:
-            log.debug("Failed to create modlog case: %s", e)
+        # Modlog entry (guild only)
+        if ctx.guild:
+            try:
+                await modlog.create_case(
+                    bot=self.bot,
+                    guild=ctx.guild,
+                    created_at=ctx.message.created_at,
+                    action_type="mediadownload",
+                    user=ctx.author,
+                    moderator=ctx.guild.me,
+                    reason=(
+                        f"Media download | Platform: {platform} | "
+                        f"URL: {url} | "
+                        f"Original size: {_human_size(total_original_size)} | "
+                        f"{'Compressed to: ' + _human_size(total_compressed_size) + ' | ' if compression_used else ''}"
+                        f"{'AnonDrop fallback used | ' if anondrop_used else ''}"
+                        f"Channel: #{ctx.channel.name}"
+                    ),
+                )
+            except Exception as e:
+                log.debug("Failed to create modlog case: %s", e)
 
         # Send to log channel if configured (bot-wide)
         log_channel_id = await self.config.log_channel()
@@ -1485,12 +1493,16 @@ class SabDownloader(commands.Cog):
                 log_embed.add_field(name="Platform", value=platform, inline=True)
                 log_embed.add_field(
                     name="Channel",
-                    value=f"{ctx.channel.mention}",
+                    value=f"{ctx.channel.mention}" if ctx.guild else "DM",
                     inline=True,
                 )
                 log_embed.add_field(
                     name="Server",
-                    value=f"{ctx.guild.name} (`{ctx.guild.id}`)",
+                    value=(
+                        f"{ctx.guild.name} (`{ctx.guild.id}`)"
+                        if ctx.guild
+                        else "Direct Message"
+                    ),
                     inline=True,
                 )
                 log_embed.add_field(name="URL", value=url, inline=False)
@@ -1516,10 +1528,11 @@ class SabDownloader(commands.Cog):
                     value=str(len(files)),
                     inline=True,
                 )
-                log_embed.set_footer(
-                    text=ctx.guild.name,
-                    icon_url=ctx.guild.icon.url if ctx.guild.icon else None,
+                footer_name = ctx.guild.name if ctx.guild else "Direct Message"
+                footer_icon = (
+                    ctx.guild.icon.url if ctx.guild and ctx.guild.icon else None
                 )
+                log_embed.set_footer(text=footer_name, icon_url=footer_icon)
                 try:
                     await log_channel.send(embed=log_embed)
                 except discord.HTTPException as e:
@@ -1737,7 +1750,6 @@ class SabDownloader(commands.Cog):
     # ------------------------------------------------------------------
 
     @commands.group(invoke_without_command=True)
-    @commands.guild_only()
     async def dl(self, ctx: commands.Context, url: str):
         """Download media from a URL and upload to Discord."""
         await self._do_download(ctx, url, audio_only=False)
@@ -1756,14 +1768,16 @@ class SabDownloader(commands.Cog):
         is preserved.
         """
         # Require AnonDrop to be enabled for HD mode
-        guild_config = await self.config.guild(ctx.guild).all()
-        if not guild_config["anondrop_enabled"]:
-            await ctx.send(
-                "HD downloads require AnonDrop to be enabled. "
-                "An admin can enable it with `[p]sabdownloader anondrop toggle`.",
-                delete_after=15,
-            )
-            return
+        if ctx.guild:
+            guild_config = await self.config.guild(ctx.guild).all()
+            if not guild_config["anondrop_enabled"]:
+                await ctx.send(
+                    "HD downloads require AnonDrop to be enabled. "
+                    "An admin can enable it with `[p]sabdownloader anondrop toggle`.",
+                    delete_after=15,
+                )
+                return
+        # In DMs, AnonDrop is always available for HD mode
         await self._do_download(ctx, url, hd_mode=True)
 
     async def _do_download(
@@ -1775,13 +1789,24 @@ class SabDownloader(commands.Cog):
     ) -> None:
         """Core download flow."""
         # --- Validation ---
-        guild_config = await self.config.guild(ctx.guild).all()
+        if ctx.guild:
+            guild_config = await self.config.guild(ctx.guild).all()
+        else:
+            # DM context: use sensible defaults (no guild config available)
+            guild_config = {
+                "enabled": True,
+                "max_duration": 600,
+                "allowed_channels": [],
+                "delete_command": False,
+                "cooldown": 30,
+                "anondrop_enabled": True,
+            }
 
         if not guild_config["enabled"]:
             await ctx.send("SabDownloader is disabled in this server.", delete_after=10)
             return
 
-        # Channel restriction
+        # Channel restriction (skip in DMs)
         allowed = guild_config["allowed_channels"]
         if allowed and ctx.channel.id not in allowed:
             await ctx.send(
