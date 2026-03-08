@@ -953,6 +953,7 @@ class SabDownloader(commands.Cog):
             max_concurrent=3,
             anondrop_userkey=None,
             log_channel=None,
+            delete_command=True,
         )
         self._semaphore: Optional[asyncio.Semaphore] = None
         self._cooldowns: Dict[int, float] = {}  # user_id -> last_use timestamp
@@ -1155,6 +1156,8 @@ class SabDownloader(commands.Cog):
         filesize_limit = ctx.guild.filesize_limit
         anondrop_enabled = guild_config["anondrop_enabled"]
         anondrop_userkey = await self.config.anondrop_userkey()
+        global_delete = await self.config.delete_command()
+        should_delete = guild_config["delete_command"] and global_delete
 
         uploaded_files = []
         anondrop_links = []
@@ -1191,9 +1194,18 @@ class SabDownloader(commands.Cog):
             # Post results
             if anondrop_links:
                 links_text = "\n".join(anondrop_links)
-                await ctx.send(
-                    f"**HD Download** ({_human_size(total_original_size)})\n{links_text}"
+                embed = discord.Embed(
+                    description=links_text,
+                    color=discord.Color.gold(),
                 )
+                embed.set_author(
+                    name=f"{ctx.author.display_name} — HD Download",
+                    icon_url=ctx.author.display_avatar.url,
+                )
+                embed.set_footer(
+                    text=f"{platform} | {_human_size(total_original_size)}"
+                )
+                await ctx.send(embed=embed)
             else:
                 try:
                     await status_msg.edit(
@@ -1204,7 +1216,7 @@ class SabDownloader(commands.Cog):
                 return
 
             # Delete command message if configured
-            if guild_config["delete_command"]:
+            if should_delete:
                 try:
                     await ctx.message.delete()
                 except (discord.Forbidden, discord.HTTPException, discord.NotFound):
@@ -1352,6 +1364,18 @@ class SabDownloader(commands.Cog):
                 _human_size(file_size),
             )
 
+        # Build the user-facing embed
+        total_size_str = _human_size(total_original_size)
+        if compression_used:
+            total_size_str += f" (compressed to {_human_size(total_compressed_size)})"
+
+        result_embed = discord.Embed(color=discord.Color.blurple())
+        result_embed.set_author(
+            name=ctx.author.display_name,
+            icon_url=ctx.author.display_avatar.url,
+        )
+        result_embed.set_footer(text=f"{platform} | {total_size_str}")
+
         # Upload to Discord
         if uploaded_files:
             # Discord allows up to 10 attachments per message
@@ -1368,7 +1392,11 @@ class SabDownloader(commands.Cog):
 
                 if discord_files:
                     try:
-                        await ctx.send(files=discord_files)
+                        # First batch gets the embed, subsequent batches are plain
+                        if i == 0:
+                            await ctx.send(embed=result_embed, files=discord_files)
+                        else:
+                            await ctx.send(files=discord_files)
                     except discord.HTTPException as e:
                         log.warning("Failed to upload files to Discord: %s", e)
                         # Try AnonDrop fallback for each file
@@ -1388,10 +1416,21 @@ class SabDownloader(commands.Cog):
         # Post AnonDrop links
         if anondrop_links:
             links_text = "\n".join(anondrop_links)
-            await ctx.send(f"File too large for Discord. Download here:\n{links_text}")
+            anondrop_embed = discord.Embed(
+                description=links_text,
+                color=discord.Color.orange(),
+            )
+            anondrop_embed.set_author(
+                name=ctx.author.display_name,
+                icon_url=ctx.author.display_avatar.url,
+            )
+            anondrop_embed.set_footer(text=f"{platform} | {total_size_str}")
+            # If we already sent files with an embed, this is a follow-up
+            # If no files were uploaded, this is the only message
+            await ctx.send(embed=anondrop_embed)
 
         # Delete command message if configured
-        if guild_config["delete_command"]:
+        if should_delete:
             try:
                 await ctx.message.delete()
             except (discord.Forbidden, discord.HTTPException, discord.NotFound):
@@ -1554,6 +1593,11 @@ class SabDownloader(commands.Cog):
                 value=str(global_config["max_concurrent"]),
                 inline=True,
             )
+            embed.add_field(
+                name="Global Delete",
+                value=str(global_config.get("delete_command", True)),
+                inline=True,
+            )
 
         embed.set_footer(
             text=ctx.guild.name,
@@ -1596,12 +1640,22 @@ class SabDownloader(commands.Cog):
 
     @sabdownloader.command(name="deletecommand")
     async def sd_deletecommand(self, ctx: commands.Context):
-        """Toggle whether the user's command message is deleted after download."""
+        """Toggle whether the user's command message is deleted after download (per-server)."""
         current = await self.config.guild(ctx.guild).delete_command()
         new_val = not current
         await self.config.guild(ctx.guild).delete_command.set(new_val)
         state = "enabled" if new_val else "disabled"
-        await ctx.send(f"Delete command message is now **{state}**.")
+        await ctx.send(f"Delete command message is now **{state}** for this server.")
+
+    @sabdownloader.command(name="globaldelete")
+    @commands.is_owner()
+    async def sd_globaldelete(self, ctx: commands.Context):
+        """(Bot Owner) Toggle command message deletion bot-wide. Overrides per-server setting when off."""
+        current = await self.config.delete_command()
+        new_val = not current
+        await self.config.delete_command.set(new_val)
+        state = "enabled" if new_val else "disabled"
+        await ctx.send(f"Global delete command message is now **{state}**.")
 
     @sabdownloader.group(name="allowedchannels", invoke_without_command=True)
     async def sd_allowedchannels(self, ctx: commands.Context):
