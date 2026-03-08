@@ -150,7 +150,7 @@ class SabHoneypot(commands.Cog):
             }
             try:
                 honeypot_channel = await ctx.guild.create_text_channel(
-                    name="honeypot",
+                    name="\U0001f36f",
                     overwrites=overwrites,
                     position=0,
                     reason="Honeypot trap channel — setup wizard",
@@ -365,7 +365,7 @@ class SabHoneypot(commands.Cog):
         }
 
         channel = await ctx.guild.create_text_channel(
-            name="honeypot",
+            name="\U0001f36f",
             overwrites=overwrites,
             position=0,
             reason="Honeypot trap channel creation",
@@ -1009,6 +1009,49 @@ class SabHoneypot(commands.Cog):
         elif action == "kick":
             kick_delete_days = config["kick_delete_days"]
             try:
+                # DM the user before softbanning with reason and invite
+                try:
+                    invite = await message.channel.guild.text_channels[0].create_invite(
+                        max_uses=1,
+                        max_age=86400,
+                        unique=True,
+                        reason="Honeypot softban — rejoin invite for kicked user.",
+                    )
+                except (discord.Forbidden, discord.HTTPException, IndexError):
+                    invite = None
+
+                dm_embed = discord.Embed(
+                    title=f"You were kicked from {message.guild.name}",
+                    color=discord.Color.orange(),
+                )
+                dm_embed.add_field(
+                    name="Reason",
+                    value="You sent a message in a honeypot trap channel.",
+                    inline=False,
+                )
+                dm_embed.add_field(
+                    name="What happened?",
+                    value=(
+                        "The channel you posted in was a trap designed to catch bots and scammers. "
+                        "If you are a real person, you may rejoin using the invite below."
+                    ),
+                    inline=False,
+                )
+                if invite:
+                    dm_embed.add_field(
+                        name="Rejoin the server",
+                        value=str(invite),
+                        inline=False,
+                    )
+                dm_embed.set_footer(
+                    text="This invite is single-use and expires in 24 hours."
+                )
+
+                try:
+                    await message.author.send(embed=dm_embed)
+                except (discord.Forbidden, discord.HTTPException):
+                    pass  # User has DMs disabled
+
                 await message.guild.ban(
                     message.author,
                     reason="Honeypot detection — self-bot/scammer (softban).",
