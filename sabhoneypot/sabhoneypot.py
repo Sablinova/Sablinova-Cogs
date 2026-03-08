@@ -117,8 +117,7 @@ class SabHoneypot(commands.Cog):
         await ctx.send(
             "**SabHoneypot Setup**\n"
             "I'll walk you through configuring the honeypot step by step.\n"
-            "Type `cancel` at any point to abort.\n"
-            "\u2500" * 40
+            "Type `cancel` at any point to abort.\n" + "\u2500" * 40
         )
 
         # --- Step 1: Honeypot Channel ---
