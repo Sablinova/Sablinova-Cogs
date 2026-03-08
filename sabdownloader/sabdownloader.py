@@ -57,8 +57,13 @@ def _is_temp_file(filepath: str) -> bool:
 
 
 def _collect_real_files(temp_dir: str) -> List[str]:
-    """Collect non-temp, non-empty files from a directory."""
+    """Collect non-temp, non-empty files from a directory.
+
+    If a merged output file exists (no .fNNN. in the name), exclude
+    the intermediate format-specific files that yt-dlp leaves behind.
+    """
     results = []
+    intermediates = []
     for f in os.listdir(temp_dir):
         fp = os.path.join(temp_dir, f)
         if not os.path.isfile(fp):
@@ -69,7 +74,29 @@ def _collect_real_files(temp_dir: str) -> List[str]:
         if os.path.getsize(fp) == 0:
             log.debug("Skipping zero-byte file: %s", f)
             continue
-        results.append(fp)
+        # yt-dlp intermediate files have .fNNN. pattern (e.g. video.f137.mp4)
+        if re.search(r"\.f\d+\.", f):
+            intermediates.append(fp)
+        else:
+            results.append(fp)
+
+    # If we have merged/final files, skip the intermediates
+    if results and intermediates:
+        log.info(
+            "Found %d merged files and %d intermediates; discarding intermediates",
+            len(results),
+            len(intermediates),
+        )
+        return results
+
+    # If no merged files exist (merge failed/skipped), return intermediates
+    if not results and intermediates:
+        log.info(
+            "No merged files found; returning %d intermediate files",
+            len(intermediates),
+        )
+        return intermediates
+
     return results
 
 
@@ -459,6 +486,8 @@ def _ytdlp_download(
         "merge_output_format": "mp4",
         # Prevent .part files - write directly to final filename
         "nopart": True,
+        # Delete intermediate files after merge (video-only + audio-only streams)
+        "keepvideo": False,
         # Retry logic for transient HTTP errors (403, 429, etc.)
         "retries": 3,
         "fragment_retries": 3,
@@ -1781,7 +1810,18 @@ class SabDownloader(commands.Cog):
             async with self._semaphore:
                 self._set_cooldown(ctx.author.id)
 
-                max_filesize = ctx.guild.filesize_limit * 3
+                # max_filesize for yt-dlp: This limits individual stream sizes
+                # (not merged output). We need to allow large downloads since we
+                # have compression and AnonDrop as fallbacks. Use a generous cap
+                # for disk safety, but don't tie it to Discord's upload limit
+                # which is too restrictive (10MB for unboosted guilds).
+                if guild_config["anondrop_enabled"]:
+                    # AnonDrop can handle large files; cap at 500MB for safety
+                    max_filesize = 500 * 1024 * 1024
+                else:
+                    # Without AnonDrop, we can still compress, so allow up to
+                    # 200MB per stream (ffmpeg can compress significantly)
+                    max_filesize = 200 * 1024 * 1024
                 max_duration = guild_config["max_duration"]
 
                 log.debug(
