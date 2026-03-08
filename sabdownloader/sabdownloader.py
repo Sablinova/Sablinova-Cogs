@@ -404,16 +404,26 @@ def _ytdlp_download(
     """
     import yt_dlp
 
-    log.debug("[yt-dlp] === Starting download ===")
-    log.debug("[yt-dlp] URL: %s", url)
-    log.debug("[yt-dlp] temp_dir=%s audio_only=%s", temp_dir, audio_only)
-    log.debug(
+    log.info("[yt-dlp] === Starting download ===")
+    log.info("[yt-dlp] URL: %s", url)
+    log.info("[yt-dlp] temp_dir=%s audio_only=%s", temp_dir, audio_only)
+    log.info(
         "[yt-dlp] cookies=%s max_filesize=%s max_duration=%s",
         cookies_file,
         max_filesize,
         max_duration,
     )
-    log.debug("[yt-dlp] yt-dlp version: %s", yt_dlp.version.__version__)
+    log.info("[yt-dlp] yt-dlp version: %s", yt_dlp.version.__version__)
+
+    # Check EJS solver availability
+    try:
+        from yt_dlp.dependencies import yt_dlp_ejs as _has_ejs
+
+        log.info("[yt-dlp] yt_dlp_ejs package available: %s", bool(_has_ejs))
+        if _has_ejs:
+            log.info("[yt-dlp] yt_dlp_ejs version: %s", _has_ejs.version)
+    except Exception as ejs_err:
+        log.warning("[yt-dlp] Could not check yt_dlp_ejs: %s", ejs_err)
 
     def progress_hook(d):
         if progress_tracker is None:
@@ -538,33 +548,33 @@ def _ytdlp_download(
 
     # Log info_dict details for debugging
     if info_dict:
-        log.debug("[yt-dlp] === info_dict summary ===")
-        log.debug("[yt-dlp] title: %s", info_dict.get("title"))
-        log.debug("[yt-dlp] extractor: %s", info_dict.get("extractor"))
-        log.debug("[yt-dlp] format: %s", info_dict.get("format"))
-        log.debug("[yt-dlp] format_id: %s", info_dict.get("format_id"))
-        log.debug("[yt-dlp] ext: %s", info_dict.get("ext"))
-        log.debug("[yt-dlp] resolution: %s", info_dict.get("resolution"))
-        log.debug(
+        log.info("[yt-dlp] === info_dict summary ===")
+        log.info("[yt-dlp] title: %s", info_dict.get("title"))
+        log.info("[yt-dlp] extractor: %s", info_dict.get("extractor"))
+        log.info("[yt-dlp] format: %s", info_dict.get("format"))
+        log.info("[yt-dlp] format_id: %s", info_dict.get("format_id"))
+        log.info("[yt-dlp] ext: %s", info_dict.get("ext"))
+        log.info("[yt-dlp] resolution: %s", info_dict.get("resolution"))
+        log.info(
             "[yt-dlp] width: %s, height: %s",
             info_dict.get("width"),
             info_dict.get("height"),
         )
-        log.debug(
+        log.info(
             "[yt-dlp] vcodec: %s, acodec: %s",
             info_dict.get("vcodec"),
             info_dict.get("acodec"),
         )
-        log.debug("[yt-dlp] duration: %s", info_dict.get("duration"))
-        log.debug("[yt-dlp] filesize: %s", info_dict.get("filesize"))
-        log.debug("[yt-dlp] filesize_approx: %s", info_dict.get("filesize_approx"))
-        log.debug("[yt-dlp] _filename: %s", info_dict.get("_filename"))
-        log.debug(
+        log.info("[yt-dlp] duration: %s", info_dict.get("duration"))
+        log.info("[yt-dlp] filesize: %s", info_dict.get("filesize"))
+        log.info("[yt-dlp] filesize_approx: %s", info_dict.get("filesize_approx"))
+        log.info("[yt-dlp] _filename: %s", info_dict.get("_filename"))
+        log.info(
             "[yt-dlp] requested_downloads count: %s",
             len(info_dict.get("requested_downloads", [])),
         )
         for i, rd in enumerate(info_dict.get("requested_downloads", [])):
-            log.debug(
+            log.info(
                 "[yt-dlp]   requested_download[%d]: filepath=%s format=%s ext=%s",
                 i,
                 rd.get("filepath", rd.get("_filename")),
@@ -581,12 +591,12 @@ def _ytdlp_download(
         if os.path.isfile(fp):
             sz = os.path.getsize(fp)
             all_files_after.append(f"{f} ({_human_size(sz)})")
-    log.debug("[yt-dlp] All files in temp_dir after download: %s", all_files_after)
+    log.info("[yt-dlp] All files in temp_dir after download: %s", all_files_after)
 
     # Collect output files - filter out temp/partial files and empty files
     downloaded = _collect_real_files(temp_dir)
 
-    log.debug(
+    log.info(
         "[yt-dlp] Final collected files (%d): %s",
         len(downloaded),
         [(os.path.basename(f), _human_size(os.path.getsize(f))) for f in downloaded],
@@ -1105,7 +1115,7 @@ class SabDownloader(commands.Cog):
         if audio_only:
             backends = ["ytdlp"]
 
-        log.debug(
+        log.info(
             "[_try_download] URL=%s domain=%s backends=%s audio_only=%s",
             url,
             domain,
@@ -1177,11 +1187,11 @@ class SabDownloader(commands.Cog):
                         ),
                     )
                     if files:
-                        log.debug(
+                        log.info(
                             "[_try_download] yt-dlp succeeded with %d files", len(files)
                         )
                         for f in files:
-                            log.debug(
+                            log.info(
                                 "[_try_download]   -> %s (%s)",
                                 os.path.basename(f),
                                 _human_size(os.path.getsize(f)),
@@ -1229,8 +1239,8 @@ class SabDownloader(commands.Cog):
         anondrop_enabled = guild_config["anondrop_enabled"]
         anondrop_userkey = await self.config.anondrop_userkey()
 
-        log.debug("[_handle_file_upload] === Starting upload ===")
-        log.debug(
+        log.info("[_handle_file_upload] === Starting upload ===")
+        log.info(
             "[_handle_file_upload] %d files to process, filesize_limit=%s, anondrop=%s",
             len(files),
             _human_size(filesize_limit),
