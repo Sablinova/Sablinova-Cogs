@@ -15,7 +15,7 @@ Custom cogs for [Red-DiscordBot](https://github.com/Cog-Creators/Red-DiscordBot)
 
 | Cog | Description |
 |-----|-------------|
-| [SabHoneypot](honeypot/) | Trap channel to catch self-bots and scammers with automatic mute, kick, ban, or log-only actions. |
+| [SabHoneypot](sabhoneypot/) | Trap channel to catch self-bots and scammers with automatic mute, kick, ban, or log-only actions. |
 | [Backup](backup/) | Export and import installed repositories and cogs for easy bot migration. |
 | [RoleAll](roleall/) | Mass-assign a specific role to every member in the server. |
 | [TidbStats](tidbstats/) | Auto-updating embed displaying live statistics from The Intro Database API. |

@@ -3,7 +3,7 @@
     "author": [
         "Sablinova"
     ],
-    "install_msg": "Thank you for installing SabHoneypot!\nUse `[p]honeypot createchannel` or `[p]honeypot choosechannel` to get started.\nIf migrating from AAA3A's Honeypot, use `[p]honeypot migrate`.",
+    "install_msg": "Thank you for installing SabHoneypot!\nUse `[p]sabhoneypot createchannel` or `[p]sabhoneypot choosechannel` to get started.\nIf migrating from AAA3A's Honeypot, use `[p]sabhoneypot migrate`.",
     "name": "SabHoneypot",
     "short": "Trap channel to catch self-bots and scammers.",
     "description": "Creates a decoy channel at the top of your server to automatically detect and act on self-bots and scammers. Supports mute, kick (softban), ban, or log-only actions with full modlog integration. Includes migration from AAA3A's Honeypot cog.",

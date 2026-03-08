@@ -1,1 +1,0 @@
-from .honeypot import setup

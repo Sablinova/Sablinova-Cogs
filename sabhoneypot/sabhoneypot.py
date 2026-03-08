@@ -3,7 +3,7 @@ from redbot.core import commands, Config, modlog
 import logging
 from typing import Optional
 
-log = logging.getLogger("red.sablinova.honeypot")
+log = logging.getLogger("red.sablinova.sabhoneypot")
 
 # AAA3A Honeypot config constants (for migration)
 AAA3A_HONEYPOT_IDENTIFIER = 205192943327321000143939875896557571750
@@ -34,7 +34,16 @@ class SabHoneypot(commands.Cog):
             ping_role=None,
             honeypot_channel=None,
             mute_role=None,
-            warning_text="DO NOT POST IN THIS CHANNEL. Any messages sent here will result in immediate action.",
+            warning_text=(
+                "\U0001f6a8 **__WARNING!__** \U0001f6a8\n"
+                "# \u2757 **DO NOT SEND A MESSAGE HERE** \u2757\n"
+                "> \U0001f41d This is a **HONEYPOT** for bots.\n"
+                "> \U0001f6ab Sending a message here will result in an **instant ban**.\n\n"
+                "\U0001f512 **This channel is monitored.**\n"
+                "\U0001f440 If you're human, move along.\n"
+                "\U0001f916 If you're a bot... well, thanks for making it easy.\n\n"
+                "\U0001f6d1 **FINAL WARNING: Do NOT type anything here.** \U0001f6d1"
+            ),
             warning_image=None,
             warning_message_id=None,
             kick_delete_days=1,
@@ -52,13 +61,12 @@ class SabHoneypot(commands.Cog):
         warning_image = config["warning_image"]
 
         embed = discord.Embed(
-            title="\u26a0\ufe0f DO NOT POST HERE \u26a0\ufe0f",
             description=warning_text,
             color=discord.Color.red(),
         )
         if warning_image:
             embed.set_image(url=warning_image)
-        embed.set_footer(text="Messages posted here will be logged and acted upon.")
+        embed.set_footer(text="Powered by SabHoneypot")
         return embed
 
     # ------------------------------------------------------------------
@@ -68,7 +76,7 @@ class SabHoneypot(commands.Cog):
     @commands.group()
     @commands.guild_only()
     @commands.admin_or_permissions(manage_guild=True)
-    async def honeypot(self, ctx):
+    async def sabhoneypot(self, ctx):
         """Manage the honeypot trap channel."""
         if ctx.invoked_subcommand is None:
             await ctx.send_help(ctx.command)
@@ -77,7 +85,7 @@ class SabHoneypot(commands.Cog):
     # Channel management
     # ------------------------------------------------------------------
 
-    @honeypot.command(name="createchannel")
+    @sabhoneypot.command(name="createchannel")
     @commands.bot_has_guild_permissions(manage_channels=True)
     async def honeypot_createchannel(self, ctx):
         """Create a new honeypot trap channel at the top of the server."""
@@ -87,7 +95,7 @@ class SabHoneypot(commands.Cog):
             if channel is not None:
                 await ctx.send(
                     f"A honeypot channel already exists: {channel.mention}. "
-                    "Delete it first with `honeypot deletechannel`."
+                    "Delete it first with `sabhoneypot deletechannel`."
                 )
                 return
 
@@ -120,10 +128,10 @@ class SabHoneypot(commands.Cog):
         await self.config.guild(ctx.guild).warning_message_id.set(warning_msg.id)
         await ctx.send(
             f"Honeypot channel created: {channel.mention}\n"
-            "Set a log channel with `honeypot logchannel` and enable with `honeypot enable`."
+            "Set a log channel with `sabhoneypot logchannel` and enable with `sabhoneypot enable`."
         )
 
-    @honeypot.command(name="choosechannel")
+    @sabhoneypot.command(name="choosechannel")
     async def honeypot_choosechannel(self, ctx, channel: discord.TextChannel):
         """Designate an existing channel as the honeypot trap."""
         await self.config.guild(ctx.guild).honeypot_channel.set(channel.id)
@@ -132,7 +140,7 @@ class SabHoneypot(commands.Cog):
             "Make sure the channel has appropriate permissions and a warning message."
         )
 
-    @honeypot.command(name="deletechannel")
+    @sabhoneypot.command(name="deletechannel")
     @commands.bot_has_guild_permissions(manage_channels=True)
     async def honeypot_deletechannel(self, ctx):
         """Delete the honeypot channel and disable the trap."""
@@ -161,23 +169,23 @@ class SabHoneypot(commands.Cog):
     # Toggle commands
     # ------------------------------------------------------------------
 
-    @honeypot.command(name="enable")
+    @sabhoneypot.command(name="enable")
     async def honeypot_enable(self, ctx):
         """Enable the honeypot trap. Requires a honeypot channel and log channel."""
         config = await self.config.guild(ctx.guild).all()
         if config["honeypot_channel"] is None:
             await ctx.send(
-                "Set a honeypot channel first with `honeypot createchannel` or `honeypot choosechannel`."
+                "Set a honeypot channel first with `sabhoneypot createchannel` or `sabhoneypot choosechannel`."
             )
             return
         if config["logs_channel"] is None:
-            await ctx.send("Set a log channel first with `honeypot logchannel`.")
+            await ctx.send("Set a log channel first with `sabhoneypot logchannel`.")
             return
 
         await self.config.guild(ctx.guild).enabled.set(True)
         await ctx.send("Honeypot trap is now **enabled**.")
 
-    @honeypot.command(name="disable")
+    @sabhoneypot.command(name="disable")
     async def honeypot_disable(self, ctx):
         """Disable the honeypot trap."""
         await self.config.guild(ctx.guild).enabled.set(False)
@@ -187,7 +195,7 @@ class SabHoneypot(commands.Cog):
     # Configuration commands
     # ------------------------------------------------------------------
 
-    @honeypot.command(name="action")
+    @sabhoneypot.command(name="action")
     async def honeypot_action(self, ctx, action: str):
         """Set the action on detection: mute, kick, ban, or none (log-only)."""
         action = action.lower()
@@ -203,19 +211,19 @@ class SabHoneypot(commands.Cog):
             if mute_role is None:
                 await ctx.send(
                     f"Action set to **{action}**.\n"
-                    "**Warning:** No mute role configured. Set one with `honeypot muterole`."
+                    "**Warning:** No mute role configured. Set one with `sabhoneypot muterole`."
                 )
                 return
 
         await ctx.send(f"Action set to **{action}**.")
 
-    @honeypot.command(name="logchannel")
+    @sabhoneypot.command(name="logchannel")
     async def honeypot_logchannel(self, ctx, channel: discord.TextChannel):
         """Set the channel for incident log embeds."""
         await self.config.guild(ctx.guild).logs_channel.set(channel.id)
         await ctx.send(f"Log channel set to {channel.mention}.")
 
-    @honeypot.command(name="pingrole")
+    @sabhoneypot.command(name="pingrole")
     async def honeypot_pingrole(self, ctx, role: Optional[discord.Role] = None):
         """Set the role to ping on detection. Omit to clear."""
         if role is None:
@@ -225,19 +233,19 @@ class SabHoneypot(commands.Cog):
             await self.config.guild(ctx.guild).ping_role.set(role.id)
             await ctx.send(f"Ping role set to **{role.name}**.")
 
-    @honeypot.command(name="muterole")
+    @sabhoneypot.command(name="muterole")
     async def honeypot_muterole(self, ctx, role: discord.Role):
         """Set the role to assign when action is mute."""
         await self.config.guild(ctx.guild).mute_role.set(role.id)
         await ctx.send(f"Mute role set to **{role.name}**.")
 
-    @honeypot.command(name="warningtext")
+    @sabhoneypot.command(name="warningtext")
     async def honeypot_warningtext(self, ctx, *, text: str):
         """Set the custom warning text for the honeypot channel embed."""
         await self.config.guild(ctx.guild).warning_text.set(text)
         await ctx.send(f"Warning text updated.")
 
-    @honeypot.command(name="kickdeletedays")
+    @sabhoneypot.command(name="kickdeletedays")
     async def honeypot_kickdeletedays(self, ctx, days: int):
         """Set days of message history to delete on kick/softban (0-7)."""
         if days < 0 or days > 7:
@@ -246,7 +254,7 @@ class SabHoneypot(commands.Cog):
         await self.config.guild(ctx.guild).kick_delete_days.set(days)
         await ctx.send(f"Kick delete days set to **{days}**.")
 
-    @honeypot.command(name="bandeletedays")
+    @sabhoneypot.command(name="bandeletedays")
     async def honeypot_bandeletedays(self, ctx, days: int):
         """Set days of message history to delete on ban (0-7)."""
         if days < 0 or days > 7:
@@ -255,7 +263,7 @@ class SabHoneypot(commands.Cog):
         await self.config.guild(ctx.guild).ban_delete_days.set(days)
         await ctx.send(f"Ban delete days set to **{days}**.")
 
-    @honeypot.command(name="warningimage")
+    @sabhoneypot.command(name="warningimage")
     async def honeypot_warningimage(self, ctx, url: Optional[str] = None):
         """Set a custom image URL for the warning embed. Omit to clear."""
         if url is None:
@@ -264,10 +272,10 @@ class SabHoneypot(commands.Cog):
         else:
             await self.config.guild(ctx.guild).warning_image.set(url)
             await ctx.send(
-                f"Warning image set. Use `honeypot refresh` to update the channel."
+                f"Warning image set. Use `sabhoneypot refresh` to update the channel."
             )
 
-    @honeypot.command(name="refresh")
+    @sabhoneypot.command(name="refresh")
     @commands.bot_has_guild_permissions(manage_channels=True)
     async def honeypot_refresh(self, ctx):
         """Update the warning message in the honeypot channel with current settings."""
@@ -280,7 +288,7 @@ class SabHoneypot(commands.Cog):
         channel = ctx.guild.get_channel(channel_id)
         if channel is None:
             await ctx.send(
-                "Honeypot channel no longer exists. Clear it with `honeypot deletechannel`."
+                "Honeypot channel no longer exists. Clear it with `sabhoneypot deletechannel`."
             )
             return
 
@@ -311,7 +319,7 @@ class SabHoneypot(commands.Cog):
     # Settings display
     # ------------------------------------------------------------------
 
-    @honeypot.command(name="settings")
+    @sabhoneypot.command(name="settings")
     async def honeypot_settings(self, ctx):
         """Display all current honeypot settings."""
         config = await self.config.guild(ctx.guild).all()
@@ -376,7 +384,7 @@ class SabHoneypot(commands.Cog):
     # Migration from AAA3A Honeypot
     # ------------------------------------------------------------------
 
-    @honeypot.command(name="migrate")
+    @sabhoneypot.command(name="migrate")
     async def honeypot_migrate(self, ctx):
         """Migrate settings from AAA3A's Honeypot cog for this server."""
         # Read old config

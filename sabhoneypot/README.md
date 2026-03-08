@@ -8,31 +8,31 @@ When a user posts in the honeypot channel, their message is deleted and a config
 
 ```
 [p]repo add sablinova-cogs https://github.com/Sablinova/Sablinova-Cogs
-[p]cog install sablinova-cogs honeypot
-[p]load honeypot
+[p]cog install sablinova-cogs sabhoneypot
+[p]load sabhoneypot
 ```
 
 ## Quick Start
 
 ```
-[p]honeypot createchannel
-[p]honeypot logchannel #mod-logs
-[p]honeypot action ban
-[p]honeypot enable
+[p]sabhoneypot createchannel
+[p]sabhoneypot logchannel #mod-logs
+[p]sabhoneypot action ban
+[p]sabhoneypot enable
 ```
 
 ## Actions
 
 | Action | Behavior |
 |--------|----------|
-| `mute` | Assigns a configured mute role to the user. Requires `[p]honeypot muterole` to be set. |
+| `mute` | Assigns a configured mute role to the user. Requires `[p]sabhoneypot muterole` to be set. |
 | `kick` | Softbans the user (ban then immediate unban) to kick them and delete recent messages. |
 | `ban` | Permanently bans the user and deletes recent messages. |
 | `none` | Log-only. The message is deleted and the incident is logged, but no further action is taken. |
 
 ## Commands
 
-All commands are under `[p]honeypot` and require `manage_guild` permission.
+All commands are under `[p]sabhoneypot` and require `manage_guild` permission.
 
 ### Channel Management
 
@@ -94,7 +94,7 @@ All commands are under `[p]honeypot` and require `manage_guild` permission.
 If you previously used [AAA3A's Honeypot](https://github.com/AAA3A-AAA3A/AAA3A-cogs) cog, SabHoneypot can import your existing per-server configuration:
 
 1. Install and load SabHoneypot.
-2. Run `[p]honeypot migrate` in each server that had the old cog configured.
+2. Run `[p]sabhoneypot migrate` in each server that had the old cog configured.
 3. Review the migration preview embed. Channels or roles that no longer exist will be skipped.
 4. Reply `yes` within 30 seconds to confirm.
 5. Unload the old cog with `[p]unload honeypot` to avoid conflicts.
