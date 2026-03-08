@@ -760,6 +760,7 @@ class SabDownloader(commands.Cog):
             delete_command=True,
             cooldown=30,
             anondrop_enabled=True,
+            log_channel=None,
         )
         self.config.register_global(
             cookies_file=None,
@@ -1070,6 +1071,63 @@ class SabDownloader(commands.Cog):
         except Exception as e:
             log.debug("Failed to create modlog case: %s", e)
 
+        # Send to log channel if configured
+        log_channel_id = guild_config.get("log_channel")
+        if log_channel_id:
+            log_channel = ctx.guild.get_channel(log_channel_id)
+            if log_channel:
+                log_embed = discord.Embed(
+                    title="Media Download",
+                    color=discord.Color.blue(),
+                    timestamp=ctx.message.created_at,
+                )
+                log_embed.set_author(
+                    name=f"{ctx.author} ({ctx.author.id})",
+                    icon_url=ctx.author.display_avatar.url,
+                )
+                log_embed.add_field(
+                    name="User",
+                    value=f"{ctx.author.mention} (`{ctx.author.id}`)",
+                    inline=True,
+                )
+                log_embed.add_field(name="Platform", value=platform, inline=True)
+                log_embed.add_field(
+                    name="Channel",
+                    value=f"{ctx.channel.mention}",
+                    inline=True,
+                )
+                log_embed.add_field(name="URL", value=url, inline=False)
+                log_embed.add_field(
+                    name="Original Size",
+                    value=_human_size(total_original_size),
+                    inline=True,
+                )
+                if compression_used:
+                    log_embed.add_field(
+                        name="Compressed Size",
+                        value=_human_size(total_compressed_size),
+                        inline=True,
+                    )
+                if anondrop_used:
+                    log_embed.add_field(
+                        name="AnonDrop",
+                        value="\n".join(anondrop_links) if anondrop_links else "Yes",
+                        inline=False,
+                    )
+                log_embed.add_field(
+                    name="Files",
+                    value=str(len(files)),
+                    inline=True,
+                )
+                log_embed.set_footer(
+                    text=ctx.guild.name,
+                    icon_url=ctx.guild.icon.url if ctx.guild.icon else None,
+                )
+                try:
+                    await log_channel.send(embed=log_embed)
+                except discord.HTTPException as e:
+                    log.debug("Failed to send download log embed: %s", e)
+
     # ------------------------------------------------------------------
     # Command group: [p]sabdownloader (admin config)
     # ------------------------------------------------------------------
@@ -1118,6 +1176,15 @@ class SabDownloader(commands.Cog):
             inline=True,
         )
         embed.add_field(name="Allowed Channels", value=channels_str, inline=False)
+
+        # Log channel
+        log_channel_id = config.get("log_channel")
+        if log_channel_id:
+            lc = ctx.guild.get_channel(log_channel_id)
+            log_ch_str = lc.mention if lc else f"Unknown (`{log_channel_id}`)"
+        else:
+            log_ch_str = "Not set"
+        embed.add_field(name="Log Channel", value=log_ch_str, inline=True)
 
         # Global (bot owner only info)
         if await self.bot.is_owner(ctx.author):
@@ -1217,6 +1284,18 @@ class SabDownloader(commands.Cog):
         await self.config.guild(ctx.guild).anondrop_enabled.set(new_val)
         state = "enabled" if new_val else "disabled"
         await ctx.send(f"AnonDrop fallback is now **{state}**.")
+
+    @sabdownloader.command(name="logchannel")
+    async def sd_logchannel(
+        self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None
+    ):
+        """Set a channel to log all downloads. Omit channel to disable."""
+        if channel is None:
+            await self.config.guild(ctx.guild).log_channel.set(None)
+            await ctx.send("Download log channel cleared.")
+        else:
+            await self.config.guild(ctx.guild).log_channel.set(channel.id)
+            await ctx.send(f"Download log channel set to {channel.mention}.")
 
     @sabdownloader.command(name="cookies")
     @commands.is_owner()
