@@ -1065,12 +1065,15 @@ def _anondrop_to_embed(link: str) -> str:
     Input:  https://anondrop.net/1480216769674215507/filename.mp4
     Output: https://anondrop.net/embed/1480216769674215507/filename.mp4
 
+    Input:  https://anondrop.net/1480216769674215507
+    Output: https://anondrop.net/embed/1480216769674215507
+
     If the link doesn't match the expected pattern, returns the original link.
     """
     parsed = urlparse(link)
     path = parsed.path.lstrip("/")
-    # Only convert if path looks like <id>/<filename> (not already /embed/)
-    if path and not path.startswith("embed/") and "/" in path:
+    # Only convert if not already /embed/
+    if path and not path.startswith("embed/"):
         return f"https://anondrop.net/embed/{path}"
     return link
 
@@ -1334,9 +1337,8 @@ class SabDownloader(commands.Cog):
                     userkey=anondrop_userkey,
                 )
                 if link:
-                    # Use embed URL for video files so Discord auto-embeds the player
-                    if self._is_video(filepath):
-                        link = _anondrop_to_embed(link)
+                    # Use embed URL so Discord auto-embeds the player
+                    link = _anondrop_to_embed(link)
                     anondrop_links.append(link)
                     anondrop_used = True
                 else:
@@ -1525,9 +1527,8 @@ class SabDownloader(commands.Cog):
                     userkey=anondrop_userkey,
                 )
                 if link:
-                    # Use embed URL for video files so Discord auto-embeds
-                    if self._is_video(filepath):
-                        link = _anondrop_to_embed(link)
+                    # Use embed URL so Discord auto-embeds
+                    link = _anondrop_to_embed(link)
                     anondrop_links.append(link)
                     anondrop_used = True
                     total_compressed_size += file_size
@@ -1584,8 +1585,7 @@ class SabDownloader(commands.Cog):
                                     userkey=anondrop_userkey,
                                 )
                                 if link:
-                                    if self._is_video(fp):
-                                        link = _anondrop_to_embed(link)
+                                    link = _anondrop_to_embed(link)
                                     anondrop_links.append(link)
                                     anondrop_used = True
 
