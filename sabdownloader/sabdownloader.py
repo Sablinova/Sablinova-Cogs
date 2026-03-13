@@ -100,6 +100,35 @@ def _collect_real_files(temp_dir: str) -> List[str]:
     return results
 
 
+_KNOWN_MEDIA_EXTENSIONS = {
+    ".mp4",
+    ".mkv",
+    ".webm",
+    ".avi",
+    ".mov",
+    ".flv",
+    ".wmv",
+    ".m4v",
+    ".ts",
+    ".mp3",
+    ".m4a",
+    ".ogg",
+    ".opus",
+    ".flac",
+    ".wav",
+    ".aac",
+    ".wma",
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".gif",
+    ".webp",
+    ".bmp",
+    ".tiff",
+    ".svg",
+}
+
+
 def _sanitize_discord_filename(filepath: str) -> str:
     """Return a clean filename suitable for Discord uploads.
 
@@ -108,11 +137,24 @@ def _sanitize_discord_filename(filepath: str) -> str:
     characters.  This produces a short, ASCII-safe name while preserving
     the original extension.
     """
-    ext = os.path.splitext(filepath)[1].lower()
-    basename = os.path.splitext(os.path.basename(filepath))[0]
+    name = os.path.basename(filepath)
+
+    # os.path.splitext fails on names like "....mp4" (returns no extension).
+    # Try matching a known media extension at the end of the filename first.
+    ext = ""
+    name_lower = name.lower()
+    for known_ext in sorted(_KNOWN_MEDIA_EXTENSIONS, key=len, reverse=True):
+        if name_lower.endswith(known_ext):
+            ext = known_ext
+            name = name[: len(name) - len(known_ext)]
+            break
+    if not ext:
+        # Fallback to splitext for unknown extensions
+        name, ext = os.path.splitext(name)
+        ext = ext.lower()
 
     # Strip non-ASCII and problematic characters, keep alphanumerics, hyphens, underscores
-    clean = re.sub(r"[^a-zA-Z0-9_\-]", "_", basename)
+    clean = re.sub(r"[^a-zA-Z0-9_\-]", "_", name)
     # Collapse multiple underscores
     clean = re.sub(r"_+", "_", clean).strip("_")
     # Truncate to 60 chars to avoid excessively long names
