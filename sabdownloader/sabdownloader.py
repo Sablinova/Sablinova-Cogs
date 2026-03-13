@@ -25,7 +25,7 @@ log = logging.getLogger("red.sablinova.sabdownloader")
 PROGRESS_FILLED = "\u2588"  # █
 PROGRESS_EMPTY = "\u2591"  # ░
 PROGRESS_BAR_LENGTH = 20
-PROGRESS_UPDATE_INTERVAL = 3.0  # seconds between progress message edits
+PROGRESS_UPDATE_INTERVAL = 1.0  # seconds between progress message edits
 
 ANONDROP_CHUNK_SIZE = 9 * 1024 * 1024  # 9 MB
 
@@ -538,9 +538,11 @@ def _ytdlp_download(
     max_duration: Optional[int] = None,
     audio_only: bool = False,
     hd_mode: bool = False,
+    format_id: Optional[str] = None,
 ) -> Tuple[List[str], Optional[dict]]:
     """Run yt-dlp synchronously. Returns (list of file paths, info_dict or None).
 
+    If format_id is provided, it overrides all format selection logic.
     Must be called via run_in_executor.
     """
     import yt_dlp
@@ -620,7 +622,11 @@ def _ytdlp_download(
         },
     }
 
-    if audio_only:
+    if format_id:
+        # User-selected format from resolution picker — override all format logic
+        opts["format"] = format_id
+        opts.pop("max_filesize", None)
+    elif audio_only:
         opts["format"] = "bestaudio/best"
         opts["postprocessors"] = [
             {
@@ -672,6 +678,174 @@ def _ytdlp_download(
     downloaded = _collect_real_files(temp_dir)
 
     return downloaded, info_dict
+
+
+# ---------------------------------------------------------------------------
+# yt-dlp format extraction (for resolution picker)
+# ---------------------------------------------------------------------------
+
+
+def _ytdlp_extract_formats(
+    url: str,
+    cookies_file: Optional[str] = None,
+) -> List[dict]:
+    """Extract available formats/resolutions from a URL without downloading.
+
+    Returns a deduplicated list of resolution options, sorted by height descending:
+    [
+        {"format_id": "137+140", "height": 1080, "label": "1080p",
+         "filesize_approx": 52428800, "vcodec": "avc1", "acodec": "mp4a"},
+        ...
+    ]
+
+    Must be called via run_in_executor (synchronous).
+    """
+    import yt_dlp
+
+    opts = {
+        "noplaylist": True,
+        "logger": _YtdlpLogger(),
+        "noprogress": True,
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+        },
+        "js_runtimes": {
+            "node": {},
+            "deno": {},
+            "bun": {},
+            "quickjs": {},
+        },
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["default", "mweb", "tv"],
+            },
+        },
+    }
+
+    if cookies_file:
+        opts["cookiefile"] = cookies_file
+
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+
+    if not info:
+        return []
+
+    formats = info.get("formats") or []
+    if not formats:
+        # Single-format media (e.g. direct file URL) — no picker needed
+        return []
+
+    # Group by resolution height, keeping best quality per height.
+    # We want combined video+audio, so look for formats with both, or
+    # pair the best video-only with best audio-only per height.
+    best_audio = None
+    best_audio_size = 0
+    video_by_height: Dict[int, dict] = {}
+
+    for f in formats:
+        vcodec = f.get("vcodec", "none")
+        acodec = f.get("acodec", "none")
+        height = f.get("height")
+        fsize = f.get("filesize") or f.get("filesize_approx") or 0
+
+        # Track best audio-only stream
+        if (vcodec == "none" or not vcodec) and acodec and acodec != "none":
+            if fsize > best_audio_size:
+                best_audio = f
+                best_audio_size = fsize
+
+        # Skip audio-only or formats without height
+        if not height or height <= 0:
+            continue
+        if vcodec == "none" or not vcodec:
+            continue
+
+        # Keep the best (largest filesize) format per height
+        existing = video_by_height.get(height)
+        if existing is None or fsize > (
+            existing.get("filesize") or existing.get("filesize_approx") or 0
+        ):
+            video_by_height[height] = f
+
+    if not video_by_height:
+        return []
+
+    # Build result list, sorted by height descending
+    results = []
+    audio_id = best_audio.get("format_id") if best_audio else None
+    audio_size = best_audio_size
+
+    for height in sorted(video_by_height.keys(), reverse=True):
+        f = video_by_height[height]
+        vid_id = f.get("format_id", "")
+        vcodec = f.get("vcodec", "unknown")
+        acodec_val = f.get("acodec", "none")
+        vid_size = f.get("filesize") or f.get("filesize_approx") or 0
+
+        # If this format has both video+audio, use it standalone
+        if acodec_val and acodec_val != "none":
+            fmt_id = vid_id
+            total_size = vid_size
+            acodec_display = acodec_val
+        elif audio_id:
+            # Combine video-only + best audio
+            fmt_id = f"{vid_id}+{audio_id}"
+            total_size = vid_size + audio_size
+            acodec_display = (
+                best_audio.get("acodec", "unknown") if best_audio else "unknown"
+            )
+        else:
+            # Video-only, no audio available
+            fmt_id = vid_id
+            total_size = vid_size
+            acodec_display = "none"
+
+        # Clean up codec names for display
+        vcodec_short = vcodec.split(".")[0] if "." in vcodec else vcodec
+        codec_map = {
+            "avc1": "H.264",
+            "h264": "H.264",
+            "vp9": "VP9",
+            "vp09": "VP9",
+            "av01": "AV1",
+            "av1": "AV1",
+            "hev1": "HEVC",
+            "hevc": "HEVC",
+            "hvc1": "HEVC",
+        }
+        vcodec_display = codec_map.get(vcodec_short, vcodec_short.upper())
+
+        results.append(
+            {
+                "format_id": fmt_id,
+                "height": height,
+                "label": f"{height}p",
+                "filesize_approx": total_size,
+                "vcodec": vcodec_display,
+                "acodec": acodec_display,
+            }
+        )
+
+    return results
+
+
+def _format_resolution_menu(formats: List[dict]) -> str:
+    """Build a user-facing resolution picker menu from format list."""
+    lines = ["**Available resolutions:**\n"]
+    for i, fmt in enumerate(formats, 1):
+        size_str = (
+            _human_size(fmt["filesize_approx"])
+            if fmt["filesize_approx"]
+            else "unknown size"
+        )
+        lines.append(f"`{i}.` **{fmt['label']}** — ~{size_str} ({fmt['vcodec']})")
+    lines.append(f"\nReply with a number (1-{len(formats)}) within 30 seconds.")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -1194,6 +1368,7 @@ class SabDownloader(commands.Cog):
         max_duration: int,
         audio_only: bool = False,
         hd_mode: bool = False,
+        format_id: Optional[str] = None,
     ) -> Tuple[List[str], Optional[dict]]:
         """Try downloading with gallery-dl first, then yt-dlp (or vice versa depending on domain).
 
@@ -1211,6 +1386,7 @@ class SabDownloader(commands.Cog):
             # Default: gallery-dl first for image sites, yt-dlp for everything else
             backends = ["gallerydl", "ytdlp"]
 
+        # Audio extraction only makes sense with yt-dlp
         # Audio extraction only makes sense with yt-dlp
         if audio_only:
             backends = ["ytdlp"]
@@ -1267,6 +1443,7 @@ class SabDownloader(commands.Cog):
                             max_duration=max_duration,
                             audio_only=audio_only,
                             hd_mode=hd_mode,
+                            format_id=format_id,
                         ),
                     )
                     if files:
@@ -1922,8 +2099,9 @@ class SabDownloader(commands.Cog):
     async def dl_hd(self, ctx: commands.Context, url: str):
         """Download in highest quality and upload to AnonDrop.
 
+        Shows available resolutions and lets you pick one.
         Bypasses Discord's file size limit by uploading directly
-        to AnonDrop.net. No compression is applied - full HD quality
+        to AnonDrop.net. No compression is applied - full quality
         is preserved.
         """
         # Require AnonDrop to be enabled for HD mode
@@ -1936,8 +2114,101 @@ class SabDownloader(commands.Cog):
                     delete_after=15,
                 )
                 return
-        # In DMs, AnonDrop is always available for HD mode
-        await self._do_download(ctx, url, hd_mode=True)
+
+        # URL validation
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            await ctx.send(
+                "Invalid URL. Must start with `http://` or `https://`.",
+                delete_after=10,
+            )
+            return
+
+        if _is_private_url(url):
+            await ctx.send("That URL is not allowed.", delete_after=10)
+            return
+
+        # Show "fetching" status
+        status_msg = await ctx.send("Fetching available resolutions...")
+
+        cookies_file = await self.config.cookies_file()
+
+        try:
+            formats = await self.bot.loop.run_in_executor(
+                None,
+                partial(
+                    _ytdlp_extract_formats,
+                    url=url,
+                    cookies_file=cookies_file,
+                ),
+            )
+        except Exception as e:
+            log.warning("[dl_hd] Format extraction failed for %s: %s", url, e)
+            # Fall back to downloading best quality without picker
+            try:
+                await status_msg.delete()
+            except (discord.NotFound, discord.HTTPException):
+                pass
+            await self._do_download(ctx, url, hd_mode=True)
+            return
+
+        if not formats:
+            # No format info (direct file, single format, etc.) — download best
+            try:
+                await status_msg.delete()
+            except (discord.NotFound, discord.HTTPException):
+                pass
+            await self._do_download(ctx, url, hd_mode=True)
+            return
+
+        # Show resolution picker
+        menu_text = _format_resolution_menu(formats)
+        try:
+            await status_msg.edit(content=menu_text)
+        except (discord.NotFound, discord.HTTPException):
+            status_msg = await ctx.send(menu_text)
+
+        # Wait for user's choice
+        def check(m: discord.Message) -> bool:
+            return (
+                m.author.id == ctx.author.id
+                and m.channel.id == ctx.channel.id
+                and m.content.strip().isdigit()
+            )
+
+        try:
+            reply = await self.bot.wait_for("message", check=check, timeout=30.0)
+        except asyncio.TimeoutError:
+            try:
+                await status_msg.edit(content="Resolution selection timed out.")
+            except (discord.NotFound, discord.HTTPException):
+                pass
+            return
+
+        choice = int(reply.content.strip())
+        if choice < 1 or choice > len(formats):
+            try:
+                await status_msg.edit(
+                    content=f"Invalid choice. Please use a number between 1 and {len(formats)}."
+                )
+            except (discord.NotFound, discord.HTTPException):
+                pass
+            return
+
+        selected = formats[choice - 1]
+
+        # Clean up the picker messages
+        try:
+            await status_msg.delete()
+        except (discord.NotFound, discord.HTTPException):
+            pass
+        try:
+            await reply.delete()
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+            pass
+
+        # Download with selected format
+        await self._do_download(ctx, url, hd_mode=True, format_id=selected["format_id"])
 
     async def _do_download(
         self,
@@ -1945,6 +2216,7 @@ class SabDownloader(commands.Cog):
         url: str,
         audio_only: bool = False,
         hd_mode: bool = False,
+        format_id: Optional[str] = None,
     ) -> None:
         """Core download flow."""
         # --- Validation ---
@@ -2065,6 +2337,7 @@ class SabDownloader(commands.Cog):
                     max_duration=max_duration,
                     audio_only=audio_only,
                     hd_mode=hd_mode,
+                    format_id=format_id,
                 )
 
                 if not files:
@@ -2074,8 +2347,9 @@ class SabDownloader(commands.Cog):
                     return
 
                 # Handle upload (compression/anondrop as needed)
-                done_event.set()
-                await progress_task
+                # NOTE: We do NOT set done_event here — the progress loop
+                # keeps running through compression, re-encoding, and upload
+                # phases so the user sees live progress for those stages too.
                 await self._handle_file_upload(
                     ctx=ctx,
                     files=files,
@@ -2086,6 +2360,8 @@ class SabDownloader(commands.Cog):
                     guild_config=guild_config,
                     hd_mode=hd_mode,
                 )
+                done_event.set()
+                await progress_task
 
         except ValueError as e:
             # Duration exceeded
