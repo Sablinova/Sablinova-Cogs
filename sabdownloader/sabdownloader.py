@@ -100,6 +100,112 @@ def _collect_real_files(temp_dir: str) -> List[str]:
     return results
 
 
+def _sanitize_discord_filename(filepath: str) -> str:
+    """Return a clean filename suitable for Discord uploads.
+
+    Discord sometimes fails to render inline video/audio if the filename
+    contains URL-encoded characters, excessively long names, or unusual
+    characters.  This produces a short, ASCII-safe name while preserving
+    the original extension.
+    """
+    ext = os.path.splitext(filepath)[1].lower()
+    basename = os.path.splitext(os.path.basename(filepath))[0]
+
+    # Strip non-ASCII and problematic characters, keep alphanumerics, hyphens, underscores
+    clean = re.sub(r"[^a-zA-Z0-9_\-]", "_", basename)
+    # Collapse multiple underscores
+    clean = re.sub(r"_+", "_", clean).strip("_")
+    # Truncate to 60 chars to avoid excessively long names
+    if len(clean) > 60:
+        clean = clean[:60].rstrip("_")
+    # Ensure we have at least something
+    if not clean:
+        clean = "download"
+    return clean + ext
+
+
+async def _probe_video_codec(filepath: str) -> Optional[str]:
+    """Use ffprobe to determine the video codec of a file.
+
+    Returns the codec name (e.g. 'h264', 'vp9', 'hevc') or None on failure.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffprobe",
+            "-v",
+            "quiet",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=codec_name",
+            "-of",
+            "csv=p=0",
+            filepath,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+        if proc.returncode == 0 and stdout:
+            return stdout.decode().strip().split("\n")[0].strip()
+    except Exception as e:
+        log.warning("ffprobe failed for %s: %s", filepath, e)
+    return None
+
+
+async def _remux_to_h264(input_path: str, temp_dir: str) -> Optional[str]:
+    """Re-encode a video to H.264 + AAC in an MP4 container.
+
+    Discord requires H.264 video to play inline.  Videos using VP9, HEVC,
+    AV1, etc. will not render in the Discord client even if the file has a
+    .mp4 extension.
+
+    Returns the path to the re-encoded file, or None on failure.
+    """
+    output_path = os.path.join(
+        temp_dir,
+        os.path.splitext(os.path.basename(input_path))[0] + ".h264.mp4",
+    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg",
+            "-y",
+            "-i",
+            input_path,
+            "-c:v",
+            "libx264",
+            "-preset",
+            "fast",
+            "-crf",
+            "23",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-movflags",
+            "+faststart",
+            output_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
+        if proc.returncode == 0 and os.path.isfile(output_path):
+            if os.path.getsize(output_path) > 0:
+                return output_path
+            log.warning("H.264 remux produced zero-byte file for %s", input_path)
+        else:
+            log.warning(
+                "H.264 remux failed (rc=%s) for %s: %s",
+                proc.returncode,
+                input_path,
+                stderr.decode()[-500:] if stderr else "no stderr",
+            )
+    except asyncio.TimeoutError:
+        log.warning("H.264 remux timed out for %s", input_path)
+    except Exception as e:
+        log.warning("H.264 remux exception for %s: %s", input_path, e)
+    return None
+
+
 # Private/reserved IP ranges for SSRF prevention
 _PRIVATE_NETWORKS = [
     ipaddress.ip_network("0.0.0.0/8"),
@@ -1194,21 +1300,11 @@ class SabDownloader(commands.Cog):
                 else:
                     log.warning("HD AnonDrop upload failed for %s", fname)
 
-            # Post results
+            # Post results — send as plain text so Discord auto-embeds
+            # the video player from AnonDrop's og:video meta tags
             if anondrop_links:
                 links_text = "\n".join(anondrop_links)
-                embed = discord.Embed(
-                    description=links_text,
-                    color=discord.Color.gold(),
-                )
-                embed.set_author(
-                    name=f"{ctx.author.display_name} — HD Download",
-                    icon_url=ctx.author.display_avatar.url,
-                )
-                embed.set_footer(
-                    text=f"{platform} | {_human_size(total_original_size)}"
-                )
-                await ctx.send(embed=embed)
+                await ctx.send(links_text)
             else:
                 try:
                     await status_msg.edit(
@@ -1318,6 +1414,37 @@ class SabDownloader(commands.Cog):
             total_original_size += file_size
             fname = os.path.basename(filepath)
 
+            # For videos that will be uploaded to Discord, ensure they use
+            # H.264 codec.  Discord won't play VP9/HEVC/AV1 inline even
+            # if the file has an .mp4 extension.
+            if self._is_video(filepath) and file_size <= filesize_limit:
+                codec = await _probe_video_codec(filepath)
+                if codec and codec not in ("h264", "avc", "avc1"):
+                    log.info(
+                        "Video %s uses codec '%s', re-encoding to H.264 for Discord",
+                        fname,
+                        codec,
+                    )
+                    tracker.stage = "Re-encoding"
+                    tracker.percent = 0
+                    remuxed = await _remux_to_h264(filepath, os.path.dirname(filepath))
+                    if remuxed:
+                        remuxed_size = os.path.getsize(remuxed)
+                        if remuxed_size <= filesize_limit:
+                            uploaded_files.append(remuxed)
+                            total_compressed_size += remuxed_size
+                            compression_used = True
+                            continue
+                        else:
+                            log.info(
+                                "H.264 remux of %s is %s, exceeds limit",
+                                fname,
+                                _human_size(remuxed_size),
+                            )
+                            # Fall through to compression/AnonDrop below
+                    else:
+                        log.warning("H.264 remux failed for %s, using original", fname)
+
             if file_size <= filesize_limit:
                 # Fits directly - upload to Discord
                 uploaded_files.append(filepath)
@@ -1392,7 +1519,7 @@ class SabDownloader(commands.Cog):
                 for fp in batch:
                     try:
                         discord_files.append(
-                            discord.File(fp, filename=os.path.basename(fp))
+                            discord.File(fp, filename=_sanitize_discord_filename(fp))
                         )
                     except Exception as e:
                         log.warning("Failed to create discord.File for %s: %s", fp, e)
@@ -1420,21 +1547,11 @@ class SabDownloader(commands.Cog):
                                     anondrop_links.append(link)
                                     anondrop_used = True
 
-        # Post AnonDrop links
+        # Post AnonDrop links — send as plain text so Discord auto-embeds
+        # the video player from AnonDrop's og:video meta tags
         if anondrop_links:
             links_text = "\n".join(anondrop_links)
-            anondrop_embed = discord.Embed(
-                description=links_text,
-                color=discord.Color.orange(),
-            )
-            anondrop_embed.set_author(
-                name=ctx.author.display_name,
-                icon_url=ctx.author.display_avatar.url,
-            )
-            anondrop_embed.set_footer(text=f"{platform} | {total_size_str}")
-            # If we already sent files with an embed, this is a follow-up
-            # If no files were uploaded, this is the only message
-            await ctx.send(embed=anondrop_embed)
+            await ctx.send(links_text)
 
         # Delete command message if configured
         if should_delete:
