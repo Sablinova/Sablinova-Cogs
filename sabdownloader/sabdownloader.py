@@ -166,88 +166,6 @@ def _sanitize_discord_filename(filepath: str) -> str:
     return clean + ext
 
 
-async def _probe_video_codec(filepath: str) -> Optional[str]:
-    """Use ffprobe to determine the video codec of a file.
-
-    Returns the codec name (e.g. 'h264', 'vp9', 'hevc') or None on failure.
-    """
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "ffprobe",
-            "-v",
-            "quiet",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=codec_name",
-            "-of",
-            "csv=p=0",
-            filepath,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
-        if proc.returncode == 0 and stdout:
-            return stdout.decode().strip().split("\n")[0].strip()
-    except Exception as e:
-        log.warning("ffprobe failed for %s: %s", filepath, e)
-    return None
-
-
-async def _remux_to_h264(input_path: str, temp_dir: str) -> Optional[str]:
-    """Re-encode a video to H.264 + AAC in an MP4 container.
-
-    Discord requires H.264 video to play inline.  Videos using VP9, HEVC,
-    AV1, etc. will not render in the Discord client even if the file has a
-    .mp4 extension.
-
-    Returns the path to the re-encoded file, or None on failure.
-    """
-    output_path = os.path.join(
-        temp_dir,
-        os.path.splitext(os.path.basename(input_path))[0] + ".h264.mp4",
-    )
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "ffmpeg",
-            "-y",
-            "-i",
-            input_path,
-            "-c:v",
-            "libx264",
-            "-preset",
-            "fast",
-            "-crf",
-            "23",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "128k",
-            "-movflags",
-            "+faststart",
-            output_path,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
-        if proc.returncode == 0 and os.path.isfile(output_path):
-            if os.path.getsize(output_path) > 0:
-                return output_path
-            log.warning("H.264 remux produced zero-byte file for %s", input_path)
-        else:
-            log.warning(
-                "H.264 remux failed (rc=%s) for %s: %s",
-                proc.returncode,
-                input_path,
-                stderr.decode()[-500:] if stderr else "no stderr",
-            )
-    except asyncio.TimeoutError:
-        log.warning("H.264 remux timed out for %s", input_path)
-    except Exception as e:
-        log.warning("H.264 remux exception for %s: %s", input_path, e)
-    return None
-
-
 # Private/reserved IP ranges for SSRF prevention
 _PRIVATE_NETWORKS = [
     ipaddress.ip_network("0.0.0.0/8"),
@@ -1188,6 +1106,9 @@ async def _anondrop_register(session: aiohttp.ClientSession) -> Optional[str]:
             "https://anondrop.net/register",
             timeout=aiohttp.ClientTimeout(total=30),
         ) as resp:
+            if resp.status != 200:
+                log.warning("AnonDrop register HTTP %s", resp.status)
+                return None
             html = await resp.text()
             # Look for localStorage.setItem('userkey', '<number>')
             match = re.search(
@@ -1195,6 +1116,7 @@ async def _anondrop_register(session: aiohttp.ClientSession) -> Optional[str]:
             )
             if match:
                 return match.group(1)
+            log.warning("AnonDrop register: no userkey in response: %s", html[:200])
     except Exception as e:
         log.warning("AnonDrop register error: %s", e)
     return None
@@ -1649,37 +1571,6 @@ class SabDownloader(commands.Cog):
             file_size = os.path.getsize(filepath)
             total_original_size += file_size
             fname = os.path.basename(filepath)
-
-            # For videos that will be uploaded to Discord, ensure they use
-            # H.264 codec.  Discord won't play VP9/HEVC/AV1 inline even
-            # if the file has an .mp4 extension.
-            if self._is_video(filepath) and file_size <= filesize_limit:
-                codec = await _probe_video_codec(filepath)
-                if codec and codec not in ("h264", "avc", "avc1"):
-                    log.info(
-                        "Video %s uses codec '%s', re-encoding to H.264 for Discord",
-                        fname,
-                        codec,
-                    )
-                    tracker.stage = "Re-encoding"
-                    tracker.percent = 0
-                    remuxed = await _remux_to_h264(filepath, os.path.dirname(filepath))
-                    if remuxed:
-                        remuxed_size = os.path.getsize(remuxed)
-                        if remuxed_size <= filesize_limit:
-                            uploaded_files.append(remuxed)
-                            total_compressed_size += remuxed_size
-                            compression_used = True
-                            continue
-                        else:
-                            log.info(
-                                "H.264 remux of %s is %s, exceeds limit",
-                                fname,
-                                _human_size(remuxed_size),
-                            )
-                            # Fall through to compression/AnonDrop below
-                    else:
-                        log.warning("H.264 remux failed for %s, using original", fname)
 
             if file_size <= filesize_limit:
                 # Fits directly - upload to Discord
