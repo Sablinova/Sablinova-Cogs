@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 
 import aiohttp
 import discord
-from redbot.core import commands, Config, modlog
+from redbot.core import app_commands, commands, Config, modlog
 from redbot.core.bot import Red
 
 log = logging.getLogger("red.sablinova.sabdownloader")
@@ -1993,8 +1993,8 @@ class SabDownloader(commands.Cog):
                     pass
                 return
 
-            # Delete command message if configured
-            if should_delete:
+            # Delete command message if configured (not applicable for slash commands)
+            if should_delete and not ctx.interaction:
                 try:
                     await ctx.message.delete()
                 except (discord.Forbidden, discord.HTTPException, discord.NotFound):
@@ -2012,7 +2012,9 @@ class SabDownloader(commands.Cog):
                     await modlog.create_case(
                         bot=self.bot,
                         guild=ctx.guild,
-                        created_at=ctx.message.created_at,
+                        created_at=ctx.message.created_at
+                        if not ctx.interaction
+                        else discord.utils.utcnow(),
                         action_type="mediadownload",
                         user=ctx.author,
                         moderator=ctx.guild.me,
@@ -2034,7 +2036,9 @@ class SabDownloader(commands.Cog):
                     log_embed = discord.Embed(
                         title="HD Media Download",
                         color=discord.Color.gold(),
-                        timestamp=ctx.message.created_at,
+                        timestamp=ctx.message.created_at
+                        if not ctx.interaction
+                        else discord.utils.utcnow(),
                     )
                     log_embed.set_author(
                         name=f"{ctx.author} ({ctx.author.id})",
@@ -2201,8 +2205,8 @@ class SabDownloader(commands.Cog):
             links_text = "\n".join(anondrop_links)
             await ctx.send(links_text)
 
-        # Delete command message if configured
-        if should_delete:
+        # Delete command message if configured (not applicable for slash commands)
+        if should_delete and not ctx.interaction:
             try:
                 await ctx.message.delete()
             except (discord.Forbidden, discord.HTTPException, discord.NotFound):
@@ -2220,7 +2224,9 @@ class SabDownloader(commands.Cog):
                 await modlog.create_case(
                     bot=self.bot,
                     guild=ctx.guild,
-                    created_at=ctx.message.created_at,
+                    created_at=ctx.message.created_at
+                    if not ctx.interaction
+                    else discord.utils.utcnow(),
                     action_type="mediadownload",
                     user=ctx.author,
                     moderator=ctx.guild.me,
@@ -2244,7 +2250,9 @@ class SabDownloader(commands.Cog):
                 log_embed = discord.Embed(
                     title="Media Download",
                     color=discord.Color.blue(),
-                    timestamp=ctx.message.created_at,
+                    timestamp=ctx.message.created_at
+                    if not ctx.interaction
+                    else discord.utils.utcnow(),
                 )
                 log_embed.set_author(
                     name=f"{ctx.author} ({ctx.author.id})",
@@ -2514,17 +2522,20 @@ class SabDownloader(commands.Cog):
     # Download commands: [p]dl
     # ------------------------------------------------------------------
 
-    @commands.group(invoke_without_command=True)
+    @commands.hybrid_group(fallback="download")
+    @app_commands.describe(url="The URL to download media from")
     async def dl(self, ctx: commands.Context, url: str):
         """Download media from a URL and upload to Discord."""
         await self._do_download(ctx, url, audio_only=False)
 
     @dl.command(name="audio")
+    @app_commands.describe(url="The URL to extract audio from")
     async def dl_audio(self, ctx: commands.Context, url: str):
         """Extract audio from a URL as MP3."""
         await self._do_download(ctx, url, audio_only=True)
 
     @dl.command(name="hd")
+    @app_commands.describe(url="The URL to download in HD quality")
     async def dl_hd(self, ctx: commands.Context, url: str):
         """Download in highest quality and upload to AnonDrop.
 
@@ -2533,6 +2544,10 @@ class SabDownloader(commands.Cog):
         to AnonDrop.net. No compression is applied - full quality
         is preserved.
         """
+        # Defer slash command interaction (buys us 15 minutes)
+        if ctx.interaction:
+            await ctx.defer()
+
         # Require AnonDrop to be enabled for HD mode
         if ctx.guild:
             guild_config = await self.config.guild(ctx.guild).all()
@@ -2578,7 +2593,7 @@ class SabDownloader(commands.Cog):
                 await status_msg.delete()
             except (discord.NotFound, discord.HTTPException):
                 pass
-            await self._do_download(ctx, url, hd_mode=True)
+            await self._do_download(ctx, url, hd_mode=True, _deferred=True)
             return
 
         if not formats:
@@ -2587,7 +2602,7 @@ class SabDownloader(commands.Cog):
                 await status_msg.delete()
             except (discord.NotFound, discord.HTTPException):
                 pass
-            await self._do_download(ctx, url, hd_mode=True)
+            await self._do_download(ctx, url, hd_mode=True, _deferred=True)
             return
 
         # Show resolution picker
@@ -2637,7 +2652,9 @@ class SabDownloader(commands.Cog):
             pass
 
         # Download with selected format
-        await self._do_download(ctx, url, hd_mode=True, format_id=selected["format_id"])
+        await self._do_download(
+            ctx, url, hd_mode=True, format_id=selected["format_id"], _deferred=True
+        )
 
     async def _do_download(
         self,
@@ -2646,8 +2663,13 @@ class SabDownloader(commands.Cog):
         audio_only: bool = False,
         hd_mode: bool = False,
         format_id: Optional[str] = None,
+        _deferred: bool = False,
     ) -> None:
         """Core download flow."""
+        # Defer slash command interaction if not already deferred
+        if ctx.interaction and not _deferred:
+            await ctx.defer()
+
         # --- Validation ---
         if ctx.guild:
             guild_config = await self.config.guild(ctx.guild).all()
