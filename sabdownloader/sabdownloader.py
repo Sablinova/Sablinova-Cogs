@@ -29,6 +29,17 @@ PROGRESS_UPDATE_INTERVAL = 1.0  # seconds between progress message edits
 
 ANONDROP_CHUNK_SIZE = 9 * 1024 * 1024  # 9 MB
 
+# TikTok direct scraper constants
+_TIKTOK_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/138.0.0.0 Safari/537.36"
+)
+# Shortened UA for short-link resolution (avoids bot detection)
+_TIKTOK_SHORT_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)"
+)
+
 # File extensions used by yt-dlp / gallery-dl for incomplete or temp files.
 # These MUST be filtered out when collecting downloaded files.
 _TEMP_EXTENSIONS = {
@@ -212,6 +223,20 @@ _YTDLP_PRIORITY = {
     "v.redd.it",
 }
 
+# TikTok domains — handled by direct scraper instead of yt-dlp
+_TIKTOK_DOMAINS = {
+    "tiktok.com",
+    "www.tiktok.com",
+    "vm.tiktok.com",
+    "vt.tiktok.com",
+    "m.tiktok.com",
+    "t.tiktok.com",
+    "pro.tiktok.com",
+}
+
+# Short-link subdomains that need redirect resolution
+_TIKTOK_SHORT_DOMAINS = {"vm.tiktok.com", "vt.tiktok.com", "t.tiktok.com"}
+
 
 # ---------------------------------------------------------------------------
 # Progress tracker (shared state for download progress)
@@ -359,6 +384,475 @@ def _purge_temp_files(temp_dir: str) -> None:
                 pass
     except OSError:
         pass
+
+
+# ---------------------------------------------------------------------------
+# TikTok direct scraper backend (Cobalt-style)
+# ---------------------------------------------------------------------------
+
+# Regex patterns for extracting post IDs from TikTok URLs
+_TIKTOK_POST_ID_RE = re.compile(
+    r"(?:/(?:video|photo|v)/|/i18n/share/video/)(\d{10,21})"
+)
+
+
+def _tiktok_extract_post_id(url: str) -> Optional[str]:
+    """Extract a numeric TikTok post ID from a URL path.
+
+    Supports patterns:
+      /@user/video/1234567890
+      /@user/photo/1234567890
+      /i18n/share/video/1234567890
+      /v/1234567890.html
+    """
+    parsed = urlparse(url)
+    path = parsed.path.rstrip("/")
+    # Strip .html suffix (TikTok Lite URLs)
+    if path.endswith(".html"):
+        path = path[:-5]
+    match = _TIKTOK_POST_ID_RE.search(path)
+    if match:
+        return match.group(1)
+    return None
+
+
+async def _tiktok_resolve_short_link(
+    session: aiohttp.ClientSession, url: str
+) -> Optional[str]:
+    """Resolve a TikTok short link (vm.tiktok.com, vt.tiktok.com, etc.)
+    to a full URL and extract the post ID.
+
+    TikTok returns HTML with an <a href="..."> tag pointing to the canonical URL.
+    We do NOT follow the redirect directly to avoid bot detection.
+    """
+    try:
+        async with session.get(
+            url,
+            allow_redirects=False,
+            headers={"User-Agent": _TIKTOK_SHORT_UA},
+            timeout=aiohttp.ClientTimeout(total=15),
+        ) as resp:
+            # Some short links return a 301/302 redirect directly
+            location = resp.headers.get("Location")
+            if location and "tiktok.com" in location:
+                post_id = _tiktok_extract_post_id(location)
+                if post_id:
+                    return post_id
+
+            # Otherwise parse the HTML body for <a href="...">
+            html = await resp.text()
+            if html.startswith('<a href="https://'):
+                extracted = html.split('<a href="')[1].split('"')[0]
+                # Strip query params
+                extracted = extracted.split("?")[0]
+                post_id = _tiktok_extract_post_id(extracted)
+                if post_id:
+                    return post_id
+
+            log.warning("[tiktok] Could not resolve short link: %s", url)
+            return None
+    except Exception as e:
+        log.warning("[tiktok] Short link resolution failed for %s: %s", url, e)
+        return None
+
+
+async def _tiktok_download(
+    url: str,
+    temp_dir: str,
+    progress_tracker: Optional[ProgressTracker] = None,
+    cookies_file: Optional[str] = None,
+    max_filesize: Optional[int] = None,
+    max_duration: Optional[int] = None,
+    audio_only: bool = False,
+    hd_mode: bool = False,
+) -> Tuple[List[str], Optional[dict]]:
+    """Download TikTok media by scraping the web page directly.
+
+    Extracts the SSR JSON from TikTok's HTML to get direct H.264 video URLs
+    (or image URLs for slideshows). No yt-dlp involved.
+
+    Returns (list of file paths, metadata dict or None).
+    """
+    import json as _json
+
+    domain = _get_domain(url)
+
+    async with aiohttp.ClientSession() as session:
+        # Step 1: Resolve post ID
+        post_id = _tiktok_extract_post_id(url)
+
+        if not post_id and domain in _TIKTOK_SHORT_DOMAINS:
+            post_id = await _tiktok_resolve_short_link(session, url)
+
+        if not post_id:
+            raise RuntimeError(f"Could not extract TikTok post ID from URL: {url}")
+
+        log.info("[tiktok] Resolved post ID: %s", post_id)
+
+        # Step 2: Fetch the TikTok page HTML
+        # Use @i as placeholder username — works for any video when given a valid post ID
+        page_url = f"https://www.tiktok.com/@i/video/{post_id}"
+        headers = {"User-Agent": _TIKTOK_USER_AGENT}
+
+        # Add cookies if available
+        cookie_header = None
+        if cookies_file and os.path.isfile(cookies_file):
+            try:
+                cookie_pairs = []
+                with open(cookies_file, "r") as cf:
+                    for line in cf:
+                        line = line.strip()
+                        if not line or line.startswith("#"):
+                            continue
+                        parts = line.split("\t")
+                        if len(parts) >= 7 and "tiktok" in parts[0].lower():
+                            cookie_pairs.append(f"{parts[5]}={parts[6]}")
+                if cookie_pairs:
+                    cookie_header = "; ".join(cookie_pairs)
+            except Exception as e:
+                log.warning("[tiktok] Failed to parse cookies file: %s", e)
+
+        if cookie_header:
+            headers["Cookie"] = cookie_header
+
+        try:
+            async with session.get(
+                page_url,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status != 200:
+                    raise RuntimeError(
+                        f"TikTok returned HTTP {resp.status} for {page_url}"
+                    )
+                html = await resp.text()
+        except aiohttp.ClientError as e:
+            raise RuntimeError(f"Failed to fetch TikTok page: {e}") from e
+
+        # Step 3: Extract SSR JSON from HTML
+        ssr_marker = (
+            '<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">'
+        )
+        if ssr_marker not in html:
+            # Try alternate marker used by some TikTok page versions
+            ssr_marker_alt = '<script id="SIGI_STATE" type="application/json">'
+            if ssr_marker_alt in html:
+                ssr_marker = ssr_marker_alt
+            else:
+                raise RuntimeError(
+                    "TikTok page does not contain expected SSR data. "
+                    "The page structure may have changed."
+                )
+
+        try:
+            json_str = html.split(ssr_marker)[1].split("</script>")[0]
+            data = _json.loads(json_str)
+        except (IndexError, _json.JSONDecodeError) as e:
+            raise RuntimeError(f"Failed to parse TikTok SSR JSON: {e}") from e
+
+        # Step 4: Navigate to video detail
+        # Primary path: __UNIVERSAL_DATA_FOR_REHYDRATION__
+        detail = None
+        if "__DEFAULT_SCOPE__" in data:
+            video_detail = data["__DEFAULT_SCOPE__"].get("webapp.video-detail", {})
+            detail = video_detail.get("itemInfo", {}).get("itemStruct")
+        # Fallback: SIGI_STATE structure
+        elif "ItemModule" in data:
+            items = data["ItemModule"]
+            if post_id in items:
+                detail = items[post_id]
+            elif items:
+                detail = next(iter(items.values()))
+
+        if not detail:
+            raise RuntimeError(
+                "Could not find video detail in TikTok SSR data. "
+                "The post may be deleted or unavailable."
+            )
+
+        # Check for unavailable / age-restricted content
+        status_msg = None
+        if "__DEFAULT_SCOPE__" in data:
+            status_msg = (
+                data["__DEFAULT_SCOPE__"]
+                .get("webapp.video-detail", {})
+                .get("statusMsg")
+            )
+        if status_msg:
+            raise RuntimeError(f"TikTok post unavailable: {status_msg}")
+
+        if detail.get("isContentClassified"):
+            raise RuntimeError(
+                "This TikTok is age-restricted and cannot be downloaded."
+            )
+
+        # Extract metadata
+        author = detail.get("author", {})
+        author_name = author.get("uniqueId") or author.get("nickname") or "unknown"
+        video_desc = detail.get("desc", "")
+        title = video_desc[:100] if video_desc else f"tiktok_{post_id}"
+        duration = int(detail.get("video", {}).get("duration", 0))
+
+        # Duration check
+        if max_duration and duration > max_duration:
+            raise ValueError("Video exceeds maximum allowed duration.")
+
+        metadata = {
+            "title": title,
+            "uploader": author_name,
+            "duration": duration,
+            "webpage_url": f"https://www.tiktok.com/@{author_name}/video/{post_id}",
+            "id": post_id,
+        }
+
+        filename_base = re.sub(
+            r"[^a-zA-Z0-9_\-]", "_", f"tiktok_{author_name}_{post_id}"
+        )
+        filename_base = re.sub(r"_+", "_", filename_base).strip("_")[:80]
+
+        images = (
+            detail.get("imagePost", {}).get("images")
+            if detail.get("imagePost")
+            else None
+        )
+
+        # Step 5a: Handle slideshow / image posts
+        if images and not audio_only:
+            downloaded = []
+            for i, img in enumerate(images):
+                img_urls = img.get("imageURL", {}).get("urlList", [])
+                # Prefer .jpeg URL
+                img_url = None
+                for candidate in img_urls:
+                    if ".jpeg" in candidate or ".jpg" in candidate:
+                        img_url = candidate
+                        break
+                if not img_url and img_urls:
+                    img_url = img_urls[0]
+                if not img_url:
+                    continue
+
+                photo_filename = f"{filename_base}_photo_{i + 1}.jpg"
+                photo_path = os.path.join(temp_dir, photo_filename)
+
+                try:
+                    async with session.get(
+                        img_url,
+                        headers={
+                            "User-Agent": _TIKTOK_USER_AGENT,
+                            "Referer": "https://www.tiktok.com/",
+                        },
+                        timeout=aiohttp.ClientTimeout(total=60),
+                    ) as img_resp:
+                        if img_resp.status != 200:
+                            log.warning(
+                                "[tiktok] Image %d returned HTTP %s",
+                                i + 1,
+                                img_resp.status,
+                            )
+                            continue
+                        with open(photo_path, "wb") as f:
+                            async for chunk in img_resp.content.iter_chunked(65536):
+                                f.write(chunk)
+                    if os.path.getsize(photo_path) > 0:
+                        downloaded.append(photo_path)
+                except Exception as e:
+                    log.warning("[tiktok] Failed to download image %d: %s", i + 1, e)
+
+            if progress_tracker:
+                progress_tracker.percent = 100
+
+            return downloaded, metadata
+
+        # Step 5b: Get video URL
+        video_data = detail.get("video", {})
+        play_addr = video_data.get("playAddr")
+
+        if not play_addr:
+            # Try downloadAddr as fallback
+            play_addr = video_data.get("downloadAddr")
+        if not play_addr:
+            # Try bitrateInfo for explicit H.264
+            bitrate_info = video_data.get("bitrateInfo", [])
+            for br in bitrate_info:
+                codec = br.get("CodecType", "")
+                if "h264" in codec.lower() or "avc" in codec.lower():
+                    urls = br.get("PlayAddr", {}).get("UrlList", [])
+                    if urls:
+                        play_addr = urls[0]
+                        break
+            # Last resort: any bitrate entry
+            if not play_addr and bitrate_info:
+                urls = bitrate_info[0].get("PlayAddr", {}).get("UrlList", [])
+                if urls:
+                    play_addr = urls[0]
+
+        if not play_addr:
+            raise RuntimeError("Could not find video URL in TikTok data.")
+
+        # For HD mode, try to find the best H.264 from bitrateInfo
+        if hd_mode:
+            bitrate_info = video_data.get("bitrateInfo", [])
+            best_h264 = None
+            best_bitrate = 0
+            for br in bitrate_info:
+                codec = br.get("CodecType", "")
+                if "h264" in codec.lower() or "avc" in codec.lower():
+                    br_val = br.get("Bitrate", 0)
+                    if br_val > best_bitrate:
+                        best_bitrate = br_val
+                        urls = br.get("PlayAddr", {}).get("UrlList", [])
+                        if urls:
+                            best_h264 = urls[0]
+                            best_bitrate = br_val
+            if best_h264:
+                play_addr = best_h264
+                log.info("[tiktok] HD mode: using H.264 at bitrate %d", best_bitrate)
+
+        # Step 5c: Handle audio-only mode
+        if audio_only:
+            # Download the video, then extract audio with ffmpeg
+            video_filename = f"{filename_base}_temp.mp4"
+            video_path = os.path.join(temp_dir, video_filename)
+            audio_filename = f"{filename_base}.mp3"
+            audio_path = os.path.join(temp_dir, audio_filename)
+
+            # Download video first
+            await _tiktok_stream_file(
+                session,
+                play_addr,
+                video_path,
+                progress_tracker,
+                max_filesize=max_filesize,
+            )
+
+            if not os.path.isfile(video_path) or os.path.getsize(video_path) == 0:
+                raise RuntimeError(
+                    "Failed to download TikTok video for audio extraction."
+                )
+
+            # Extract audio with ffmpeg
+            if progress_tracker:
+                progress_tracker.stage = "Extracting audio"
+                progress_tracker.percent = 50
+
+            ffmpeg_cmd = [
+                "ffmpeg",
+                "-y",
+                "-i",
+                video_path,
+                "-vn",
+                "-acodec",
+                "libmp3lame",
+                "-ab",
+                "192k",
+                audio_path,
+            ]
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *ffmpeg_cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                _, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+                if proc.returncode != 0:
+                    log.warning(
+                        "[tiktok] ffmpeg audio extraction failed: %s",
+                        stderr.decode(errors="replace")[-500:],
+                    )
+                    raise RuntimeError("Audio extraction failed.")
+            except asyncio.TimeoutError:
+                raise RuntimeError("Audio extraction timed out.")
+
+            # Clean up temp video
+            try:
+                os.unlink(video_path)
+            except OSError:
+                pass
+
+            if progress_tracker:
+                progress_tracker.percent = 100
+
+            if os.path.isfile(audio_path) and os.path.getsize(audio_path) > 0:
+                return [audio_path], metadata
+            raise RuntimeError("Audio extraction produced no output.")
+
+        # Step 6: Download the video
+        video_filename = f"{filename_base}.mp4"
+        video_path = os.path.join(temp_dir, video_filename)
+
+        await _tiktok_stream_file(
+            session,
+            play_addr,
+            video_path,
+            progress_tracker,
+            max_filesize=max_filesize,
+        )
+
+        if not os.path.isfile(video_path) or os.path.getsize(video_path) == 0:
+            raise RuntimeError("TikTok video download produced an empty file.")
+
+        # Check filesize limit
+        actual_size = os.path.getsize(video_path)
+        if max_filesize and actual_size > max_filesize:
+            log.warning(
+                "[tiktok] Downloaded file %s exceeds max_filesize (%s > %s)",
+                video_filename,
+                _human_size(actual_size),
+                _human_size(max_filesize),
+            )
+
+        return [video_path], metadata
+
+
+async def _tiktok_stream_file(
+    session: aiohttp.ClientSession,
+    url: str,
+    output_path: str,
+    progress_tracker: Optional[ProgressTracker] = None,
+    max_filesize: Optional[int] = None,
+) -> None:
+    """Stream a TikTok media URL to disk with progress tracking."""
+    try:
+        async with session.get(
+            url,
+            headers={
+                "User-Agent": _TIKTOK_USER_AGENT,
+                "Referer": "https://www.tiktok.com/",
+            },
+            timeout=aiohttp.ClientTimeout(total=300),
+        ) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"TikTok CDN returned HTTP {resp.status}")
+
+            total = resp.content_length
+            if progress_tracker:
+                progress_tracker.total_bytes = total
+                progress_tracker.downloaded_bytes = 0
+
+            downloaded = 0
+            with open(output_path, "wb") as f:
+                async for chunk in resp.content.iter_chunked(65536):
+                    f.write(chunk)
+                    downloaded += len(chunk)
+
+                    if progress_tracker:
+                        progress_tracker.downloaded_bytes = downloaded
+                        if total and total > 0:
+                            progress_tracker.percent = (downloaded / total) * 100
+
+                    # Abort if exceeding hard size limit (2x max_filesize as safety)
+                    if max_filesize and downloaded > max_filesize * 2:
+                        log.warning(
+                            "[tiktok] Download exceeds 2x max_filesize, aborting"
+                        )
+                        break
+
+            if progress_tracker:
+                progress_tracker.percent = 100
+
+    except aiohttp.ClientError as e:
+        raise RuntimeError(f"TikTok media download failed: {e}") from e
 
 
 # ---------------------------------------------------------------------------
@@ -561,24 +1055,14 @@ def _ytdlp_download(
         # Prefer mp4 containers, fall back through progressively simpler formats.
         # The broad fallback chain avoids 403 issues where specific format
         # combinations are blocked by the server.
-        domain = urlparse(url).netloc.lower()
-        if "tiktok.com" in domain:
-            # TikTok serves HEVC by default which Discord cannot play inline.
-            # Force H.264 — caps at 540p but plays reliably in Discord.
-            opts["format"] = (
-                "bestvideo[vcodec^=avc]+bestaudio[ext=m4a]/"
-                "bestvideo[vcodec^=avc]+bestaudio/"
-                "best[vcodec^=avc]/"
-                "best"
-            )
-        else:
-            opts["format"] = (
-                "bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/"
-                "bestvideo[ext=mp4]+bestaudio[ext=m4a]/"
-                "bestvideo+bestaudio/"
-                "best[ext=mp4]/"
-                "best"
-            )
+        # Note: TikTok is handled by the direct scraper, not yt-dlp.
+        opts["format"] = (
+            "bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/"
+            "bestvideo[ext=mp4]+bestaudio[ext=m4a]/"
+            "bestvideo+bestaudio/"
+            "best[ext=mp4]/"
+            "best"
+        )
 
     info_dict = None
     try:
@@ -1326,7 +1810,9 @@ class SabDownloader(commands.Cog):
         info_dict = None
 
         # Decide order based on domain
-        if domain in _YTDLP_PRIORITY:
+        if domain in _TIKTOK_DOMAINS or "tiktok.com" in domain:
+            backends = ["tiktok"]
+        elif domain in _YTDLP_PRIORITY:
             backends = ["ytdlp", "gallerydl"]
         elif domain in _GALLERY_DL_PRIORITY:
             backends = ["gallerydl", "ytdlp"]
@@ -1334,13 +1820,12 @@ class SabDownloader(commands.Cog):
             # Default: gallery-dl first for image sites, yt-dlp for everything else
             backends = ["gallerydl", "ytdlp"]
 
-        # Audio extraction only makes sense with yt-dlp
-        # Audio extraction only makes sense with yt-dlp
-        if audio_only:
+        # Audio extraction on TikTok uses the direct scraper's built-in audio mode
+        if audio_only and "tiktok" not in backends:
             backends = ["ytdlp"]
 
-        # HD mode: only use yt-dlp for best quality video+audio
-        if hd_mode:
+        # HD mode on TikTok uses the direct scraper's built-in HD mode
+        if hd_mode and "tiktok" not in backends:
             backends = ["ytdlp"]
 
         log.info(
@@ -1353,7 +1838,32 @@ class SabDownloader(commands.Cog):
         last_error = None
 
         for backend in backends:
-            if backend == "gallerydl":
+            if backend == "tiktok":
+                try:
+                    tracker.stage = "Downloading"
+                    tracker.percent = 0
+                    files, info_dict = await _tiktok_download(
+                        url=url,
+                        temp_dir=temp_dir,
+                        progress_tracker=tracker,
+                        cookies_file=cookies_file,
+                        max_filesize=max_filesize,
+                        max_duration=max_duration,
+                        audio_only=audio_only,
+                        hd_mode=hd_mode,
+                    )
+                    if files:
+                        return files, info_dict
+                except ValueError:
+                    # Duration exceeded - re-raise as-is
+                    raise
+                except Exception as e:
+                    last_error = e
+                    log.warning("[_try_download] tiktok scraper failed: %s", e)
+
+                _purge_temp_files(temp_dir)
+
+            elif backend == "gallerydl":
                 try:
                     tracker.stage = "Downloading"
                     tracker.percent = None  # gallery-dl = indeterminate
