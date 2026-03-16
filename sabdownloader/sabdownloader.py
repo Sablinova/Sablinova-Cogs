@@ -561,13 +561,24 @@ def _ytdlp_download(
         # Prefer mp4 containers, fall back through progressively simpler formats.
         # The broad fallback chain avoids 403 issues where specific format
         # combinations are blocked by the server.
-        opts["format"] = (
-            "bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/"
-            "bestvideo[ext=mp4]+bestaudio[ext=m4a]/"
-            "bestvideo+bestaudio/"
-            "best[ext=mp4]/"
-            "best"
-        )
+        domain = urlparse(url).netloc.lower()
+        if "tiktok.com" in domain:
+            # TikTok serves HEVC by default which Discord cannot play inline.
+            # Force H.264 — caps at 540p but plays reliably in Discord.
+            opts["format"] = (
+                "bestvideo[vcodec^=avc]+bestaudio[ext=m4a]/"
+                "bestvideo[vcodec^=avc]+bestaudio/"
+                "best[vcodec^=avc]/"
+                "best"
+            )
+        else:
+            opts["format"] = (
+                "bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/"
+                "bestvideo[ext=mp4]+bestaudio[ext=m4a]/"
+                "bestvideo+bestaudio/"
+                "best[ext=mp4]/"
+                "best"
+            )
 
     info_dict = None
     try:
