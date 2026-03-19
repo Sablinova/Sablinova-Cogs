@@ -2564,8 +2564,9 @@ class SabDownloader(commands.Cog):
         is preserved.
         """
         # Defer slash command interaction (buys us 15 minutes)
+        # ephemeral=False ensures the response is visible to everyone
         if ctx.interaction:
-            await ctx.defer()
+            await ctx.defer(ephemeral=False)
 
         # Require AnonDrop to be enabled for HD mode
         if ctx.guild:
@@ -2686,8 +2687,9 @@ class SabDownloader(commands.Cog):
     ) -> None:
         """Core download flow."""
         # Defer slash command interaction if not already deferred
+        # ephemeral=False ensures the response is visible to everyone
         if ctx.interaction and not _deferred:
-            await ctx.defer()
+            await ctx.defer(ephemeral=False)
 
         # --- Validation ---
         if ctx.guild:
