@@ -1651,17 +1651,23 @@ def _parse_anondrop_link(html: str) -> Optional[str]:
 
 
 def _anondrop_to_embed(link: str, filename: Optional[str] = None) -> str:
-    """Convert a regular AnonDrop link to an embed link.
+    """Convert a regular AnonDrop link to an embed link for media files.
 
     The embed URL MUST include the filename for AnonDrop's player to work.
     If the parsed link already contains a filename, it is kept.  Otherwise
     the caller-supplied *filename* is appended.
+
+    For non-media files (e.g., .zip), returns the regular AnonDrop link
+    WITHOUT /embed/ since the embed player only works for media.
 
     Input:  https://anondrop.net/1480216769674215507/filename.mp4
     Output: https://anondrop.net/embed/1480216769674215507/filename.mp4
 
     Input:  https://anondrop.net/1480216769674215507  (+ filename="video.mp4")
     Output: https://anondrop.net/embed/1480216769674215507/video.mp4
+
+    Input:  https://anondrop.net/1480216769674215507/archive.zip
+    Output: https://anondrop.net/1480216769674215507/archive.zip  (no embed)
 
     If the link doesn't match the expected pattern, returns the original link.
     """
@@ -1681,7 +1687,20 @@ def _anondrop_to_embed(link: str, filename: Optional[str] = None) -> str:
         # Only the ID — append the filename
         path = f"{parts[0]}/{filename}"
 
-    return f"https://anondrop.net/embed/{path}"
+    # Determine the final filename to check if it's media
+    final_filename = path.split("/")[-1] if "/" in path else (filename or "")
+    final_filename_lower = final_filename.lower()
+
+    # Check if the file has a media extension
+    is_media = any(
+        final_filename_lower.endswith(ext) for ext in _KNOWN_MEDIA_EXTENSIONS
+    )
+
+    if is_media:
+        return f"https://anondrop.net/embed/{path}"
+    else:
+        # Non-media files: return regular link without /embed/
+        return f"https://anondrop.net/{path}"
 
 
 # ---------------------------------------------------------------------------
