@@ -1735,46 +1735,9 @@ class SabDownloader(commands.Cog):
         self._cooldowns: Dict[int, float] = {}  # user_id -> last_use timestamp
 
     async def cog_load(self) -> None:
-        """Initialize semaphore on cog load and install interaction error handler."""
+        """Initialize semaphore on cog load."""
         max_concurrent = await self.config.max_concurrent()
         self._semaphore = asyncio.Semaphore(max_concurrent)
-
-        # Monkey-patch bot.tree._from_interaction to catch ClientException
-        # This is necessary because discord.py only catches AppCommandError,
-        # but the Red bug raises ClientException which bubbles up unhandled.
-        original_from_interaction = self.bot.tree._from_interaction
-
-        def patched_from_interaction(interaction: discord.Interaction) -> None:
-            async def wrapper():
-                try:
-                    await self.bot.tree._call(interaction)
-                except app_commands.AppCommandError as e:
-                    await self.bot.tree._dispatch_error(interaction, e)
-                except discord.ClientException as e:
-                    # Handle the "Parent channel not found" bug
-                    if "Parent channel not found" in str(e):
-                        try:
-                            await interaction.response.send_message(
-                                "This command can't be used in threads when the bot "
-                                "isn't a member of the server. Please use it in a "
-                                "regular channel or DM instead.",
-                                ephemeral=True,
-                            )
-                        except discord.HTTPException:
-                            pass
-                    else:
-                        log.error("Unhandled ClientException in interaction: %s", e)
-                        raise
-
-            self.bot.loop.create_task(wrapper(), name="CommandTree-invoker")
-
-        self.bot.tree._from_interaction = patched_from_interaction
-        self._original_from_interaction = original_from_interaction
-
-    async def cog_unload(self) -> None:
-        """Restore original _from_interaction on unload."""
-        if hasattr(self, "_original_from_interaction"):
-            self.bot.tree._from_interaction = self._original_from_interaction
 
     # ------------------------------------------------------------------
     # Helpers
