@@ -146,3 +146,35 @@ Without cookies configured, Instagram URLs will show an error message directing 
 - Python >= 3.9
 - ffmpeg installed on the host system
 - Pip dependencies installed automatically: `yt-dlp`, `gallery-dl`
+
+## Optional: User-Installed App Support in Threads
+
+If you enable **user-installable app** mode for your bot (allowing users to install the bot personally and use slash commands in servers where the bot isn't a member), there's a bug in Red-DiscordBot that causes "Application did not respond" errors when using `/dl` in threads.
+
+This is because Red's permission system tries to access `ctx.channel.parent` and `ctx.channel.category` on threads, but these are `None` when the bot isn't a guild member and can't see the parent channel.
+
+### Optional Patch
+
+To fix this, you can patch Red's `requires.py` file. This is **optional** — only needed if you use user-install mode and want thread support.
+
+**File:** `<your-venv>/lib/python3.xx/site-packages/redbot/core/commands/requires.py`
+
+**Patch (around line 590-594):**
+
+```diff
+         if isinstance(ctx.channel, discord.Thread):
+-            channels.append(ctx.channel.parent)
++            # PATCHED: Check parent is not None before appending
++            if ctx.channel.parent is not None:
++                channels.append(ctx.channel.parent)
+         else:
+             channels.append(ctx.channel)
+-        category = ctx.channel.category
++        # PATCHED: Fix for user-installed apps in threads (Parent channel not found bug)
++        if isinstance(ctx.channel, discord.Thread):
++            category = ctx.channel.parent.category if ctx.channel.parent else None
++        else:
++            category = ctx.channel.category
+```
+
+**Note:** This patch must be re-applied after updating Red-DiscordBot.
