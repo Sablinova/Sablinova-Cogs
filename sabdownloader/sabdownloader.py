@@ -2146,7 +2146,16 @@ class SabDownloader(commands.Cog):
                 else:
                     log.warning("ffmpeg compression failed for %s", fname)
 
-            # Still too large or not a video - try AnonDrop
+            # Non-video file too large - try Discord upload anyway, fall back to AnonDrop on error
+            # This handles cases where the filesize_limit might be outdated or Discord accepts slightly larger files
+            if not self._is_video(filepath):
+                # Mark for attempted Discord upload - will be handled in the upload section
+                # with a try/except that falls back to AnonDrop
+                uploaded_files.append(filepath)
+                total_compressed_size += file_size
+                continue
+
+            # Video still too large after compression - try AnonDrop
             if anondrop_enabled:
                 link = await _anondrop_upload(
                     file_path=filepath,
