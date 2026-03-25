@@ -1739,6 +1739,43 @@ class SabDownloader(commands.Cog):
         max_concurrent = await self.config.max_concurrent()
         self._semaphore = asyncio.Semaphore(max_concurrent)
 
+    async def cog_app_command_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ) -> None:
+        """Handle errors from slash commands.
+
+        This catches the Red core bug where user-installed apps in threads
+        crash with 'Parent channel not found' because Red tries to access
+        ctx.channel.category on a thread where the bot has no access to
+        the parent channel.
+        """
+        original = getattr(error, "original", error)
+
+        # Check for the specific Red bug with threads in user-installed contexts
+        if isinstance(original, discord.ClientException):
+            if "Parent channel not found" in str(original):
+                try:
+                    if interaction.response.is_done():
+                        await interaction.followup.send(
+                            "This command can't be used in threads when the bot "
+                            "isn't a member of the server. Please use it in a "
+                            "regular channel or DM instead.",
+                            ephemeral=True,
+                        )
+                    else:
+                        await interaction.response.send_message(
+                            "This command can't be used in threads when the bot "
+                            "isn't a member of the server. Please use it in a "
+                            "regular channel or DM instead.",
+                            ephemeral=True,
+                        )
+                except discord.HTTPException:
+                    pass
+                return
+
+        # Re-raise other errors so Red's default handler processes them
+        raise error
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
