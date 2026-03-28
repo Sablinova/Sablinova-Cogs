@@ -8,15 +8,90 @@ import tempfile
 import time
 import uuid
 from functools import partial
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import aiohttp
 import discord
+from discord.ui import Select, View
 from redbot.core import app_commands, commands, Config, modlog
 from redbot.core.bot import Red
 
 log = logging.getLogger("red.sablinova.sabdownloader")
+
+
+# ---------------------------------------------------------------------------
+# Resolution Picker UI (for HD mode)
+# ---------------------------------------------------------------------------
+
+
+class ResolutionSelect(Select):
+    """Dropdown menu for selecting video resolution."""
+
+    def __init__(self, formats: List[dict], callback_fn: Callable):
+        self.formats = formats
+        self.callback_fn = callback_fn
+
+        options = []
+        for i, fmt in enumerate(formats[:25]):  # Discord max 25 options
+            size_str = (
+                _human_size(fmt["filesize_approx"])
+                if fmt["filesize_approx"]
+                else "unknown"
+            )
+            label = f"{fmt['label']} (~{size_str})"
+            if len(label) > 100:
+                label = label[:97] + "..."
+            options.append(
+                discord.SelectOption(
+                    label=label,
+                    value=str(i),
+                    description=fmt["vcodec"][:100] if fmt.get("vcodec") else None,
+                )
+            )
+
+        super().__init__(
+            placeholder="Select a resolution...",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        choice_idx = int(self.values[0])
+        selected = self.formats[choice_idx]
+        await interaction.response.defer()
+        self.view.stop()
+        await self.callback_fn(selected)
+
+
+class ResolutionPickerView(View):
+    """View containing the resolution dropdown."""
+
+    def __init__(
+        self,
+        formats: List[dict],
+        author_id: int,
+        callback_fn: Callable,
+        timeout: float = 60,
+    ):
+        super().__init__(timeout=timeout)
+        self.author_id = author_id
+        self.selected = None
+        self.add_item(ResolutionSelect(formats, callback_fn))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                "This menu is not for you.", ephemeral=True
+            )
+            return False
+        return True
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -1250,14 +1325,14 @@ def _ytdlp_extract_formats(
 def _format_resolution_menu(formats: List[dict]) -> str:
     """Build a user-facing resolution picker menu from format list."""
     lines = ["**Available resolutions:**\n"]
-    for i, fmt in enumerate(formats, 1):
+    for i, fmt in enumerate(formats[:25], 1):  # Max 25 for dropdown
         size_str = (
             _human_size(fmt["filesize_approx"])
             if fmt["filesize_approx"]
             else "unknown size"
         )
         lines.append(f"`{i}.` **{fmt['label']}** — ~{size_str} ({fmt['vcodec']})")
-    lines.append(f"\nReply with a number (1-{len(formats)}) within 30 seconds.")
+    lines.append("\nSelect a resolution from the dropdown below.")
     return "\n".join(lines)
 
 
@@ -2116,71 +2191,13 @@ class SabDownloader(commands.Cog):
             total_original_size += file_size
             fname = os.path.basename(filepath)
 
-            if file_size <= filesize_limit:
-                # Fits directly - upload to Discord
-                uploaded_files.append(filepath)
-                total_compressed_size += file_size
-                continue
-
-            # File too large - try compression if it's a video
-            if self._is_video(filepath):
-                tracker.stage = "Compressing"
-                tracker.percent = 0
-
-                compressed_path = filepath + ".compressed.mp4"
-                success = await _ffmpeg_compress(
-                    input_path=filepath,
-                    output_path=compressed_path,
-                    target_size_bytes=filesize_limit,
-                    progress_tracker=tracker,
-                )
-
-                if success and os.path.isfile(compressed_path):
-                    compressed_size = os.path.getsize(compressed_path)
-                    if compressed_size <= filesize_limit:
-                        uploaded_files.append(compressed_path)
-                        total_compressed_size += compressed_size
-                        compression_used = True
-                        continue
-                    # Compressed file still too large
-                else:
-                    log.warning("ffmpeg compression failed for %s", fname)
-
-            # Non-video file too large - try Discord upload anyway, fall back to AnonDrop on error
-            # This handles cases where the filesize_limit might be outdated or Discord accepts slightly larger files
-            if not self._is_video(filepath):
-                # Mark for attempted Discord upload - will be handled in the upload section
-                # with a try/except that falls back to AnonDrop
-                uploaded_files.append(filepath)
-                total_compressed_size += file_size
-                continue
-
-            # Video still too large after compression - try AnonDrop
-            if anondrop_enabled:
-                link = await _anondrop_upload(
-                    file_path=filepath,
-                    progress_tracker=tracker,
-                    userkey=anondrop_userkey,
-                )
-                if link:
-                    # Use embed URL so Discord auto-embeds
-                    link = _anondrop_to_embed(link, filename=fname)
-                    anondrop_links.append(link)
-                    anondrop_used = True
-                    total_compressed_size += file_size
-                    continue
-
-            # Last resort - skip this file
-            log.warning(
-                "File %s (%s) too large and all fallbacks failed",
-                filepath,
-                _human_size(file_size),
-            )
+            # Always try Discord upload first - filesize_limit may be inaccurate
+            # for user-installed apps where we don't have full guild info
+            uploaded_files.append(filepath)
+            total_compressed_size += file_size
 
         # Build the user-facing embed
         total_size_str = _human_size(total_original_size)
-        if compression_used:
-            total_size_str += f" (compressed to {_human_size(total_compressed_size)})"
 
         result_embed = discord.Embed(color=discord.Color.blurple())
         result_embed.set_author(
@@ -2189,43 +2206,87 @@ class SabDownloader(commands.Cog):
         )
         result_embed.set_footer(text=f"{platform} | {total_size_str}")
 
-        # Upload to Discord
-        if uploaded_files:
-            # Discord allows up to 10 attachments per message
-            for i in range(0, len(uploaded_files), 10):
-                batch = uploaded_files[i : i + 10]
-                discord_files = []
-                for fp in batch:
-                    try:
-                        discord_files.append(
-                            discord.File(fp, filename=_sanitize_discord_filename(fp))
-                        )
-                    except Exception as e:
-                        log.warning("Failed to create discord.File for %s: %s", fp, e)
+        # Upload to Discord - try direct upload first, compress on 413
+        successfully_uploaded = []
+        for fp in uploaded_files:
+            file_to_upload = fp
+            file_size = os.path.getsize(fp)
+            fname = os.path.basename(fp)
 
-                if discord_files:
-                    try:
-                        # First batch gets the embed, subsequent batches are plain
-                        if i == 0:
-                            await ctx.send(embed=result_embed, files=discord_files)
-                        else:
-                            await ctx.send(files=discord_files)
-                    except discord.HTTPException as e:
-                        log.warning("Failed to upload files to Discord: %s", e)
-                        # Try AnonDrop fallback for each file
-                        if anondrop_enabled:
-                            for fp in batch:
-                                link = await _anondrop_upload(
-                                    file_path=fp,
-                                    progress_tracker=tracker,
-                                    userkey=anondrop_userkey,
-                                )
-                                if link:
-                                    link = _anondrop_to_embed(
-                                        link, filename=os.path.basename(fp)
-                                    )
-                                    anondrop_links.append(link)
-                                    anondrop_used = True
+            try:
+                discord_file = discord.File(
+                    file_to_upload, filename=_sanitize_discord_filename(file_to_upload)
+                )
+                # First file gets the embed
+                if not successfully_uploaded:
+                    await ctx.send(embed=result_embed, files=[discord_file])
+                else:
+                    await ctx.send(files=[discord_file])
+                successfully_uploaded.append(file_to_upload)
+
+            except discord.HTTPException as e:
+                # Check if it's a file size error (413 or error code 40005)
+                is_too_large = e.status == 413 or e.code == 40005
+
+                if is_too_large and self._is_video(fp):
+                    # Try compressing the video
+                    log.info(
+                        "File %s too large for Discord, attempting compression", fname
+                    )
+                    tracker.stage = "Compressing"
+                    tracker.percent = 0
+
+                    compressed_path = fp + ".compressed.mp4"
+                    # Use a conservative target - Discord's actual limit for this guild
+                    # Since we don't know the real limit, target 25MB (safe for all tiers)
+                    # but the compressed file might still work if server has higher tier
+                    target_size = 24 * 1024 * 1024  # 24MB to be safe
+
+                    success = await _ffmpeg_compress(
+                        input_path=fp,
+                        output_path=compressed_path,
+                        target_size_bytes=target_size,
+                        progress_tracker=tracker,
+                    )
+
+                    if success and os.path.isfile(compressed_path):
+                        compressed_size = os.path.getsize(compressed_path)
+                        try:
+                            discord_file = discord.File(
+                                compressed_path,
+                                filename=_sanitize_discord_filename(compressed_path),
+                            )
+                            if not successfully_uploaded:
+                                await ctx.send(embed=result_embed, files=[discord_file])
+                            else:
+                                await ctx.send(files=[discord_file])
+                            successfully_uploaded.append(compressed_path)
+                            total_compressed_size = (
+                                total_compressed_size - file_size + compressed_size
+                            )
+                            compression_used = True
+                            continue
+                        except discord.HTTPException as e2:
+                            log.warning(
+                                "Compressed file still rejected by Discord: %s", e2
+                            )
+
+                # Compression failed or not a video - try AnonDrop
+                if anondrop_enabled:
+                    log.info("Falling back to AnonDrop for %s", fname)
+                    link = await _anondrop_upload(
+                        file_path=fp,
+                        progress_tracker=tracker,
+                        userkey=anondrop_userkey,
+                    )
+                    if link:
+                        link = _anondrop_to_embed(link, filename=fname)
+                        anondrop_links.append(link)
+                        anondrop_used = True
+                else:
+                    log.warning(
+                        "File %s too large and AnonDrop disabled, skipping", fname
+                    )
 
         # Post AnonDrop links — send as plain text so Discord auto-embeds
         # the video player from AnonDrop's og:video meta tags
@@ -2634,56 +2695,48 @@ class SabDownloader(commands.Cog):
             await self._do_download(ctx, url, hd_mode=True, _deferred=True)
             return
 
-        # Show resolution picker
+        # Show resolution picker with dropdown menu
         menu_text = _format_resolution_menu(formats)
-        try:
-            await status_msg.edit(content=menu_text)
-        except (discord.NotFound, discord.HTTPException):
-            status_msg = await ctx.send(menu_text)
 
-        # Wait for user's choice
-        def check(m: discord.Message) -> bool:
-            return (
-                m.author.id == ctx.author.id
-                and m.channel.id == ctx.channel.id
-                and m.content.strip().isdigit()
-            )
+        # Track if download was started (for the callback)
+        download_started = False
 
-        try:
-            reply = await self.bot.wait_for("message", check=check, timeout=30.0)
-        except asyncio.TimeoutError:
+        async def on_resolution_selected(selected: dict):
+            nonlocal download_started
+            download_started = True
+            # Clean up the picker message
             try:
-                await status_msg.edit(content="Resolution selection timed out.")
+                await status_msg.delete()
             except (discord.NotFound, discord.HTTPException):
                 pass
-            return
+            # Download with selected format
+            await self._do_download(
+                ctx, url, hd_mode=True, format_id=selected["format_id"], _deferred=True
+            )
 
-        choice = int(reply.content.strip())
-        if choice < 1 or choice > len(formats):
+        view = ResolutionPickerView(
+            formats=formats,
+            author_id=ctx.author.id,
+            callback_fn=on_resolution_selected,
+            timeout=60,
+        )
+
+        try:
+            await status_msg.edit(content=menu_text, view=view)
+        except (discord.NotFound, discord.HTTPException):
+            status_msg = await ctx.send(menu_text, view=view)
+
+        # Wait for the view to complete (selection or timeout)
+        await view.wait()
+
+        if not download_started:
+            # Timed out without selection
             try:
                 await status_msg.edit(
-                    content=f"Invalid choice. Please use a number between 1 and {len(formats)}."
+                    content="Resolution selection timed out.", view=None
                 )
             except (discord.NotFound, discord.HTTPException):
                 pass
-            return
-
-        selected = formats[choice - 1]
-
-        # Clean up the picker messages
-        try:
-            await status_msg.delete()
-        except (discord.NotFound, discord.HTTPException):
-            pass
-        try:
-            await reply.delete()
-        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
-            pass
-
-        # Download with selected format
-        await self._do_download(
-            ctx, url, hd_mode=True, format_id=selected["format_id"], _deferred=True
-        )
 
     async def _do_download(
         self,
