@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import shutil
+import sys
 import tempfile
 import time
 import uuid
@@ -18,6 +19,32 @@ from redbot.core import app_commands, commands, Config, modlog
 from redbot.core.bot import Red
 
 log = logging.getLogger("red.sablinova.sabdownloader")
+
+
+# ---------------------------------------------------------------------------
+# User-Install Patching (integration_types + contexts)
+# ---------------------------------------------------------------------------
+
+
+def _patch_user_install(cmd) -> None:
+    """Patch a command to support user-installed apps.
+
+    This modifies the command's to_dict method to include:
+    - integration_types: [0, 1] (guild install + user install)
+    - contexts: [0, 1, 2] (guild channels, bot DMs, private channels)
+
+    This allows the command to work when the bot is added to a user's account
+    rather than being a guild member.
+    """
+    original_to_dict = cmd.to_dict
+
+    def patched_to_dict(tree):
+        payload = original_to_dict(tree)
+        payload["integration_types"] = [0, 1]
+        payload["contexts"] = [0, 1, 2]
+        return payload
+
+    cmd.to_dict = patched_to_dict
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +106,77 @@ class ResolutionPickerView(View):
         self.author_id = author_id
         self.selected = None
         self.add_item(ResolutionSelect(formats, callback_fn))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                "This menu is not for you.", ephemeral=True
+            )
+            return False
+        return True
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+
+
+# ---------------------------------------------------------------------------
+# URL Picker UI (for context menu with multiple URLs)
+# ---------------------------------------------------------------------------
+
+
+class URLSelect(Select):
+    """Dropdown menu for selecting URLs to download."""
+
+    def __init__(self, urls: List[str], callback_fn: Callable):
+        self.urls = urls
+        self.callback_fn = callback_fn
+
+        options = []
+        for i, url in enumerate(urls[:25]):  # Discord max 25 options
+            # Extract domain for display
+            parsed = urlparse(url)
+            domain = parsed.netloc or "unknown"
+            # Truncate path for label
+            path = parsed.path[:40] + "..." if len(parsed.path) > 40 else parsed.path
+            label = f"{domain}{path}"
+            if len(label) > 100:
+                label = label[:97] + "..."
+            options.append(
+                discord.SelectOption(
+                    label=label,
+                    value=str(i),
+                    description=url[:100] if len(url) > 100 else url,
+                )
+            )
+
+        super().__init__(
+            placeholder="Select URL(s) to download...",
+            min_values=1,
+            max_values=min(len(urls), 25),  # Allow multiple selections
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        selected_urls = [self.urls[int(idx)] for idx in self.values]
+        await interaction.response.defer()
+        self.view.stop()
+        await self.callback_fn(selected_urls)
+
+
+class URLPickerView(View):
+    """View containing the URL dropdown."""
+
+    def __init__(
+        self,
+        urls: List[str],
+        author_id: int,
+        callback_fn: Callable,
+        timeout: float = 60,
+    ):
+        super().__init__(timeout=timeout)
+        self.author_id = author_id
+        self.add_item(URLSelect(urls, callback_fn))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author_id:
@@ -329,6 +427,7 @@ class ProgressTracker:
         self.speed: Optional[str] = None
         self.eta: Optional[str] = None
         self._last_update: float = 0.0
+        self._spinner_frame: int = 0  # For animated spinner
 
     def format_bar(self) -> str:
         """Build the text progress line."""
@@ -339,8 +438,21 @@ class ProgressTracker:
             )
             pct_str = f"{self.percent:.0f}%"
         else:
-            # Indeterminate: animated spinner-style bar
-            bar = PROGRESS_EMPTY * PROGRESS_BAR_LENGTH
+            # Indeterminate: animated loading bar
+            # Create a moving wave effect
+            self._spinner_frame = (self._spinner_frame + 1) % (PROGRESS_BAR_LENGTH * 2)
+
+            # Create wave pattern
+            bar_chars = []
+            for i in range(PROGRESS_BAR_LENGTH):
+                # Calculate distance from wave position
+                dist = abs(i - (self._spinner_frame % PROGRESS_BAR_LENGTH))
+                if dist <= 2:
+                    bar_chars.append(PROGRESS_FILLED)
+                else:
+                    bar_chars.append(PROGRESS_EMPTY)
+
+            bar = "".join(bar_chars)
             pct_str = "..."
 
         size_str = ""
@@ -427,6 +539,8 @@ def _detect_platform(url: str) -> str:
             "flickr.com": "Flickr",
             "imgur.com": "Imgur",
             "nitter.net": "Twitter/X (Nitter)",
+            "open.spotify.com": "Spotify",
+            "spotify.com": "Spotify",
         }
         return platform_map.get(hostname, hostname or "Unknown")
     except Exception:
@@ -439,6 +553,145 @@ def _get_domain(url: str) -> str:
         return (urlparse(url).hostname or "").lower()
     except Exception:
         return ""
+
+
+def _is_spotify_url(url: str) -> bool:
+    """Check if a URL is a Spotify link."""
+    domain = _get_domain(url)
+    return domain in ("open.spotify.com", "spotify.com")
+
+
+def _get_venv_executable(cmd: str) -> str:
+    """Get the path to an executable in the same virtualenv as Python.
+
+    Works on Linux/macOS (bin/) and Windows (Scripts/).
+    """
+    venv_bin = os.path.dirname(sys.executable)
+    # On Windows, executables have .exe extension
+    if sys.platform == "win32":
+        cmd_path = os.path.join(venv_bin, f"{cmd}.exe")
+        if os.path.isfile(cmd_path):
+            return cmd_path
+    # Linux/macOS or fallback
+    return os.path.join(venv_bin, cmd)
+
+
+async def _ensure_spotdl() -> bool:
+    """Ensure spotdl is installed. Returns True if available."""
+    spotdl_path = _get_venv_executable("spotdl")
+
+    # Check if spotdl is already installed in the venv
+    if os.path.isfile(spotdl_path):
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                spotdl_path,
+                "--version",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await proc.communicate()
+            if proc.returncode == 0:
+                return True
+        except Exception:
+            pass
+
+    # Try to install spotdl using the venv's pip
+    log.info("spotdl not found, attempting to install...")
+    pip_path = _get_venv_executable("pip")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            pip_path,
+            "install",
+            "spotdl",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode == 0:
+            log.info("spotdl installed successfully")
+            return True
+        else:
+            log.error("Failed to install spotdl: %s", stderr.decode())
+            return False
+    except Exception as e:
+        log.error("Failed to install spotdl: %s", e)
+        return False
+
+
+async def _download_spotify(
+    url: str,
+    temp_dir: str,
+    timeout: int = 120,
+) -> Tuple[List[str], Optional[dict]]:
+    """Download audio from Spotify using spotdl.
+
+    Uses the TzurSoffer fork with spotipyFree which doesn't require
+    Spotify API credentials.
+
+    Returns (list of file paths, metadata dict or None).
+    """
+    # Ensure spotdl is available
+    if not await _ensure_spotdl():
+        raise RuntimeError("spotdl is not available and could not be installed")
+
+    spotdl_path = _get_venv_executable("spotdl")
+
+    # Build command args - no credentials needed with spotipyFree fork
+    cmd = [
+        spotdl_path,
+        "download",
+        url,
+        "--output",
+        temp_dir,
+        "--format",
+        "mp3",
+        "--bitrate",
+        "320k",
+    ]
+
+    # Run spotdl with timeout
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise RuntimeError(f"spotdl timed out after {timeout}s")
+
+    output = stdout.decode() + stderr.decode()
+
+    # Check for rate limiting (shouldn't happen with spotipyFree, but just in case)
+    if "rate" in output.lower() and "limit" in output.lower():
+        raise RuntimeError(
+            "Spotify rate limit reached. Make sure you have the spotipyFree fork installed: "
+            "`pip install git+https://github.com/TzurSoffer/spotify-downloader`"
+        )
+
+    if proc.returncode != 0:
+        error_msg = stderr.decode().strip() or stdout.decode().strip()
+        raise RuntimeError(f"spotdl failed: {error_msg}")
+
+    # Collect downloaded files
+    files = _collect_real_files(temp_dir)
+    if not files:
+        raise RuntimeError("spotdl produced no output files")
+
+    # Try to extract metadata from stdout
+    metadata = None
+    stdout_text = stdout.decode()
+    # spotdl outputs track info, try to parse it
+    # Format is usually: "Downloaded "Artist - Title""
+    match = re.search(r'Downloaded\s+"([^"]+)"', stdout_text)
+    if match:
+        title = match.group(1)
+        metadata = {"title": title, "extractor": "spotify"}
+
+    return files, metadata
 
 
 def _purge_temp_files(temp_dir: str) -> None:
@@ -1805,6 +2058,9 @@ class SabDownloader(commands.Cog):
             anondrop_userkey=None,
             log_channel=None,
             delete_command=True,
+            spotify_client_id=None,
+            spotify_client_secret=None,
+            spotify_auth_token=None,  # OAuth access token for Spotify
         )
         self._semaphore: Optional[asyncio.Semaphore] = None
         self._cooldowns: Dict[int, float] = {}  # user_id -> last_use timestamp
@@ -1813,6 +2069,142 @@ class SabDownloader(commands.Cog):
         """Initialize semaphore on cog load."""
         max_concurrent = await self.config.max_concurrent()
         self._semaphore = asyncio.Semaphore(max_concurrent)
+
+        # Register context menu command with user-install support
+        self._context_menu = app_commands.ContextMenu(
+            name="Download Media",
+            callback=self._context_download_media,
+        )
+        _patch_user_install(self._context_menu)
+        self.bot.tree.add_command(self._context_menu)
+
+        # Patch the dl command group for user-install support
+        dl_cmd = self.bot.tree.get_command("dl")
+        if dl_cmd:
+            _patch_user_install(dl_cmd)
+
+    async def cog_unload(self) -> None:
+        """Clean up context menu on unload."""
+        self.bot.tree.remove_command(
+            self._context_menu.name, type=self._context_menu.type
+        )
+
+    def _extract_urls_from_message(self, message: discord.Message) -> List[str]:
+        """Extract all potential media URLs from a message."""
+        urls = []
+
+        # Regex for URLs in message content
+        url_pattern = re.compile(r'https?://[^\s<>\[\]()"\',]+', re.IGNORECASE)
+
+        # Extract from message content
+        if message.content:
+            found = url_pattern.findall(message.content)
+            urls.extend(found)
+
+        # Extract from embeds
+        for embed in message.embeds:
+            if embed.url:
+                urls.append(embed.url)
+            if embed.video and embed.video.url:
+                urls.append(embed.video.url)
+            if embed.image and embed.image.url:
+                urls.append(embed.image.url)
+            if embed.thumbnail and embed.thumbnail.url:
+                # Skip Discord CDN thumbnails (usually just previews)
+                if "cdn.discordapp.com" not in embed.thumbnail.url:
+                    urls.append(embed.thumbnail.url)
+            # Extract URLs from embed fields (e.g., "URL" field with a link)
+            for field in embed.fields:
+                if field.value:
+                    found = url_pattern.findall(field.value)
+                    urls.extend(found)
+            # Extract from embed description
+            if embed.description:
+                found = url_pattern.findall(embed.description)
+                urls.extend(found)
+
+        # Extract from attachments (images, videos already hosted)
+        for attachment in message.attachments:
+            urls.append(attachment.url)
+
+        # Deduplicate while preserving order
+        seen = set()
+        unique_urls = []
+        for url in urls:
+            # Clean URL (remove trailing punctuation that might have been captured)
+            url = url.rstrip(".,;:!?")
+            if url not in seen and not _is_private_url(url):
+                seen.add(url)
+                unique_urls.append(url)
+
+        return unique_urls
+
+    async def _context_download_media(
+        self, interaction: discord.Interaction, message: discord.Message
+    ) -> None:
+        """Context menu handler for downloading media from a message."""
+        await interaction.response.defer(ephemeral=False)
+
+        # Extract URLs from the target message
+        urls = self._extract_urls_from_message(message)
+
+        if not urls:
+            await interaction.followup.send(
+                "No downloadable links found in that message.",
+                ephemeral=True,
+            )
+            return
+
+        # Filter to valid http(s) URLs only
+        valid_urls = [url for url in urls if urlparse(url).scheme in ("http", "https")]
+
+        if not valid_urls:
+            await interaction.followup.send(
+                "No downloadable links found in that message.",
+                ephemeral=True,
+            )
+            return
+
+        # Helper to process selected URLs
+        async def process_urls(selected_urls: List[str]):
+            # Create a fake context for compatibility with _do_download
+            ctx = await self.bot.get_context(message)
+            ctx.author = interaction.user
+            ctx.channel = interaction.channel
+            ctx.send = interaction.followup.send
+
+            processed = False
+            for url in selected_urls:
+                try:
+                    await self._do_download(ctx, url, audio_only=False, _deferred=True)
+                    processed = True
+                except Exception as e:
+                    log.warning("Context menu download failed for %s: %s", url, e)
+                    continue
+
+            if not processed:
+                await interaction.followup.send(
+                    "Could not download any media from the selected URL(s).",
+                    ephemeral=True,
+                )
+
+        # If only one URL, download it directly
+        if len(valid_urls) == 1:
+            await process_urls(valid_urls)
+            return
+
+        # Multiple URLs - show picker
+        view = URLPickerView(
+            urls=valid_urls,
+            author_id=interaction.user.id,
+            callback_fn=process_urls,
+            timeout=60,
+        )
+
+        await interaction.followup.send(
+            f"Found **{len(valid_urls)}** URLs in that message. Select which to download:",
+            view=view,
+        )
 
     # ------------------------------------------------------------------
     # Helpers
@@ -1903,8 +2295,11 @@ class SabDownloader(commands.Cog):
         domain = _get_domain(url)
         info_dict = None
 
+        # Spotify gets special handling via spotdl
+        if _is_spotify_url(url):
+            backends = ["spotify"]
         # Decide order based on domain
-        if domain in _TIKTOK_DOMAINS or "tiktok.com" in domain:
+        elif domain in _TIKTOK_DOMAINS or "tiktok.com" in domain:
             backends = ["tiktok"]
         elif domain in _YTDLP_PRIORITY:
             backends = ["ytdlp", "gallerydl"]
@@ -1915,11 +2310,11 @@ class SabDownloader(commands.Cog):
             backends = ["gallerydl", "ytdlp"]
 
         # Audio extraction on TikTok uses the direct scraper's built-in audio mode
-        if audio_only and "tiktok" not in backends:
+        if audio_only and "tiktok" not in backends and "spotify" not in backends:
             backends = ["ytdlp"]
 
         # HD mode on TikTok uses the direct scraper's built-in HD mode
-        if hd_mode and "tiktok" not in backends:
+        if hd_mode and "tiktok" not in backends and "spotify" not in backends:
             backends = ["ytdlp"]
 
         log.info(
@@ -1932,7 +2327,25 @@ class SabDownloader(commands.Cog):
         last_error = None
 
         for backend in backends:
-            if backend == "tiktok":
+            if backend == "spotify":
+                try:
+                    tracker.stage = "Searching & downloading from Spotify"
+                    tracker.percent = (
+                        None  # spotdl doesn't give progress - will show animated bar
+                    )
+                    files, info_dict = await _download_spotify(
+                        url=url,
+                        temp_dir=temp_dir,
+                    )
+                    if files:
+                        return files, info_dict
+                except Exception as e:
+                    last_error = e
+                    log.warning("[_try_download] spotdl failed: %s", e)
+
+                _purge_temp_files(temp_dir)
+
+            elif backend == "tiktok":
                 try:
                     tracker.stage = "Downloading"
                     tracker.percent = 0
@@ -2606,6 +3019,64 @@ class SabDownloader(commands.Cog):
         await self.config.max_concurrent.set(count)
         self._semaphore = asyncio.Semaphore(count)
         await ctx.send(f"Max concurrent downloads set to **{count}**.")
+
+    # ------------------------------------------------------------------
+    # Spotify Configuration
+    # ------------------------------------------------------------------
+
+    @sabdownloader.group(name="spotify", invoke_without_command=True)
+    @commands.is_owner()
+    async def sd_spotify(self, ctx: commands.Context):
+        """Spotify configuration for audio downloads.
+
+        Spotify downloads now work without authentication thanks to
+        the spotipyFree library. No setup required!
+        """
+        await ctx.send_help(ctx.command)
+
+    @sd_spotify.command(name="status")
+    async def sd_spotify_status(self, ctx: commands.Context):
+        """Check Spotify download status."""
+        # Check if spotdl is available
+        spotdl_path = _get_venv_executable("spotdl")
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                spotdl_path,
+                "--version",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+            version = stdout.decode().strip()
+        except Exception:
+            version = "Not installed"
+
+        embed = discord.Embed(
+            title="Spotify Status",
+            color=discord.Color.green()
+            if "4.4.5" in version
+            else discord.Color.orange(),
+        )
+        embed.add_field(name="spotdl Version", value=f"`{version}`", inline=False)
+
+        if "4.4.5" in version:
+            embed.add_field(
+                name="Status",
+                value="Ready! Using spotipyFree (no API credentials needed)",
+                inline=False,
+            )
+        else:
+            embed.add_field(
+                name="Status",
+                value=(
+                    "spotdl may need updating. Install the fixed fork:\n"
+                    "`pip install git+https://github.com/TzurSoffer/spotify-downloader`"
+                ),
+                inline=False,
+            )
+
+        await ctx.send(embed=embed)
 
     # ------------------------------------------------------------------
     # Download commands: [p]dl
