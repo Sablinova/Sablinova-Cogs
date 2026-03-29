@@ -1,8 +1,8 @@
 # SabDownloader
 
-A [Red-DiscordBot](https://github.com/Cog-Creators/Red-DiscordBot) v3 cog that downloads media from Instagram, TikTok, YouTube, Twitter/X, Reddit, and 1000+ other sites, then uploads directly to Discord.
+A [Red-DiscordBot](https://github.com/Cog-Creators/Red-DiscordBot) v3 cog that downloads media from Instagram, TikTok, YouTube, Twitter/X, Reddit, Spotify, and 1000+ other sites, then uploads directly to Discord.
 
-Uses gallery-dl and yt-dlp as download backends. Large videos are automatically compressed with ffmpeg to fit Discord's upload limits. Files that still exceed the limit are uploaded to AnonDrop.net as a fallback.
+Uses gallery-dl, yt-dlp, and spotdl as download backends. Large videos are automatically compressed with ffmpeg to fit Discord's upload limits. Files that still exceed the limit are uploaded to AnonDrop.net as a fallback.
 
 ## Installation
 
@@ -42,7 +42,7 @@ Extract audio as MP3:
 
 ## Supported Platforms
 
-gallery-dl and yt-dlp together support over 1000 sites. Some highlights:
+gallery-dl, yt-dlp, and spotdl together support over 1000 sites. Some highlights:
 
 | Platform | Best Backend | Notes |
 |----------|-------------|-------|
@@ -53,6 +53,7 @@ gallery-dl and yt-dlp together support over 1000 sites. Some highlights:
 | Reddit | yt-dlp | Muxes separate video+audio DASH streams. |
 | Facebook | yt-dlp | Public videos. |
 | Twitch | yt-dlp | Clips. |
+| **Spotify** | **spotdl** | **Tracks, albums, playlists. No authentication needed.** |
 
 ## Commands
 
@@ -85,6 +86,7 @@ All configuration commands are under `[p]sabdownloader` (alias: `[p]sabdl`).
 |---------|-------------|
 | `cookies <path>` | Set path to a Netscape cookies.txt file (needed for Instagram). |
 | `maxconcurrent <count>` | Set maximum concurrent downloads (1-10, default: 3). |
+| `spotify status` | Check spotdl installation status and version. |
 
 ## File Size Handling
 
@@ -111,7 +113,7 @@ Downloading... [████████░░░░░░░░░░░░] 40
 ```
 
 - yt-dlp downloads show real percentage and size.
-- gallery-dl downloads show an indeterminate status (no progress callback available).
+- gallery-dl and spotdl downloads show an animated loading indicator (no progress callback available).
 - The bar updates every 3 seconds to avoid Discord rate limits.
 
 ## HD Mode
@@ -132,6 +134,30 @@ Instagram requires login cookies for most content. To configure:
 
 Without cookies configured, Instagram URLs will show an error message directing the user to contact the bot owner.
 
+## Spotify Downloads
+
+Spotify support is powered by [spotdl](https://github.com/spotDL/spotify-downloader) using the [TzurSoffer fork](https://github.com/TzurSoffer/spotify-downloader) which includes **spotipyFree** - a library that scrapes Spotify without requiring API credentials.
+
+### How It Works
+- No Spotify API credentials needed
+- No Premium subscription required
+- Auto-installs spotdl on first use
+- Downloads tracks as 320kbps MP3
+- Works with tracks, albums, and playlists
+
+### Example
+```
+[p]dl https://open.spotify.com/track/7hPwUxGo7YgQFFYDynDQwp
+```
+
+### Status Check
+Bot owners can verify spotdl installation:
+```
+[p]sabdownloader spotify status
+```
+
+This will show the spotdl version and whether it's ready to use.
+
 ## Security
 
 - **SSRF prevention**: URLs pointing to private/reserved IP ranges (127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, etc.) are rejected.
@@ -146,6 +172,7 @@ Without cookies configured, Instagram URLs will show an error message directing 
 - Python >= 3.9
 - ffmpeg installed on the host system
 - Pip dependencies installed automatically: `yt-dlp`, `gallery-dl`
+- Spotify support: `spotdl` (auto-installed from TzurSoffer fork on first use)
 
 ## Optional: User-Installed App Support in Threads
 
