@@ -295,6 +295,16 @@ class SabPubHelper(commands.Cog):
         """Called when the cog is loaded."""
         self.data_path.mkdir(parents=True, exist_ok=True)
 
+        # Auto-detect basefiles on disk and mark as configured
+        async with self.config.profiles() as profiles:
+            for game in profiles:
+                basefiles_path = self._get_basefiles_path(game)
+                if basefiles_path.exists() and not profiles[game].get(
+                    "basefiles_set", False
+                ):
+                    profiles[game]["basefiles_set"] = True
+                    log.info(f"Auto-detected {game} basefiles at {basefiles_path}")
+
     @commands.group(name="pubhelper")
     @commands.is_owner()
     async def pubhelper(self, ctx: commands.Context) -> None:
