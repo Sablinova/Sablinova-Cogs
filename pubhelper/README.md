@@ -1,6 +1,6 @@
 # PubHelper
 
-RE9 config combiner utility for Red-DiscordBot. Combines user token configs with basefiles to create ready-to-use packages.
+Config combiner utility for Red-DiscordBot. Combines user token configs with basefiles to create ready-to-use packages.
 
 ## Installation
 
@@ -12,14 +12,16 @@ RE9 config combiner utility for Red-DiscordBot. Combines user token configs with
 
 ## Setup (Bot Owner)
 
-1. Set the basefiles template:
+1. Set the basefiles templates for each game:
 ```
-[p]pubhelper setbasefiles <url to basefiles.7z>
+[p]pubhelper setbasefiles re9 <url to RE9 basefiles.7z>
+[p]pubhelper setbasefiles cd <url to CD basefiles.7z>
 ```
 
-2. Enable and sync the slash command:
+2. Enable and sync the slash commands:
 ```
 [p]slash enable re9cc
+[p]slash enable cdcc
 [p]slash sync
 ```
 
@@ -30,10 +32,11 @@ RE9 config combiner utility for Red-DiscordBot. Combines user token configs with
 
 ## Usage
 
-Users can use the `/re9cc` slash command:
+Users can use the slash commands:
 
 ```
 /re9cc url:<link to token zip>
+/cdcc url:<link to token zip>
 ```
 
 The bot will:
@@ -48,14 +51,15 @@ The bot will:
 
 | Command | Description |
 |---------|-------------|
-| `[p]pubhelper setbasefiles <url>` | Set the basefiles 7z template |
-| `[p]pubhelper status` | Check if basefiles are configured |
+| `[p]pubhelper setbasefiles <game> <url>` | Set basefiles for a game (re9, cd) |
+| `[p]pubhelper status` | Check status of all basefiles |
 
 ### Slash Commands
 
 | Command | Description |
 |---------|-------------|
 | `/re9cc <url>` | Combine your config with RE9 basefiles |
+| `/cdcc <url>` | Combine your config with CD basefiles |
 
 ## Requirements
 
