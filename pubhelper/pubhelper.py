@@ -375,6 +375,251 @@ class SabPubHelper(commands.Cog):
         await view.update_dropdown()
         view.message = await ctx.send(embed=embed, view=view)
 
+    @pubhelper.command(name="addgame")
+    async def add_game_interactive(self, ctx: commands.Context) -> None:
+        """Interactive wizard to add a new game profile.
+
+        Guides you through creating a new game with:
+        - Game ID (used for slash command, e.g., 're9' creates /re9cc)
+        - Display name
+        - Description
+        - Config target path
+        - Basefiles upload
+        """
+        embed = discord.Embed(
+            title="Add New Game",
+            description=(
+                "Let's add a new game profile!\n\n"
+                "**Step 1/4:** Enter the game ID (lowercase, no spaces).\n"
+                "This will be used for the slash command, e.g., `re9` creates `/re9cc`.\n\n"
+                "Type the game ID below:"
+            ),
+            color=discord.Color.blurple(),
+        )
+        await ctx.send(embed=embed)
+
+        def check(m):
+            return m.author.id == ctx.author.id and m.channel.id == ctx.channel.id
+
+        try:
+            # Step 1: Game ID
+            msg = await self.bot.wait_for("message", check=check, timeout=60)
+            game_id = msg.content.strip().lower().replace(" ", "_")
+
+            # Validate game ID
+            if not game_id.isalnum() and "_" not in game_id:
+                await ctx.send(
+                    "Invalid game ID. Use only letters, numbers, and underscores."
+                )
+                return
+
+            profiles = await self.config.profiles()
+            if game_id in profiles:
+                await ctx.send(
+                    f"Game `{game_id}` already exists. Use `[p]pubhelper setup` to configure it."
+                )
+                return
+
+            # Step 2: Display Name
+            embed = discord.Embed(
+                title="Add New Game",
+                description=(
+                    f"**Game ID:** `{game_id}`\n\n"
+                    "**Step 2/4:** Enter the display name for this game.\n"
+                    "Example: `Resident Evil 9`\n\n"
+                    "Type the display name below:"
+                ),
+                color=discord.Color.blurple(),
+            )
+            await ctx.send(embed=embed)
+
+            msg = await self.bot.wait_for("message", check=check, timeout=60)
+            display_name = msg.content.strip()
+
+            # Step 3: Description
+            embed = discord.Embed(
+                title="Add New Game",
+                description=(
+                    f"**Game ID:** `{game_id}`\n"
+                    f"**Name:** {display_name}\n\n"
+                    "**Step 3/4:** Enter a short description (optional).\n"
+                    "Or type `skip` to use the display name as description.\n\n"
+                    "Type the description below:"
+                ),
+                color=discord.Color.blurple(),
+            )
+            await ctx.send(embed=embed)
+
+            msg = await self.bot.wait_for("message", check=check, timeout=60)
+            description = msg.content.strip()
+            if description.lower() == "skip":
+                description = display_name
+
+            # Step 4: Config Path
+            embed = discord.Embed(
+                title="Add New Game",
+                description=(
+                    f"**Game ID:** `{game_id}`\n"
+                    f"**Name:** {display_name}\n"
+                    f"**Description:** {description}\n\n"
+                    "**Step 4/4:** Enter the config target path.\n"
+                    "This is where `configs.user.ini` will be placed in the basefiles.\n\n"
+                    "Examples:\n"
+                    "- `steam_settings/configs.user.ini`\n"
+                    "- `pub_re9/steam_settings/configs.user.ini`\n\n"
+                    "Type the path below:"
+                ),
+                color=discord.Color.blurple(),
+            )
+            await ctx.send(embed=embed)
+
+            msg = await self.bot.wait_for("message", check=check, timeout=60)
+            config_path = msg.content.strip()
+
+            if not config_path.endswith("configs.user.ini"):
+                if not config_path.endswith("/"):
+                    config_path += "/"
+                config_path += "configs.user.ini"
+
+            # Create the new profile
+            new_profile = {
+                "name": display_name,
+                "config_target": config_path,
+                "output_name": f"{display_name.replace(' ', '_')}_Combined.zip",
+                "description": description,
+                "basefiles_set": False,
+                "basefiles_format": "7z",
+            }
+
+            async with self.config.profiles() as profiles:
+                profiles[game_id] = new_profile
+
+            # Success message
+            embed = discord.Embed(
+                title="Game Added Successfully!",
+                description=(
+                    f"**Game ID:** `{game_id}`\n"
+                    f"**Name:** {display_name}\n"
+                    f"**Description:** {description}\n"
+                    f"**Config Path:** `{config_path}`\n"
+                    f"**Slash Command:** `/{game_id}cc`\n\n"
+                    "**Next steps:**\n"
+                    f"1. Upload basefiles: `[p]pubhelper setup` and select {display_name}\n"
+                    f"2. Register slash command: `[p]slash enable {game_id}cc`\n"
+                    f"3. Sync commands: `[p]slash sync`"
+                ),
+                color=discord.Color.green(),
+            )
+            await ctx.send(embed=embed)
+
+            # Register the new slash command dynamically
+            await self._register_game_command(game_id, display_name)
+            await ctx.send(
+                f"Slash command `/{game_id}cc` has been registered. "
+                f"Run `[p]slash sync` to make it available."
+            )
+
+        except asyncio.TimeoutError:
+            await ctx.send("Setup timed out. Run `[p]pubhelper addgame` to try again.")
+
+    @pubhelper.command(name="removegame")
+    async def remove_game(self, ctx: commands.Context, game: str) -> None:
+        """Remove a game profile.
+
+        **Usage:**
+        `[p]pubhelper removegame <game_id>`
+
+        This will remove the game profile and delete its basefiles.
+        Built-in games (re9, cd) cannot be removed.
+        """
+        game = game.lower()
+        profiles = await self.config.profiles()
+
+        if game not in profiles:
+            await ctx.send(
+                f"Unknown game `{game}`. Available: {', '.join(profiles.keys())}"
+            )
+            return
+
+        if game in ("re9", "cd"):
+            await ctx.send(
+                "Cannot remove built-in games. You can reconfigure them instead."
+            )
+            return
+
+        profile = profiles[game]
+
+        # Confirm deletion
+        embed = discord.Embed(
+            title="Confirm Deletion",
+            description=(
+                f"Are you sure you want to remove **{profile['name']}** (`{game}`)?\n\n"
+                f"This will:\n"
+                f"- Remove the game profile\n"
+                f"- Delete basefiles (if any)\n"
+                f"- The `/{game}cc` command will no longer work\n\n"
+                f"Type `yes` to confirm or `no` to cancel."
+            ),
+            color=discord.Color.orange(),
+        )
+        await ctx.send(embed=embed)
+
+        def check(m):
+            return m.author.id == ctx.author.id and m.channel.id == ctx.channel.id
+
+        try:
+            msg = await self.bot.wait_for("message", check=check, timeout=30)
+            if msg.content.strip().lower() != "yes":
+                await ctx.send("Deletion cancelled.")
+                return
+
+            # Delete basefiles
+            for fmt in ("7z", "zip"):
+                path = self._get_basefiles_path(game, fmt)
+                if path.exists():
+                    path.unlink()
+
+            # Remove profile
+            async with self.config.profiles() as profiles:
+                del profiles[game]
+
+            await ctx.send(
+                f"Game **{profile['name']}** removed successfully.\n"
+                f"Note: The `/{game}cc` slash command may still appear until you run `[p]slash sync`."
+            )
+
+        except asyncio.TimeoutError:
+            await ctx.send("Confirmation timed out. Deletion cancelled.")
+
+    async def _register_game_command(self, game_id: str, display_name: str) -> None:
+        """Dynamically register a slash command for a new game."""
+
+        # Create the command function
+        async def game_command(interaction: discord.Interaction, url: str) -> None:
+            await self._process_command(interaction, url, game_id)
+
+        # Set function metadata
+        game_command.__name__ = f"{game_id}cc"
+        game_command.__doc__ = f"Combine your config with {display_name} basefiles"
+
+        # Create the app command
+        cmd = app_commands.Command(
+            name=f"{game_id}cc",
+            description=f"Combine your config with {display_name} basefiles",
+            callback=game_command,
+        )
+        cmd._params = {
+            "url": app_commands.transformers.CommandParameter(
+                name="url",
+                description="URL to your token zip file",
+                required=True,
+                type=app_commands.AppCommandOptionType.string,
+            )
+        }
+
+        # Add to cog's app commands
+        self.bot.tree.add_command(cmd)
+
     @pubhelper.command(name="configpath")
     async def set_config_path(
         self, ctx: commands.Context, game: str, *, path: str
@@ -590,6 +835,8 @@ class SabPubHelper(commands.Cog):
                 "`[p]pubhelper status` - Check all games status & paths\n"
                 "`[p]pubhelper setup` - Interactive basefiles setup\n"
                 "`[p]pubhelper setpath` - Interactive path change\n"
+                "`[p]pubhelper addgame` - Add a new game profile\n"
+                "`[p]pubhelper removegame <id>` - Remove a game profile\n"
                 "`[p]pubhelper help` - This guide"
             ),
             inline=False,
