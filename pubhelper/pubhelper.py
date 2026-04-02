@@ -8,11 +8,9 @@ import asyncio
 import io
 import logging
 import os
-import shutil
 import tempfile
 import zipfile
 from pathlib import Path
-from typing import Optional
 
 import aiohttp
 import discord
@@ -23,6 +21,8 @@ from redbot.core.bot import Red
 from redbot.core.data_manager import cog_data_path
 
 log = logging.getLogger("red.sablinova.pubhelper")
+
+INVALID_LINK_MSG = "Invalid or expired link. Please provide a valid token link."
 
 
 class SabPubHelper(commands.Cog):
@@ -129,54 +129,123 @@ class SabPubHelper(commands.Cog):
     @app_commands.describe(url="URL to your skin/config zip file")
     async def re9cc(self, interaction: discord.Interaction, url: str) -> None:
         """Download a skin zip, extract configs.user.ini, combine with basefiles, and upload."""
-        await interaction.response.defer(thinking=True)
-
-        # Check if basefiles are configured
+        # Check if basefiles are configured first
         basefiles_set = await self.config.basefiles_set()
         if not basefiles_set or not self.basefiles_path.exists():
-            await interaction.followup.send(
+            await interaction.response.send_message(
                 "Basefiles not configured. Ask the bot owner to run "
                 "`[p]pubhelper setbasefiles <url>` first.",
                 ephemeral=True,
             )
             return
 
+        # Send initial status message (not deferred - we want to show progress)
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                description="Downloading your file...",
+                color=discord.Color.blurple(),
+            )
+        )
+
         try:
-            result = await self._process_config(url)
-            if isinstance(result, str):
-                # Error message
-                await interaction.followup.send(result, ephemeral=True)
-            else:
-                # Success - result is a tuple of (filename, bytes)
-                filename, data = result
-                file = discord.File(io.BytesIO(data), filename=filename)
-                await interaction.followup.send(
-                    "Your combined RE9 package is ready:",
-                    file=file,
+            # Step 1: Download user's zip
+            download_result = await self._download_file(url)
+            if isinstance(download_result, str):
+                # Error
+                await interaction.edit_original_response(
+                    embed=discord.Embed(
+                        description=f"Download failed: {download_result}\n\n{INVALID_LINK_MSG}",
+                        color=discord.Color.red(),
+                    )
                 )
+                return
+
+            user_zip_data = download_result
+
+            # Step 2: Update status - processing
+            await interaction.edit_original_response(
+                embed=discord.Embed(
+                    description="Processing and combining files...",
+                    color=discord.Color.blurple(),
+                )
+            )
+
+            # Step 3: Process files
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None, self._combine_files, user_zip_data
+            )
+
+            if isinstance(result, str):
+                # Error
+                await interaction.edit_original_response(
+                    embed=discord.Embed(
+                        description=f"{result}\n\n{INVALID_LINK_MSG}",
+                        color=discord.Color.red(),
+                    )
+                )
+                return
+
+            # Step 4: Upload result
+            await interaction.edit_original_response(
+                embed=discord.Embed(
+                    description="Uploading combined package...",
+                    color=discord.Color.blurple(),
+                )
+            )
+
+            filename, data = result
+            file = discord.File(io.BytesIO(data), filename=filename)
+            size_mb = len(data) / (1024 * 1024)
+
+            await interaction.edit_original_response(
+                embed=discord.Embed(
+                    description=f"Your combined RE9 package is ready! ({size_mb:.2f} MB)",
+                    color=discord.Color.green(),
+                ),
+                attachments=[file],
+            )
+
         except Exception as e:
             log.exception("Error processing config")
-            await interaction.followup.send(f"Error: {e}", ephemeral=True)
+            await interaction.edit_original_response(
+                embed=discord.Embed(
+                    description=f"Error: {e}\n\n{INVALID_LINK_MSG}",
+                    color=discord.Color.red(),
+                )
+            )
 
-    async def _process_config(self, url: str) -> tuple[str, bytes] | str:
-        """Process the config URL and return combined zip or error message."""
-        # Download the user's zip
+    async def _download_file(self, url: str) -> bytes | str:
+        """Download file from URL. Returns bytes on success, error string on failure."""
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
                     url, timeout=aiohttp.ClientTimeout(total=60)
                 ) as resp:
-                    if resp.status != 200:
-                        return f"Failed to download: HTTP {resp.status}"
-                    user_zip_data = await resp.read()
-        except asyncio.TimeoutError:
-            return "Download timed out."
-        except Exception as e:
-            return f"Download failed: {e}"
+                    if resp.status == 403:
+                        return "Access denied (403)"
+                    elif resp.status == 404:
+                        return "File not found (404)"
+                    elif resp.status != 200:
+                        return f"HTTP {resp.status}"
 
-        # Process in executor to avoid blocking
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._combine_files, user_zip_data)
+                    content = await resp.read()
+
+                    # Check if it's actually a file or an error page
+                    if content.startswith(b"<!DOCTYPE") or content.startswith(b"<html"):
+                        return "Link returned a webpage, not a file"
+
+                    if b"This content is no longer available" in content:
+                        return "Link expired"
+
+                    return content
+
+        except asyncio.TimeoutError:
+            return "Download timed out"
+        except aiohttp.ClientError as e:
+            return f"Connection error: {e}"
+        except Exception as e:
+            return str(e)
 
     def _combine_files(self, user_zip_data: bytes) -> tuple[str, bytes] | str:
         """Combine user config with basefiles. Runs in executor."""
@@ -184,7 +253,6 @@ class SabPubHelper(commands.Cog):
             tmpdir = Path(tmpdir)
             user_zip_path = tmpdir / "user.zip"
             extract_dir = tmpdir / "extracted"
-            output_dir = tmpdir / "output"
 
             # Save user zip
             with open(user_zip_path, "wb") as f:
@@ -210,8 +278,11 @@ class SabPubHelper(commands.Cog):
 
             # Extract basefiles
             extract_dir.mkdir(parents=True, exist_ok=True)
-            with py7zr.SevenZipFile(self.basefiles_path, "r") as z:
-                z.extractall(extract_dir)
+            try:
+                with py7zr.SevenZipFile(self.basefiles_path, "r") as z:
+                    z.extractall(extract_dir)
+            except Exception as e:
+                return f"Failed to extract basefiles: {e}"
 
             # Replace configs.user.ini in basefiles
             target_config = (
