@@ -32,6 +32,7 @@ DEFAULT_PROFILES = {
         "output_name": "RE9_Combined.zip",
         "description": "Resident Evil 9",
         "basefiles_set": False,
+        "basefiles_format": "7z",  # "7z" or "zip"
     },
     "cd": {
         "name": "CD",
@@ -39,8 +40,21 @@ DEFAULT_PROFILES = {
         "output_name": "CD_Combined.zip",
         "description": "CD Game",
         "basefiles_set": False,
+        "basefiles_format": "7z",  # "7z" or "zip"
     },
 }
+
+
+def _detect_archive_format(content: bytes) -> str | None:
+    """Detect archive format from magic bytes.
+
+    Returns: "7z", "zip", or None if unknown.
+    """
+    if content.startswith(b"7z\xbc\xaf\x27\x1c"):
+        return "7z"
+    elif content.startswith(b"PK\x03\x04") or content.startswith(b"PK\x05\x06"):
+        return "zip"
+    return None
 
 
 class GameSelectView(discord.ui.View):
@@ -201,7 +215,6 @@ class GameSelectView(discord.ui.View):
         """Download and save basefiles."""
         profiles = await self.cog.config.profiles()
         profile = profiles[game]
-        basefiles_path = self.cog._get_basefiles_path(game)
 
         status_msg = await interaction.followup.send(
             embed=discord.Embed(
@@ -226,20 +239,30 @@ class GameSelectView(discord.ui.View):
 
                     content = await resp.read()
 
-                    if not content.startswith(b"7z"):
+                    # Detect archive format
+                    fmt = _detect_archive_format(content)
+                    if not fmt:
                         await status_msg.edit(
                             embed=discord.Embed(
-                                description="The file is not a valid 7z archive.",
+                                description="The file is not a valid archive. Supported formats: `.7z`, `.zip`",
                                 color=discord.Color.red(),
                             )
                         )
                         return
 
+                    # Remove old basefiles if format changed
+                    for old_fmt in ("7z", "zip"):
+                        old_path = self.cog._get_basefiles_path(game, old_fmt)
+                        if old_path.exists() and old_fmt != fmt:
+                            old_path.unlink()
+
+                    basefiles_path = self.cog._get_basefiles_path(game, fmt)
                     with open(basefiles_path, "wb") as f:
                         f.write(content)
 
                     async with self.cog.config.profiles() as profiles:
                         profiles[game]["basefiles_set"] = True
+                        profiles[game]["basefiles_format"] = fmt
 
                     size_mb = len(content) / (1024 * 1024)
 
@@ -248,6 +271,7 @@ class GameSelectView(discord.ui.View):
                             title="Basefiles Saved",
                             description=(
                                 f"**Game:** {profile['name']}\n"
+                                f"**Format:** {fmt}\n"
                                 f"**Size:** {size_mb:.2f} MB\n\n"
                                 f"The `/{game}cc` command is now ready.\n"
                                 f"Don't forget to run:\n"
@@ -287,9 +311,17 @@ class SabPubHelper(commands.Cog):
         )
         self.data_path = cog_data_path(self)
 
-    def _get_basefiles_path(self, game: str) -> Path:
+    def _get_basefiles_path(self, game: str, fmt: str = "7z") -> Path:
         """Get the basefiles path for a game profile."""
-        return self.data_path / f"basefiles_{game}.7z"
+        return self.data_path / f"basefiles_{game}.{fmt}"
+
+    def _find_basefiles_path(self, game: str) -> Path | None:
+        """Find existing basefiles for a game (checks both formats)."""
+        for fmt in ("7z", "zip"):
+            path = self._get_basefiles_path(game, fmt)
+            if path.exists():
+                return path
+        return None
 
     async def cog_load(self) -> None:
         """Called when the cog is loaded."""
@@ -298,11 +330,12 @@ class SabPubHelper(commands.Cog):
         # Auto-detect basefiles on disk and mark as configured
         async with self.config.profiles() as profiles:
             for game in profiles:
-                basefiles_path = self._get_basefiles_path(game)
-                if basefiles_path.exists() and not profiles[game].get(
-                    "basefiles_set", False
-                ):
+                basefiles_path = self._find_basefiles_path(game)
+                if basefiles_path and not profiles[game].get("basefiles_set", False):
+                    # Detect format from extension
+                    fmt = basefiles_path.suffix.lstrip(".")
                     profiles[game]["basefiles_set"] = True
+                    profiles[game]["basefiles_format"] = fmt
                     log.info(f"Auto-detected {game} basefiles at {basefiles_path}")
 
     @commands.group(name="pubhelper")
@@ -378,7 +411,9 @@ class SabPubHelper(commands.Cog):
 
     @pubhelper.command(name="setbasefiles")
     async def set_basefiles(self, ctx: commands.Context, game: str, url: str) -> None:
-        """Set the basefiles 7z template for a game.
+        """Set the basefiles archive for a game.
+
+        Supports both `.7z` and `.zip` formats.
 
         **Games:** re9, cd
 
@@ -396,7 +431,6 @@ class SabPubHelper(commands.Cog):
             return
 
         profile = profiles[game]
-        basefiles_path = self._get_basefiles_path(game)
 
         async with ctx.typing():
             try:
@@ -410,31 +444,52 @@ class SabPubHelper(commands.Cog):
 
                         content = await resp.read()
 
-                        if not content.startswith(b"7z"):
+                        # Detect archive format
+                        fmt = _detect_archive_format(content)
+                        if not fmt:
                             await ctx.send(
-                                "The downloaded file is not a valid 7z archive."
+                                "The downloaded file is not a valid archive. Supported formats: `.7z`, `.zip`"
                             )
                             return
 
+                        # Remove old basefiles if format changed
+                        for old_fmt in ("7z", "zip"):
+                            old_path = self._get_basefiles_path(game, old_fmt)
+                            if old_path.exists() and old_fmt != fmt:
+                                old_path.unlink()
+
+                        basefiles_path = self._get_basefiles_path(game, fmt)
                         with open(basefiles_path, "wb") as f:
                             f.write(content)
 
-                        with py7zr.SevenZipFile(basefiles_path, "r") as z:
-                            names = z.getnames()
-                            target_dir = str(Path(profile["config_target"]).parent)
+                        # Validate archive structure
+                        target_dir = str(Path(profile["config_target"]).parent)
+                        try:
+                            if fmt == "7z":
+                                with py7zr.SevenZipFile(basefiles_path, "r") as z:
+                                    names = z.getnames()
+                            else:  # zip
+                                with zipfile.ZipFile(basefiles_path, "r") as z:
+                                    names = z.namelist()
+
                             if not any(target_dir in n for n in names):
                                 await ctx.send(
                                     f"Warning: basefiles may not have the expected structure. "
                                     f"Expected path containing `{target_dir}`.\n"
                                     f"Use `[p]pubhelper setpath {game}` to change the config path."
                                 )
+                        except Exception as e:
+                            await ctx.send(
+                                f"Warning: Could not validate archive structure: {e}"
+                            )
 
                         async with self.config.profiles() as profiles:
                             profiles[game]["basefiles_set"] = True
+                            profiles[game]["basefiles_format"] = fmt
 
                         size_mb = len(content) / (1024 * 1024)
                         await ctx.send(
-                            f"{profile['name']} basefiles saved successfully ({size_mb:.2f} MB). "
+                            f"{profile['name']} basefiles saved successfully ({fmt}, {size_mb:.2f} MB). "
                             f"The `/{game}cc` command is now ready to use."
                         )
 
@@ -453,12 +508,13 @@ class SabPubHelper(commands.Cog):
         lines = []
 
         for game, profile in profiles.items():
-            basefiles_path = self._get_basefiles_path(game)
+            basefiles_path = self._find_basefiles_path(game)
             is_set = profile.get("basefiles_set", False)
+            fmt = profile.get("basefiles_format", "7z")
 
-            if is_set and basefiles_path.exists():
+            if is_set and basefiles_path and basefiles_path.exists():
                 size_mb = basefiles_path.stat().st_size / (1024 * 1024)
-                status = f"Configured ({size_mb:.2f} MB)"
+                status = f"Configured ({fmt}, {size_mb:.2f} MB)"
             else:
                 status = "Not configured"
 
@@ -555,10 +611,10 @@ class SabPubHelper(commands.Cog):
             )
             return
 
-        basefiles_path = self._get_basefiles_path(game)
+        basefiles_path = self._find_basefiles_path(game)
         is_set = profile.get("basefiles_set", False)
 
-        if not is_set or not basefiles_path.exists():
+        if not is_set or not basefiles_path or not basefiles_path.exists():
             await interaction.response.send_message(
                 f"{profile['name']} basefiles not configured. Ask the bot owner to run "
                 f"`[p]pubhelper setbasefiles {game} <url>` first.",
@@ -595,7 +651,7 @@ class SabPubHelper(commands.Cog):
 
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
-                None, self._combine_files, user_zip_data, game, profile
+                None, self._combine_files, user_zip_data, game, profile, basefiles_path
             )
 
             if isinstance(result, str):
@@ -683,11 +739,9 @@ class SabPubHelper(commands.Cog):
             return str(e)
 
     def _combine_files(
-        self, user_zip_data: bytes, game: str, profile: dict
+        self, user_zip_data: bytes, game: str, profile: dict, basefiles_path: Path
     ) -> tuple[str, bytes] | str:
         """Combine user config with basefiles. Runs in executor."""
-        basefiles_path = self._get_basefiles_path(game)
-
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
             user_zip_path = tmpdir / "user.zip"
@@ -712,9 +766,16 @@ class SabPubHelper(commands.Cog):
                 return "The provided file is not a valid zip archive."
 
             extract_dir.mkdir(parents=True, exist_ok=True)
+
+            # Extract basefiles based on format
+            fmt = basefiles_path.suffix.lstrip(".")
             try:
-                with py7zr.SevenZipFile(basefiles_path, "r") as z:
-                    z.extractall(extract_dir)
+                if fmt == "7z":
+                    with py7zr.SevenZipFile(basefiles_path, "r") as z:
+                        z.extractall(extract_dir)
+                else:  # zip
+                    with zipfile.ZipFile(basefiles_path, "r") as z:
+                        z.extractall(extract_dir)
             except Exception as e:
                 return f"Failed to extract basefiles: {e}"
 
