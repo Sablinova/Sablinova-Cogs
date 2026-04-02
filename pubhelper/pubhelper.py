@@ -24,23 +24,21 @@ log = logging.getLogger("red.sablinova.pubhelper")
 
 INVALID_LINK_MSG = "Invalid or expired link. Please provide a valid token link."
 
-# Game profiles configuration
-GAME_PROFILES = {
+# Default game profiles
+DEFAULT_PROFILES = {
     "re9": {
         "name": "RE9",
-        "basefiles_key": "re9_basefiles_set",
-        "basefiles_name": "basefiles_re9.7z",
         "config_target": "pub_re9/steam_settings/configs.user.ini",
         "output_name": "RE9_Combined.zip",
         "description": "Resident Evil 9",
+        "basefiles_set": False,
     },
     "cd": {
         "name": "CD",
-        "basefiles_key": "cd_basefiles_set",
-        "basefiles_name": "basefiles_cd.7z",
         "config_target": "steam_settings/configs.user.ini",
         "output_name": "CD_Combined.zip",
         "description": "CD Game",
+        "basefiles_set": False,
     },
 }
 
@@ -48,28 +46,15 @@ GAME_PROFILES = {
 class GameSelectView(discord.ui.View):
     """View for selecting a game profile."""
 
-    def __init__(self, cog: "SabPubHelper", author: discord.User):
+    def __init__(
+        self, cog: "SabPubHelper", author: discord.User, action: str = "setup"
+    ):
         super().__init__(timeout=60)
         self.cog = cog
         self.author = author
+        self.action = action  # "setup" or "configpath"
         self.selected_game = None
         self.message = None
-
-        # Add game select dropdown
-        options = [
-            discord.SelectOption(
-                label=profile["name"],
-                description=profile["description"],
-                value=game_key,
-            )
-            for game_key, profile in GAME_PROFILES.items()
-        ]
-        self.game_select = discord.ui.Select(
-            placeholder="Select a game...",
-            options=options,
-        )
-        self.game_select.callback = self.game_selected
-        self.add_item(self.game_select)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author.id:
@@ -79,11 +64,50 @@ class GameSelectView(discord.ui.View):
             return False
         return True
 
-    async def game_selected(self, interaction: discord.Interaction) -> None:
-        self.selected_game = self.game_select.values[0]
-        profile = GAME_PROFILES[self.selected_game]
+    async def update_dropdown(self) -> None:
+        """Update dropdown with current games."""
+        profiles = await self.cog.config.profiles()
+        options = [
+            discord.SelectOption(
+                label=profile["name"],
+                description=profile["description"],
+                value=game_key,
+            )
+            for game_key, profile in profiles.items()
+        ]
+        if not options:
+            options = [discord.SelectOption(label="No games configured", value="none")]
 
-        # Update to show upload prompt
+        self.game_select.options = options
+
+    @discord.ui.select(
+        placeholder="Select a game...",
+        options=[discord.SelectOption(label="Loading...", value="loading")],
+    )
+    async def game_select(
+        self, interaction: discord.Interaction, select: discord.ui.Select
+    ) -> None:
+        if select.values[0] in ("loading", "none"):
+            await interaction.response.defer()
+            return
+
+        self.selected_game = select.values[0]
+        profiles = await self.cog.config.profiles()
+        profile = profiles.get(self.selected_game)
+
+        if not profile:
+            await interaction.response.send_message("Game not found.", ephemeral=True)
+            return
+
+        if self.action == "setup":
+            await self._handle_setup(interaction, profile)
+        elif self.action == "configpath":
+            await self._handle_configpath(interaction, profile)
+
+    async def _handle_setup(
+        self, interaction: discord.Interaction, profile: dict
+    ) -> None:
+        """Handle basefiles setup."""
         embed = discord.Embed(
             title=f"Setup {profile['name']} Basefiles",
             description=(
@@ -95,7 +119,6 @@ class GameSelectView(discord.ui.View):
         )
         await interaction.response.edit_message(embed=embed, view=None)
 
-        # Wait for user's next message
         def check(m):
             return (
                 m.author.id == self.author.id and m.channel.id == interaction.channel.id
@@ -104,7 +127,6 @@ class GameSelectView(discord.ui.View):
         try:
             msg = await self.cog.bot.wait_for("message", check=check, timeout=120)
 
-            # Check for attachment
             if msg.attachments:
                 attachment = msg.attachments[0]
                 if not attachment.filename.endswith(".7z"):
@@ -119,7 +141,6 @@ class GameSelectView(discord.ui.View):
                 )
                 return
 
-            # Process the basefiles
             await self._process_basefiles(interaction, self.selected_game, url)
 
         except asyncio.TimeoutError:
@@ -127,11 +148,59 @@ class GameSelectView(discord.ui.View):
                 "Setup timed out. Run the command again to restart."
             )
 
+    async def _handle_configpath(
+        self, interaction: discord.Interaction, profile: dict
+    ) -> None:
+        """Handle config path change."""
+        embed = discord.Embed(
+            title=f"Change Config Path for {profile['name']}",
+            description=(
+                f"**Current path:** `{profile['config_target']}`\n\n"
+                f"Send the new path where `configs.user.ini` should be placed.\n"
+                f"Example: `steam_settings/configs.user.ini`\n\n"
+                f"Waiting for your response..."
+            ),
+            color=discord.Color.blurple(),
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+
+        def check(m):
+            return (
+                m.author.id == self.author.id and m.channel.id == interaction.channel.id
+            )
+
+        try:
+            msg = await self.cog.bot.wait_for("message", check=check, timeout=60)
+            new_path = msg.content.strip()
+
+            if not new_path.endswith("configs.user.ini"):
+                if not new_path.endswith("/"):
+                    new_path += "/"
+                new_path += "configs.user.ini"
+
+            # Update config
+            async with self.cog.config.profiles() as profiles:
+                profiles[self.selected_game]["config_target"] = new_path
+
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    title="Config Path Updated",
+                    description=(
+                        f"**Game:** {profile['name']}\n**New path:** `{new_path}`"
+                    ),
+                    color=discord.Color.green(),
+                )
+            )
+
+        except asyncio.TimeoutError:
+            await interaction.followup.send("Timed out. Run the command again.")
+
     async def _process_basefiles(
         self, interaction: discord.Interaction, game: str, url: str
     ) -> None:
         """Download and save basefiles."""
-        profile = GAME_PROFILES[game]
+        profiles = await self.cog.config.profiles()
+        profile = profiles[game]
         basefiles_path = self.cog._get_basefiles_path(game)
 
         status_msg = await interaction.followup.send(
@@ -166,11 +235,12 @@ class GameSelectView(discord.ui.View):
                         )
                         return
 
-                    # Save to data path
                     with open(basefiles_path, "wb") as f:
                         f.write(content)
 
-                    await self.cog.config.set_raw(profile["basefiles_key"], value=True)
+                    async with self.cog.config.profiles() as profiles:
+                        profiles[game]["basefiles_set"] = True
+
                     size_mb = len(content) / (1024 * 1024)
 
                     await status_msg.edit(
@@ -213,14 +283,13 @@ class SabPubHelper(commands.Cog):
             self, identifier=9832017465, force_registration=True
         )
         self.config.register_global(
-            re9_basefiles_set=False,
-            cd_basefiles_set=False,
+            profiles=DEFAULT_PROFILES,
         )
         self.data_path = cog_data_path(self)
 
     def _get_basefiles_path(self, game: str) -> Path:
         """Get the basefiles path for a game profile."""
-        return self.data_path / GAME_PROFILES[game]["basefiles_name"]
+        return self.data_path / f"basefiles_{game}.7z"
 
     async def cog_load(self) -> None:
         """Called when the cog is loaded."""
@@ -244,8 +313,58 @@ class SabPubHelper(commands.Cog):
             description="Select a game to configure its basefiles:",
             color=discord.Color.blurple(),
         )
-        view = GameSelectView(self, ctx.author)
+        view = GameSelectView(self, ctx.author, action="setup")
+        await view.update_dropdown()
         view.message = await ctx.send(embed=embed, view=view)
+
+    @pubhelper.command(name="setpath")
+    async def set_config_path_interactive(self, ctx: commands.Context) -> None:
+        """Interactive command to change config.user.ini target path.
+
+        Use this to change where configs.user.ini gets placed in the basefiles.
+        """
+        embed = discord.Embed(
+            title="Change Config Path",
+            description="Select a game to change its config target path:",
+            color=discord.Color.blurple(),
+        )
+        view = GameSelectView(self, ctx.author, action="configpath")
+        await view.update_dropdown()
+        view.message = await ctx.send(embed=embed, view=view)
+
+    @pubhelper.command(name="configpath")
+    async def set_config_path(
+        self, ctx: commands.Context, game: str, *, path: str
+    ) -> None:
+        """Set the config.user.ini target path for a game.
+
+        **Usage:**
+        `[p]pubhelper configpath re9 pub_re9/steam_settings/configs.user.ini`
+        `[p]pubhelper configpath cd steam_settings/configs.user.ini`
+        """
+        game = game.lower()
+        profiles = await self.config.profiles()
+
+        if game not in profiles:
+            await ctx.send(
+                f"Unknown game `{game}`. Available: {', '.join(profiles.keys())}"
+            )
+            return
+
+        if not path.endswith("configs.user.ini"):
+            if not path.endswith("/"):
+                path += "/"
+            path += "configs.user.ini"
+
+        async with self.config.profiles() as profiles:
+            old_path = profiles[game]["config_target"]
+            profiles[game]["config_target"] = path
+
+        await ctx.send(
+            f"**{profiles[game]['name']}** config path updated:\n"
+            f"Old: `{old_path}`\n"
+            f"New: `{path}`"
+        )
 
     @pubhelper.command(name="setbasefiles")
     async def set_basefiles(self, ctx: commands.Context, game: str, url: str) -> None:
@@ -258,13 +377,15 @@ class SabPubHelper(commands.Cog):
         `[p]pubhelper setbasefiles cd <url>`
         """
         game = game.lower()
-        if game not in GAME_PROFILES:
+        profiles = await self.config.profiles()
+
+        if game not in profiles:
             await ctx.send(
-                f"Unknown game `{game}`. Available: {', '.join(GAME_PROFILES.keys())}"
+                f"Unknown game `{game}`. Available: {', '.join(profiles.keys())}"
             )
             return
 
-        profile = GAME_PROFILES[game]
+        profile = profiles[game]
         basefiles_path = self._get_basefiles_path(game)
 
         async with ctx.typing():
@@ -294,10 +415,13 @@ class SabPubHelper(commands.Cog):
                             if not any(target_dir in n for n in names):
                                 await ctx.send(
                                     f"Warning: basefiles may not have the expected structure. "
-                                    f"Expected path containing `{target_dir}`."
+                                    f"Expected path containing `{target_dir}`.\n"
+                                    f"Use `[p]pubhelper setpath {game}` to change the config path."
                                 )
 
-                        await self.config.set_raw(profile["basefiles_key"], value=True)
+                        async with self.config.profiles() as profiles:
+                            profiles[game]["basefiles_set"] = True
+
                         size_mb = len(content) / (1024 * 1024)
                         await ctx.send(
                             f"{profile['name']} basefiles saved successfully ({size_mb:.2f} MB). "
@@ -314,18 +438,27 @@ class SabPubHelper(commands.Cog):
 
     @pubhelper.command(name="status")
     async def status(self, ctx: commands.Context) -> None:
-        """Check status of all basefiles."""
+        """Check status of all games and their config paths."""
+        profiles = await self.config.profiles()
         lines = []
-        for game, profile in GAME_PROFILES.items():
+
+        for game, profile in profiles.items():
             basefiles_path = self._get_basefiles_path(game)
-            is_set = await self.config.get_raw(profile["basefiles_key"], default=False)
+            is_set = profile.get("basefiles_set", False)
+
             if is_set and basefiles_path.exists():
                 size_mb = basefiles_path.stat().st_size / (1024 * 1024)
-                lines.append(f"**{profile['name']}:** Configured ({size_mb:.2f} MB)")
+                status = f"Configured ({size_mb:.2f} MB)"
             else:
-                lines.append(f"**{profile['name']}:** Not configured")
+                status = "Not configured"
 
-        await ctx.send("\n".join(lines))
+            lines.append(
+                f"**{profile['name']}** (`/{game}cc`)\n"
+                f"  Status: {status}\n"
+                f"  Config path: `{profile['config_target']}`"
+            )
+
+        await ctx.send("\n\n".join(lines))
 
     @pubhelper.command(name="help")
     async def help_command(self, ctx: commands.Context) -> None:
@@ -357,7 +490,19 @@ class SabPubHelper(commands.Cog):
         )
 
         embed.add_field(
-            name="Step 2: Enable Slash Commands",
+            name="Step 2: Configure Path (Optional)",
+            value=(
+                "Change where `configs.user.ini` is placed:\n"
+                "**Interactive:**\n"
+                "```\n[p]pubhelper setpath\n```\n"
+                "**Direct:**\n"
+                "```\n[p]pubhelper configpath re9 pub_re9/steam_settings/\n```"
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="Step 3: Enable Slash Commands",
             value=(
                 "```\n[p]slash enable re9cc\n[p]slash enable cdcc\n[p]slash sync\n```"
             ),
@@ -365,7 +510,7 @@ class SabPubHelper(commands.Cog):
         )
 
         embed.add_field(
-            name="Step 3: Users Can Now Use",
+            name="Step 4: Users Can Now Use",
             value=(
                 "`/re9cc url:<token zip link>` - RE9 package\n"
                 "`/cdcc url:<token zip link>` - CD package"
@@ -374,21 +519,11 @@ class SabPubHelper(commands.Cog):
         )
 
         embed.add_field(
-            name="How It Works",
-            value=(
-                "1. User provides token zip URL\n"
-                "2. Bot downloads and extracts `configs.user.ini`\n"
-                "3. Bot injects it into your basefiles\n"
-                "4. Bot uploads combined package to user"
-            ),
-            inline=False,
-        )
-
-        embed.add_field(
             name="Other Commands",
             value=(
-                "`[p]pubhelper status` - Check basefiles status\n"
-                "`[p]pubhelper setup` - Interactive setup wizard\n"
+                "`[p]pubhelper status` - Check all games status & paths\n"
+                "`[p]pubhelper setup` - Interactive basefiles setup\n"
+                "`[p]pubhelper setpath` - Interactive path change\n"
                 "`[p]pubhelper help` - This guide"
             ),
             inline=False,
@@ -400,10 +535,19 @@ class SabPubHelper(commands.Cog):
         self, interaction: discord.Interaction, url: str, game: str
     ) -> None:
         """Common processing logic for all game commands."""
-        profile = GAME_PROFILES[game]
-        basefiles_path = self._get_basefiles_path(game)
+        profiles = await self.config.profiles()
+        profile = profiles.get(game)
 
-        is_set = await self.config.get_raw(profile["basefiles_key"], default=False)
+        if not profile:
+            await interaction.response.send_message(
+                f"Game `{game}` not configured.",
+                ephemeral=True,
+            )
+            return
+
+        basefiles_path = self._get_basefiles_path(game)
+        is_set = profile.get("basefiles_set", False)
+
         if not is_set or not basefiles_path.exists():
             await interaction.response.send_message(
                 f"{profile['name']} basefiles not configured. Ask the bot owner to run "
@@ -441,7 +585,7 @@ class SabPubHelper(commands.Cog):
 
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
-                None, self._combine_files, user_zip_data, game
+                None, self._combine_files, user_zip_data, game, profile
             )
 
             if isinstance(result, str):
@@ -529,10 +673,9 @@ class SabPubHelper(commands.Cog):
             return str(e)
 
     def _combine_files(
-        self, user_zip_data: bytes, game: str
+        self, user_zip_data: bytes, game: str, profile: dict
     ) -> tuple[str, bytes] | str:
         """Combine user config with basefiles. Runs in executor."""
-        profile = GAME_PROFILES[game]
         basefiles_path = self._get_basefiles_path(game)
 
         with tempfile.TemporaryDirectory() as tmpdir:
