@@ -1,0 +1,15 @@
+{
+    "name": "PubHelper",
+    "short": "RE9 config combiner utility",
+    "description": "Combines user configs with RE9 basefiles. Provides a /re9cc slash command that downloads a user's skin zip, extracts configs.user.ini, injects it into the basefiles template, and uploads the combined package.",
+    "end_user_data_statement": "This cog does not store any user data. It temporarily processes uploaded files in memory.",
+    "install_msg": "PubHelper installed. Bot owner must run `[p]pubhelper setbasefiles <url>` to configure the basefiles template before the `/re9cc` command can be used.",
+    "author": ["Sablinova"],
+    "required_cogs": {},
+    "requirements": ["py7zr", "aiohttp"],
+    "tags": ["utility", "re9", "config", "combiner"],
+    "min_bot_version": "3.5.0",
+    "hidden": false,
+    "disabled": false,
+    "type": "COG"
+}
