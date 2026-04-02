@@ -1213,32 +1213,28 @@ class SabPubHelper(commands.Cog):
                     await ctx.send(structure)
                     return
 
-                # Split into chunks if too long
-                max_len = 1900
-                if len(structure) > max_len:
-                    chunks = [
-                        structure[i : i + max_len]
-                        for i in range(0, len(structure), max_len)
-                    ]
-                    for i, chunk in enumerate(chunks, 1):
-                        embed = discord.Embed(
-                            title=f"{profile['name']} Basefiles Structure (Part {i}/{len(chunks)})",
-                            description=f"```\n{chunk}\n```",
-                            color=discord.Color.blue(),
-                        )
-                        await ctx.send(embed=embed)
-                else:
-                    embed = discord.Embed(
-                        title=f"{profile['name']} Basefiles Structure",
-                        description=f"```\n{structure}\n```",
-                        color=discord.Color.blue(),
-                    )
-                    embed.add_field(
-                        name="Config Target",
-                        value=f"`{profile['config_target']}`",
-                        inline=False,
-                    )
-                    await ctx.send(embed=embed)
+                # Create header with metadata
+                size_mb = basefiles_path.stat().st_size / (1024 * 1024)
+                fmt = basefiles_path.suffix.lstrip(".")
+                header = (
+                    f"{profile['name']} Basefiles Structure\n"
+                    f"Format: {fmt.upper()}\n"
+                    f"Size: {size_mb:.2f} MB\n"
+                    f"Config Target: {profile['config_target']}\n"
+                    f"\n{'=' * 60}\n\n"
+                )
+
+                content = header + structure
+
+                # Send as text file
+                file = discord.File(
+                    io.BytesIO(content.encode("utf-8")),
+                    filename=f"{game}_structure.txt",
+                )
+
+                await ctx.send(
+                    f"📁 **{profile['name']} Basefiles Structure**", file=file
+                )
 
             except Exception as e:
                 log.exception("Error reading basefiles structure")
@@ -1285,7 +1281,7 @@ class SabPubHelper(commands.Cog):
                         format_tree(children, prefix + extension, is_last_item)
 
             format_tree(tree)
-            return "\n".join(lines[:200])  # Limit to 200 lines
+            return "\n".join(lines)  # No limit - output to file
 
         except Exception as e:
             return f"Error: {e}"
