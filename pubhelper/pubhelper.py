@@ -1168,6 +1168,128 @@ class SabPubHelper(commands.Cog):
 
         await ctx.send("\n\n".join(lines))
 
+    @pubhelper.command(name="structure")
+    async def show_structure(self, ctx: commands.Context, game: str) -> None:
+        """Show the file structure of a game's basefiles.
+
+        **Usage:**
+        `[p]pubhelper structure <game_id>`
+
+        **Examples:**
+        `[p]pubhelper structure re9`
+        `[p]pubhelper structure cd`
+        `[p]pubhelper structure mhw`
+
+        This displays the directory tree of the basefiles archive.
+        """
+        game = game.lower()
+        profiles = await self.config.profiles()
+
+        if game not in profiles:
+            await ctx.send(
+                f"Unknown game `{game}`. Available: {', '.join(profiles.keys())}"
+            )
+            return
+
+        profile = profiles[game]
+        basefiles_path = self._find_basefiles_path(game)
+        is_set = profile.get("basefiles_set", False)
+
+        if not is_set or not basefiles_path or not basefiles_path.exists():
+            await ctx.send(
+                f"{profile['name']} basefiles not configured. "
+                f"Run `[p]pubhelper setup` to upload basefiles first."
+            )
+            return
+
+        async with ctx.typing():
+            try:
+                loop = asyncio.get_event_loop()
+                structure = await loop.run_in_executor(
+                    None, self._get_archive_structure, basefiles_path
+                )
+
+                if isinstance(structure, str) and structure.startswith("Error:"):
+                    await ctx.send(structure)
+                    return
+
+                # Split into chunks if too long
+                max_len = 1900
+                if len(structure) > max_len:
+                    chunks = [
+                        structure[i : i + max_len]
+                        for i in range(0, len(structure), max_len)
+                    ]
+                    for i, chunk in enumerate(chunks, 1):
+                        embed = discord.Embed(
+                            title=f"{profile['name']} Basefiles Structure (Part {i}/{len(chunks)})",
+                            description=f"```\n{chunk}\n```",
+                            color=discord.Color.blue(),
+                        )
+                        await ctx.send(embed=embed)
+                else:
+                    embed = discord.Embed(
+                        title=f"{profile['name']} Basefiles Structure",
+                        description=f"```\n{structure}\n```",
+                        color=discord.Color.blue(),
+                    )
+                    embed.add_field(
+                        name="Config Target",
+                        value=f"`{profile['config_target']}`",
+                        inline=False,
+                    )
+                    await ctx.send(embed=embed)
+
+            except Exception as e:
+                log.exception("Error reading basefiles structure")
+                await ctx.send(f"Error reading basefiles: {e}")
+
+    def _get_archive_structure(self, archive_path: Path) -> str:
+        """Get the file structure of an archive as a tree string."""
+        try:
+            fmt = archive_path.suffix.lstrip(".")
+            files = []
+
+            if fmt == "7z":
+                with py7zr.SevenZipFile(archive_path, "r") as archive:
+                    files = sorted(archive.getnames())
+            else:  # zip
+                with zipfile.ZipFile(archive_path, "r") as archive:
+                    files = sorted(archive.namelist())
+
+            if not files:
+                return "Error: Archive is empty"
+
+            # Build tree structure
+            tree = {}
+            for filepath in files:
+                parts = Path(filepath).parts
+                current = tree
+                for part in parts:
+                    if part not in current:
+                        current[part] = {}
+                    current = current[part]
+
+            # Format as tree
+            lines = []
+
+            def format_tree(node, prefix="", is_last=True):
+                items = sorted(node.items())
+                for i, (name, children) in enumerate(items):
+                    is_last_item = i == len(items) - 1
+                    connector = "└── " if is_last_item else "├── "
+                    lines.append(f"{prefix}{connector}{name}")
+
+                    if children:
+                        extension = "    " if is_last_item else "│   "
+                        format_tree(children, prefix + extension, is_last_item)
+
+            format_tree(tree)
+            return "\n".join(lines[:200])  # Limit to 200 lines
+
+        except Exception as e:
+            return f"Error: {e}"
+
     @pubhelper.command(name="help")
     async def help_command(self, ctx: commands.Context) -> None:
         """Show detailed setup and usage guide."""
@@ -1232,6 +1354,7 @@ class SabPubHelper(commands.Cog):
             name="Other Commands",
             value=(
                 "`[p]pubhelper status` - Check all games status & paths\n"
+                "`[p]pubhelper structure <game>` - Show basefiles file structure\n"
                 "`[p]pubhelper setup` - Interactive basefiles setup\n"
                 "`[p]pubhelper setpath` - Interactive path change\n"
                 "`[p]pubhelper addgame` - Add a new game profile\n"
