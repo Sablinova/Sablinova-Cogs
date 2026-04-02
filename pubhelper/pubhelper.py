@@ -306,7 +306,7 @@ class SabPubHelper(commands.Cog):
                     log.info(f"Auto-detected {game} basefiles at {basefiles_path}")
 
     @commands.group(name="pubhelper")
-    @commands.is_owner()
+    @commands.admin_or_permissions(manage_guild=True)
     async def pubhelper(self, ctx: commands.Context) -> None:
         """PubHelper configuration commands."""
         pass
