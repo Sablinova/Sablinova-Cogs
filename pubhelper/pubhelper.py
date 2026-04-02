@@ -345,6 +345,7 @@ class SabPubHelper(commands.Cog):
                 "3. Let your bartender know if it works"
             ),
             instructions_image="https://cdn.discordapp.com/attachments/1483155606545367040/1486841498904563782/image.png",
+            log_channel=None,  # Channel ID for logging command usage
         )
         self.data_path = cog_data_path(self)
 
@@ -748,6 +749,56 @@ class SabPubHelper(commands.Cog):
         )
         embed.set_image(url=url)
         await ctx.send(embed=embed)
+
+    @pubhelper.command(name="logchannel")
+    async def set_log_channel(
+        self, ctx: commands.Context, channel: discord.TextChannel = None
+    ) -> None:
+        """Set the channel for logging slash command usage.
+
+        **Usage:**
+        `[p]pubhelper logchannel #channel` - Set log channel
+        `[p]pubhelper logchannel` - Show current log channel
+        `[p]pubhelper logchannel clear` - Disable logging
+
+        **What gets logged:**
+        - User who ran the command
+        - Which game command was used (/re9cc, /cdcc, etc.)
+        - Token URL provided
+        - Timestamp
+        - Success or failure status
+
+        **Example:**
+        ```
+        [p]pubhelper logchannel #bot-logs
+        ```
+        """
+        if channel is None and ctx.message.content.strip().endswith("clear"):
+            # Clear log channel
+            await self.config.log_channel.set(None)
+            await ctx.send("✅ Command logging disabled.")
+            return
+
+        if channel is None:
+            # Show current log channel
+            channel_id = await self.config.log_channel()
+            if channel_id:
+                channel_obj = self.bot.get_channel(channel_id)
+                if channel_obj:
+                    await ctx.send(f"Current log channel: {channel_obj.mention}")
+                else:
+                    await ctx.send(
+                        f"Log channel set to ID {channel_id}, but channel not found."
+                    )
+            else:
+                await ctx.send("No log channel is currently set.")
+            return
+
+        # Set log channel
+        await self.config.log_channel.set(channel.id)
+        await ctx.send(
+            f"✅ Command logging enabled. Logs will be sent to {channel.mention}"
+        )
 
     @pubhelper.command(name="removegame")
     async def remove_game(self, ctx: commands.Context, game: str) -> None:
@@ -1351,6 +1402,7 @@ class SabPubHelper(commands.Cog):
             value=(
                 "`[p]pubhelper status` - Check all games status & paths\n"
                 "`[p]pubhelper structure <game>` - Show basefiles file structure\n"
+                "`[p]pubhelper logchannel #channel` - Set command usage log channel\n"
                 "`[p]pubhelper setup` - Interactive basefiles setup\n"
                 "`[p]pubhelper setpath` - Interactive path change\n"
                 "`[p]pubhelper addgame` - Add a new game profile\n"
@@ -1479,6 +1531,16 @@ class SabPubHelper(commands.Cog):
 
             await interaction.followup.send(embed=instructions_embed)
 
+            # Log successful command usage
+            await self._log_command_usage(
+                interaction=interaction,
+                game=game,
+                url=url,
+                success=True,
+                output_filename=output_filename,
+                size_mb=size_mb,
+            )
+
         except Exception as e:
             log.exception("Error processing config")
             await interaction.edit_original_response(
@@ -1487,6 +1549,78 @@ class SabPubHelper(commands.Cog):
                     color=discord.Color.red(),
                 )
             )
+            # Log failed command usage
+            await self._log_command_usage(
+                interaction=interaction, game=game, url=url, success=False, error=str(e)
+            )
+
+    async def _log_command_usage(
+        self,
+        interaction: discord.Interaction,
+        game: str,
+        url: str,
+        success: bool,
+        output_filename: str = None,
+        size_mb: float = None,
+        error: str = None,
+    ) -> None:
+        """Log slash command usage to the configured log channel."""
+        try:
+            log_channel_id = await self.config.log_channel()
+            if not log_channel_id:
+                return  # Logging disabled
+
+            log_channel = self.bot.get_channel(log_channel_id)
+            if not log_channel:
+                return  # Channel not found
+
+            profiles = await self.config.profiles()
+            profile = profiles.get(game, {})
+            game_name = profile.get("name", game.upper())
+
+            # Create log embed
+            if success:
+                embed = discord.Embed(
+                    title=f"✅ {game_name} Command Used",
+                    color=discord.Color.green(),
+                    timestamp=interaction.created_at,
+                )
+                embed.add_field(name="Output File", value=output_filename, inline=False)
+                embed.add_field(name="Size", value=f"{size_mb:.2f} MB", inline=True)
+            else:
+                embed = discord.Embed(
+                    title=f"❌ {game_name} Command Failed",
+                    color=discord.Color.red(),
+                    timestamp=interaction.created_at,
+                )
+                embed.add_field(
+                    name="Error", value=f"```{error[:1000]}```", inline=False
+                )
+
+            # Common fields
+            embed.add_field(
+                name="User",
+                value=f"{interaction.user.mention} ({interaction.user})",
+                inline=True,
+            )
+            embed.add_field(name="Command", value=f"`/{game}cc`", inline=True)
+
+            # Truncate URL if too long
+            url_display = url if len(url) < 100 else url[:97] + "..."
+            embed.add_field(name="Token URL", value=url_display, inline=False)
+
+            if interaction.guild:
+                embed.add_field(
+                    name="Server", value=interaction.guild.name, inline=True
+                )
+                embed.add_field(
+                    name="Channel", value=interaction.channel.mention, inline=True
+                )
+
+            await log_channel.send(embed=embed)
+
+        except Exception as e:
+            log.exception(f"Failed to log command usage: {e}")
 
     @app_commands.command(
         name="re9cc", description="Combine your config with RE9 basefiles"
