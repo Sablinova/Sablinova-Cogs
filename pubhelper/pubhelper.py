@@ -632,8 +632,9 @@ class SabPubHelper(commands.Cog):
                     f"**Install Path:** `{install_path}`\n\n"
                     "**Next steps:**\n"
                     f"1. Reload cog: `[p]reload pubhelper`\n"
-                    f"2. Sync slash commands: `[p]pubhelper syncslash`\n"
-                    f"3. Upload basefiles: `[p]pubhelper setup` and select {display_name}\n\n"
+                    f"2. Enable command: `[p]slash enable {game_id}cc`\n"
+                    f"3. Sync slash: `[p]slash sync ~`\n"
+                    f"4. Upload basefiles: `[p]pubhelper setup` and select {display_name}\n\n"
                     f"After sync, `/{game_id}cc` will be available."
                 ),
                 color=discord.Color.green(),
