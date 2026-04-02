@@ -627,6 +627,197 @@ class SabPubHelper(commands.Cog):
         except asyncio.TimeoutError:
             await ctx.send("Confirmation timed out. Deletion cancelled.")
 
+    @pubhelper.command(name="updatedll")
+    async def update_dll(self, ctx: commands.Context) -> None:
+        """Update steamclient64.dll across all game basefiles.
+
+        Upload or provide a URL to the new steamclient64.dll file.
+        This will update the DLL in ALL configured game basefiles.
+        """
+        embed = discord.Embed(
+            title="Update steamclient64.dll",
+            description=(
+                "This will update `steamclient64.dll` in **all** game basefiles.\n\n"
+                "**Option 1:** Upload the `.dll` file as an attachment.\n"
+                "**Option 2:** Send a URL to the `.dll` file.\n\n"
+                "Waiting for your response..."
+            ),
+            color=discord.Color.blurple(),
+        )
+        await ctx.send(embed=embed)
+
+        def check(m):
+            return m.author.id == ctx.author.id and m.channel.id == ctx.channel.id
+
+        try:
+            msg = await self.bot.wait_for("message", check=check, timeout=120)
+
+            if msg.attachments:
+                attachment = msg.attachments[0]
+                if not attachment.filename.lower().endswith(".dll"):
+                    await ctx.send("Please upload a `.dll` file.")
+                    return
+                url = attachment.url
+            elif msg.content.startswith("http"):
+                url = msg.content.strip()
+            else:
+                await ctx.send("Please provide a valid URL or upload a `.dll` file.")
+                return
+
+            # Download the DLL
+            status_msg = await ctx.send(
+                embed=discord.Embed(
+                    description="Downloading DLL...",
+                    color=discord.Color.blurple(),
+                )
+            )
+
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        url, timeout=aiohttp.ClientTimeout(total=60)
+                    ) as resp:
+                        if resp.status != 200:
+                            await status_msg.edit(
+                                embed=discord.Embed(
+                                    description=f"Download failed: HTTP {resp.status}",
+                                    color=discord.Color.red(),
+                                )
+                            )
+                            return
+
+                        dll_content = await resp.read()
+
+                        # Basic validation - check for MZ header (PE executable)
+                        if not dll_content.startswith(b"MZ"):
+                            await status_msg.edit(
+                                embed=discord.Embed(
+                                    description="The file doesn't appear to be a valid DLL.",
+                                    color=discord.Color.red(),
+                                )
+                            )
+                            return
+
+                dll_size = len(dll_content) / (1024 * 1024)
+
+                await status_msg.edit(
+                    embed=discord.Embed(
+                        description=f"DLL downloaded ({dll_size:.2f} MB). Processing basefiles...",
+                        color=discord.Color.blurple(),
+                    )
+                )
+
+                # Process each game's basefiles
+                profiles = await self.config.profiles()
+                results = []
+
+                for game_id, profile in profiles.items():
+                    basefiles_path = self._find_basefiles_path(game_id)
+                    if not basefiles_path or not basefiles_path.exists():
+                        results.append(f"**{profile['name']}**: Skipped (no basefiles)")
+                        continue
+
+                    try:
+                        # Run in executor since this is blocking I/O
+                        loop = asyncio.get_event_loop()
+                        updated_count = await loop.run_in_executor(
+                            None,
+                            self._update_dll_in_archive,
+                            basefiles_path,
+                            dll_content,
+                        )
+
+                        if updated_count > 0:
+                            results.append(
+                                f"**{profile['name']}**: Updated {updated_count} file(s)"
+                            )
+                        else:
+                            results.append(
+                                f"**{profile['name']}**: No steamclient64.dll found"
+                            )
+                    except Exception as e:
+                        log.exception(f"Failed to update DLL in {game_id}")
+                        results.append(f"**{profile['name']}**: Error - {e}")
+
+                # Show results
+                embed = discord.Embed(
+                    title="DLL Update Complete",
+                    description="\n".join(results),
+                    color=discord.Color.green(),
+                )
+                await status_msg.edit(embed=embed)
+
+            except asyncio.TimeoutError:
+                await status_msg.edit(
+                    embed=discord.Embed(
+                        description="Download timed out.",
+                        color=discord.Color.red(),
+                    )
+                )
+            except Exception as e:
+                log.exception("Failed to update DLL")
+                await status_msg.edit(
+                    embed=discord.Embed(
+                        description=f"Error: {e}",
+                        color=discord.Color.red(),
+                    )
+                )
+
+        except asyncio.TimeoutError:
+            await ctx.send("Timed out. Run `[p]pubhelper updatedll` to try again.")
+
+    def _update_dll_in_archive(self, archive_path: Path, dll_content: bytes) -> int:
+        """Update steamclient64.dll in an archive. Returns count of updated files."""
+        fmt = archive_path.suffix.lstrip(".")
+        updated_count = 0
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            extract_dir = tmpdir / "extracted"
+            extract_dir.mkdir()
+
+            # Extract archive
+            if fmt == "7z":
+                with py7zr.SevenZipFile(archive_path, "r") as z:
+                    z.extractall(extract_dir)
+            else:  # zip
+                with zipfile.ZipFile(archive_path, "r") as z:
+                    z.extractall(extract_dir)
+
+            # Find and replace all steamclient64.dll files
+            for dll_path in extract_dir.rglob("steamclient64.dll"):
+                with open(dll_path, "wb") as f:
+                    f.write(dll_content)
+                updated_count += 1
+                log.info(f"Updated {dll_path}")
+
+            # Also check for case variations
+            for dll_path in extract_dir.rglob("SteamClient64.dll"):
+                with open(dll_path, "wb") as f:
+                    f.write(dll_content)
+                updated_count += 1
+                log.info(f"Updated {dll_path}")
+
+            if updated_count > 0:
+                # Repack archive
+                if fmt == "7z":
+                    # Remove old archive and create new
+                    archive_path.unlink()
+                    with py7zr.SevenZipFile(archive_path, "w") as z:
+                        for item in extract_dir.rglob("*"):
+                            if item.is_file():
+                                arcname = str(item.relative_to(extract_dir))
+                                z.write(item, arcname)
+                else:  # zip
+                    archive_path.unlink()
+                    with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as z:
+                        for item in extract_dir.rglob("*"):
+                            if item.is_file():
+                                arcname = str(item.relative_to(extract_dir))
+                                z.write(item, arcname)
+
+        return updated_count
+
     @pubhelper.command(name="configpath")
     async def set_config_path(
         self, ctx: commands.Context, game: str, *, path: str
@@ -844,6 +1035,7 @@ class SabPubHelper(commands.Cog):
                 "`[p]pubhelper setpath` - Interactive path change\n"
                 "`[p]pubhelper addgame` - Add a new game profile\n"
                 "`[p]pubhelper removegame <id>` - Remove a game profile\n"
+                "`[p]pubhelper updatedll` - Update steamclient64.dll in all basefiles\n"
                 "`[p]pubhelper help` - This guide"
             ),
             inline=False,
