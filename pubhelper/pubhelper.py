@@ -323,9 +323,38 @@ class SabPubHelper(commands.Cog):
                 return path
         return None
 
+    def _make_game_command(self, game_id: str):
+        """Create a slash command callback for a game."""
+        cog = self
+
+        @app_commands.describe(url="URL to your token zip file")
+        async def callback(interaction: discord.Interaction, url: str) -> None:
+            await cog._process_command(interaction, url, game_id)
+
+        return callback
+
     async def cog_load(self) -> None:
         """Called when the cog is loaded."""
         self.data_path.mkdir(parents=True, exist_ok=True)
+
+        profiles = await self.config.profiles()
+
+        # Register dynamic slash commands for non-builtin games
+        builtin_games = {"re9", "cd"}
+        for game_id, profile in profiles.items():
+            if game_id not in builtin_games:
+                # Create and register dynamic command
+                callback = self._make_game_command(game_id)
+                cmd = app_commands.Command(
+                    name=f"{game_id}cc",
+                    description=f"Combine your config with {profile['name']} basefiles",
+                    callback=callback,
+                )
+                try:
+                    self.bot.tree.add_command(cmd)
+                    log.info(f"Registered dynamic slash command /{game_id}cc")
+                except Exception as e:
+                    log.warning(f"Could not register /{game_id}cc: {e}")
 
         # Auto-detect basefiles on disk and mark as configured
         async with self.config.profiles() as profiles:
@@ -337,6 +366,20 @@ class SabPubHelper(commands.Cog):
                     profiles[game]["basefiles_set"] = True
                     profiles[game]["basefiles_format"] = fmt
                     log.info(f"Auto-detected {game} basefiles at {basefiles_path}")
+
+    async def cog_unload(self) -> None:
+        """Called when the cog is unloaded."""
+        profiles = await self.config.profiles()
+        builtin_games = {"re9", "cd"}
+
+        # Remove dynamic slash commands
+        for game_id in profiles:
+            if game_id not in builtin_games:
+                try:
+                    self.bot.tree.remove_command(f"{game_id}cc")
+                    log.info(f"Removed dynamic slash command /{game_id}cc")
+                except Exception:
+                    pass
 
     @commands.group(name="pubhelper")
     @commands.admin_or_permissions(manage_guild=True)
@@ -501,23 +544,16 @@ class SabPubHelper(commands.Cog):
                     f"**Game ID:** `{game_id}`\n"
                     f"**Name:** {display_name}\n"
                     f"**Description:** {description}\n"
-                    f"**Config Path:** `{config_path}`\n"
-                    f"**Slash Command:** `/{game_id}cc`\n\n"
+                    f"**Config Path:** `{config_path}`\n\n"
                     "**Next steps:**\n"
                     f"1. Upload basefiles: `[p]pubhelper setup` and select {display_name}\n"
-                    f"2. Register slash command: `[p]slash enable {game_id}cc`\n"
-                    f"3. Sync commands: `[p]slash sync`"
+                    f"2. Reload cog to register slash command: `[p]reload pubhelper`\n"
+                    f"3. Sync commands: `[p]slash sync`\n\n"
+                    f"After reload, `/{game_id}cc` will be available."
                 ),
                 color=discord.Color.green(),
             )
             await ctx.send(embed=embed)
-
-            # Register the new slash command dynamically
-            await self._register_game_command(game_id, display_name)
-            await ctx.send(
-                f"Slash command `/{game_id}cc` has been registered. "
-                f"Run `[p]slash sync` to make it available."
-            )
 
         except asyncio.TimeoutError:
             await ctx.send("Setup timed out. Run `[p]pubhelper addgame` to try again.")
@@ -590,35 +626,6 @@ class SabPubHelper(commands.Cog):
 
         except asyncio.TimeoutError:
             await ctx.send("Confirmation timed out. Deletion cancelled.")
-
-    async def _register_game_command(self, game_id: str, display_name: str) -> None:
-        """Dynamically register a slash command for a new game."""
-
-        # Create the command function
-        async def game_command(interaction: discord.Interaction, url: str) -> None:
-            await self._process_command(interaction, url, game_id)
-
-        # Set function metadata
-        game_command.__name__ = f"{game_id}cc"
-        game_command.__doc__ = f"Combine your config with {display_name} basefiles"
-
-        # Create the app command
-        cmd = app_commands.Command(
-            name=f"{game_id}cc",
-            description=f"Combine your config with {display_name} basefiles",
-            callback=game_command,
-        )
-        cmd._params = {
-            "url": app_commands.transformers.CommandParameter(
-                name="url",
-                description="URL to your token zip file",
-                required=True,
-                type=app_commands.AppCommandOptionType.string,
-            )
-        }
-
-        # Add to cog's app commands
-        self.bot.tree.add_command(cmd)
 
     @pubhelper.command(name="configpath")
     async def set_config_path(
