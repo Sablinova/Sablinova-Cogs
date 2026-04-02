@@ -1,6 +1,6 @@
 # PubHelper
 
-RE9 config combiner utility for Red-DiscordBot. Combines user configs with basefiles to create ready-to-use packages.
+RE9 config combiner utility for Red-DiscordBot. Combines user token configs with basefiles to create ready-to-use packages.
 
 ## Installation
 
@@ -33,11 +33,11 @@ RE9 config combiner utility for Red-DiscordBot. Combines user configs with basef
 Users can use the `/re9cc` slash command:
 
 ```
-/re9cc url:<link to skin zip>
+/re9cc url:<link to token zip>
 ```
 
 The bot will:
-1. Download the user's skin zip
+1. Download the user's token zip
 2. Extract `configs.user.ini` from it
 3. Inject it into the basefiles template
 4. Upload the combined package as a zip
