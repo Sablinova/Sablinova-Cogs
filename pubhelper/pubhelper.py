@@ -125,8 +125,9 @@ class GameSelectView(discord.ui.View):
         embed = discord.Embed(
             title=f"Setup {profile['name']} Basefiles",
             description=(
-                f"**Option 1:** Upload the basefiles `.7z` file as an attachment to this channel.\n\n"
-                f"**Option 2:** Send a URL to the basefiles `.7z` file.\n\n"
+                f"**Option 1:** Upload the basefiles `.7z` or `.zip` file as an attachment.\n\n"
+                f"**Option 2:** Send a URL to the basefiles archive.\n\n"
+                f"**Option 3:** Type `cancel` to abort.\n\n"
                 f"Waiting for your response..."
             ),
             color=discord.Color.blurple(),
@@ -141,17 +142,26 @@ class GameSelectView(discord.ui.View):
         try:
             msg = await self.cog.bot.wait_for("message", check=check, timeout=120)
 
+            if msg.content.strip().lower() == "cancel":
+                await interaction.followup.send("Setup cancelled.")
+                return
+
             if msg.attachments:
                 attachment = msg.attachments[0]
-                if not attachment.filename.endswith(".7z"):
-                    await interaction.followup.send("Please upload a `.7z` file.")
+                if not (
+                    attachment.filename.endswith(".7z")
+                    or attachment.filename.endswith(".zip")
+                ):
+                    await interaction.followup.send(
+                        "Please upload a `.7z` or `.zip` file."
+                    )
                     return
                 url = attachment.url
             elif msg.content.startswith("http"):
                 url = msg.content.strip()
             else:
                 await interaction.followup.send(
-                    "Please provide a valid URL or upload a `.7z` file."
+                    "Please provide a valid URL or upload a `.7z`/`.zip` file."
                 )
                 return
 
@@ -435,7 +445,7 @@ class SabPubHelper(commands.Cog):
                 "Let's add a new game profile!\n\n"
                 "**Step 1/4:** Enter the game ID (lowercase, no spaces).\n"
                 "This will be used for the slash command, e.g., `re9` creates `/re9cc`.\n\n"
-                "Type the game ID below:"
+                "Type the game ID below, or `cancel` to abort:"
             ),
             color=discord.Color.blurple(),
         )
@@ -447,6 +457,11 @@ class SabPubHelper(commands.Cog):
         try:
             # Step 1: Game ID
             msg = await self.bot.wait_for("message", check=check, timeout=60)
+
+            if msg.content.strip().lower() == "cancel":
+                await ctx.send("Game setup cancelled.")
+                return
+
             game_id = msg.content.strip().lower().replace(" ", "_")
 
             # Validate game ID
@@ -470,13 +485,18 @@ class SabPubHelper(commands.Cog):
                     f"**Game ID:** `{game_id}`\n\n"
                     "**Step 2/4:** Enter the display name for this game.\n"
                     "Example: `Resident Evil 9`\n\n"
-                    "Type the display name below:"
+                    "Type the display name below, or `cancel` to abort:"
                 ),
                 color=discord.Color.blurple(),
             )
             await ctx.send(embed=embed)
 
             msg = await self.bot.wait_for("message", check=check, timeout=60)
+
+            if msg.content.strip().lower() == "cancel":
+                await ctx.send("Game setup cancelled.")
+                return
+
             display_name = msg.content.strip()
 
             # Step 3: Description
@@ -486,7 +506,7 @@ class SabPubHelper(commands.Cog):
                     f"**Game ID:** `{game_id}`\n"
                     f"**Name:** {display_name}\n\n"
                     "**Step 3/4:** Enter a short description (optional).\n"
-                    "Or type `skip` to use the display name as description.\n\n"
+                    "Type `skip` to use the display name, or `cancel` to abort.\n\n"
                     "Type the description below:"
                 ),
                 color=discord.Color.blurple(),
@@ -494,6 +514,11 @@ class SabPubHelper(commands.Cog):
             await ctx.send(embed=embed)
 
             msg = await self.bot.wait_for("message", check=check, timeout=60)
+
+            if msg.content.strip().lower() == "cancel":
+                await ctx.send("Game setup cancelled.")
+                return
+
             description = msg.content.strip()
             if description.lower() == "skip":
                 description = display_name
@@ -510,13 +535,18 @@ class SabPubHelper(commands.Cog):
                     "Examples:\n"
                     "- `steam_settings/configs.user.ini`\n"
                     "- `pub_re9/steam_settings/configs.user.ini`\n\n"
-                    "Type the path below:"
+                    "Type the path below, or `cancel` to abort:"
                 ),
                 color=discord.Color.blurple(),
             )
             await ctx.send(embed=embed)
 
             msg = await self.bot.wait_for("message", check=check, timeout=60)
+
+            if msg.content.strip().lower() == "cancel":
+                await ctx.send("Game setup cancelled.")
+                return
+
             config_path = msg.content.strip()
 
             if not config_path.endswith("configs.user.ini"):
@@ -546,10 +576,10 @@ class SabPubHelper(commands.Cog):
                     f"**Description:** {description}\n"
                     f"**Config Path:** `{config_path}`\n\n"
                     "**Next steps:**\n"
-                    f"1. Upload basefiles: `[p]pubhelper setup` and select {display_name}\n"
-                    f"2. Reload cog to register slash command: `[p]reload pubhelper`\n"
-                    f"3. Sync commands: `[p]slash sync`\n\n"
-                    f"After reload, `/{game_id}cc` will be available."
+                    f"1. Reload cog: `[p]reload pubhelper`\n"
+                    f"2. Sync slash commands: `[p]pubhelper syncslash`\n"
+                    f"3. Upload basefiles: `[p]pubhelper setup` and select {display_name}\n\n"
+                    f"After sync, `/{game_id}cc` will be available."
                 ),
                 color=discord.Color.green(),
             )
@@ -557,6 +587,21 @@ class SabPubHelper(commands.Cog):
 
         except asyncio.TimeoutError:
             await ctx.send("Setup timed out. Run `[p]pubhelper addgame` to try again.")
+
+    @pubhelper.command(name="syncslash")
+    async def sync_slash(self, ctx: commands.Context) -> None:
+        """Sync all pubhelper slash commands to Discord.
+
+        Run this after adding new games to make their slash commands available.
+        """
+        async with ctx.typing():
+            try:
+                # Sync the command tree
+                synced = await self.bot.tree.sync()
+                await ctx.send(f"Synced {len(synced)} slash commands to Discord.")
+            except Exception as e:
+                log.exception("Failed to sync slash commands")
+                await ctx.send(f"Failed to sync: {e}")
 
     @pubhelper.command(name="removegame")
     async def remove_game(self, ctx: commands.Context, game: str) -> None:
@@ -639,7 +684,8 @@ class SabPubHelper(commands.Cog):
             description=(
                 "This will update `steamclient64.dll` in **all** game basefiles.\n\n"
                 "**Option 1:** Upload the `.dll` file as an attachment.\n"
-                "**Option 2:** Send a URL to the `.dll` file.\n\n"
+                "**Option 2:** Send a URL to the `.dll` file.\n"
+                "**Option 3:** Type `cancel` to abort.\n\n"
                 "Waiting for your response..."
             ),
             color=discord.Color.blurple(),
@@ -652,6 +698,11 @@ class SabPubHelper(commands.Cog):
         try:
             msg = await self.bot.wait_for("message", check=check, timeout=120)
 
+            # Check for cancel
+            if msg.content.strip().lower() == "cancel":
+                await ctx.send("DLL update cancelled.")
+                return
+
             if msg.attachments:
                 attachment = msg.attachments[0]
                 if not attachment.filename.lower().endswith(".dll"):
@@ -661,7 +712,9 @@ class SabPubHelper(commands.Cog):
             elif msg.content.startswith("http"):
                 url = msg.content.strip()
             else:
-                await ctx.send("Please provide a valid URL or upload a `.dll` file.")
+                await ctx.send(
+                    "Please provide a valid URL or upload a `.dll` file. Or type `cancel` to abort."
+                )
                 return
 
             # Download the DLL
@@ -1011,9 +1064,11 @@ class SabPubHelper(commands.Cog):
         )
 
         embed.add_field(
-            name="Step 3: Enable Slash Commands",
+            name="Step 3: Sync Slash Commands",
             value=(
-                "```\n[p]slash enable re9cc\n[p]slash enable cdcc\n[p]slash sync\n```"
+                "```\n[p]pubhelper syncslash\n```\n"
+                "Or use Red's built-in:\n"
+                "```\n[p]slash sync\n```"
             ),
             inline=False,
         )
@@ -1036,6 +1091,7 @@ class SabPubHelper(commands.Cog):
                 "`[p]pubhelper addgame` - Add a new game profile\n"
                 "`[p]pubhelper removegame <id>` - Remove a game profile\n"
                 "`[p]pubhelper updatedll` - Update steamclient64.dll in all basefiles\n"
+                "`[p]pubhelper syncslash` - Sync slash commands to Discord\n"
                 "`[p]pubhelper help` - This guide"
             ),
             inline=False,
