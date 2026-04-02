@@ -11,6 +11,7 @@ import os
 import tempfile
 import zipfile
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 import aiohttp
 import discord
@@ -33,16 +34,35 @@ DEFAULT_PROFILES = {
         "description": "Resident Evil 9",
         "basefiles_set": False,
         "basefiles_format": "7z",  # "7z" or "zip"
+        "install_path": "Resident Evil 9/",
     },
     "cd": {
         "name": "CD",
         "config_target": "steam_settings/configs.user.ini",
         "output_name": "CD_Combined.zip",
-        "description": "CD Game",
+        "description": "Crimson Desert",
         "basefiles_set": False,
         "basefiles_format": "7z",  # "7z" or "zip"
+        "install_path": "Crimson Desert/bin64/",
     },
 }
+
+
+def _extract_filename_from_url(url: str) -> str | None:
+    """Extract filename from URL path.
+
+    Returns the filename without query params, or None if not found.
+    """
+    try:
+        parsed = urlparse(url)
+        path = unquote(parsed.path)
+        if path:
+            filename = Path(path).name
+            if filename and "." in filename:
+                return filename
+    except Exception:
+        pass
+    return None
 
 
 def _detect_archive_format(content: bytes) -> str | None:
@@ -318,6 +338,13 @@ class SabPubHelper(commands.Cog):
         )
         self.config.register_global(
             profiles=DEFAULT_PROFILES,
+            instructions_text=(
+                "1. Extract the folder as well as the 2 files into the game folder\n"
+                "   → For {game_name} into **{install_path}**\n\n"
+                "2. Run **START_GAME.exe** as Administrator\n\n"
+                "3. Let your bartender know if it works"
+            ),
+            instructions_image="https://cdn.discordapp.com/attachments/1483155606545367040/1486841498904563782/image.png",
         )
         self.data_path = cog_data_path(self)
 
@@ -437,13 +464,13 @@ class SabPubHelper(commands.Cog):
         - Display name
         - Description
         - Config target path
-        - Basefiles upload
+        - Install path (for instructions)
         """
         embed = discord.Embed(
             title="Add New Game",
             description=(
                 "Let's add a new game profile!\n\n"
-                "**Step 1/4:** Enter the game ID (lowercase, no spaces).\n"
+                "**Step 1/5:** Enter the game ID (lowercase, no spaces).\n"
                 "This will be used for the slash command, e.g., `re9` creates `/re9cc`.\n\n"
                 "Type the game ID below, or `cancel` to abort:"
             ),
@@ -483,7 +510,7 @@ class SabPubHelper(commands.Cog):
                 title="Add New Game",
                 description=(
                     f"**Game ID:** `{game_id}`\n\n"
-                    "**Step 2/4:** Enter the display name for this game.\n"
+                    "**Step 2/5:** Enter the display name for this game.\n"
                     "Example: `Resident Evil 9`\n\n"
                     "Type the display name below, or `cancel` to abort:"
                 ),
@@ -505,7 +532,7 @@ class SabPubHelper(commands.Cog):
                 description=(
                     f"**Game ID:** `{game_id}`\n"
                     f"**Name:** {display_name}\n\n"
-                    "**Step 3/4:** Enter a short description (optional).\n"
+                    "**Step 3/5:** Enter a short description (optional).\n"
                     "Type `skip` to use the display name, or `cancel` to abort.\n\n"
                     "Type the description below:"
                 ),
@@ -530,7 +557,7 @@ class SabPubHelper(commands.Cog):
                     f"**Game ID:** `{game_id}`\n"
                     f"**Name:** {display_name}\n"
                     f"**Description:** {description}\n\n"
-                    "**Step 4/4:** Enter the config target path.\n"
+                    "**Step 4/5:** Enter the config target path.\n"
                     "This is where `configs.user.ini` will be placed in the basefiles.\n\n"
                     "Examples:\n"
                     "- `steam_settings/configs.user.ini`\n"
@@ -554,6 +581,32 @@ class SabPubHelper(commands.Cog):
                     config_path += "/"
                 config_path += "configs.user.ini"
 
+            # Step 5: Install Path
+            embed = discord.Embed(
+                title="Add New Game",
+                description=(
+                    f"**Game ID:** `{game_id}`\n"
+                    f"**Name:** {display_name}\n"
+                    f"**Config Path:** `{config_path}`\n\n"
+                    "**Step 5/5:** Enter the install path for instructions.\n"
+                    "This tells users where to extract files in the game folder.\n\n"
+                    "Examples:\n"
+                    "- `Resident Evil 9/`\n"
+                    "- `Crimson Desert/bin64/`\n\n"
+                    "Type the path below, or `cancel` to abort:"
+                ),
+                color=discord.Color.blurple(),
+            )
+            await ctx.send(embed=embed)
+
+            msg = await self.bot.wait_for("message", check=check, timeout=60)
+
+            if msg.content.strip().lower() == "cancel":
+                await ctx.send("Game setup cancelled.")
+                return
+
+            install_path = msg.content.strip()
+
             # Create the new profile
             new_profile = {
                 "name": display_name,
@@ -562,6 +615,7 @@ class SabPubHelper(commands.Cog):
                 "description": description,
                 "basefiles_set": False,
                 "basefiles_format": "7z",
+                "install_path": install_path,
             }
 
             async with self.config.profiles() as profiles:
@@ -574,7 +628,8 @@ class SabPubHelper(commands.Cog):
                     f"**Game ID:** `{game_id}`\n"
                     f"**Name:** {display_name}\n"
                     f"**Description:** {description}\n"
-                    f"**Config Path:** `{config_path}`\n\n"
+                    f"**Config Path:** `{config_path}`\n"
+                    f"**Install Path:** `{install_path}`\n\n"
                     "**Next steps:**\n"
                     f"1. Reload cog: `[p]reload pubhelper`\n"
                     f"2. Sync slash commands: `[p]pubhelper syncslash`\n"
@@ -602,6 +657,96 @@ class SabPubHelper(commands.Cog):
             except Exception as e:
                 log.exception("Failed to sync slash commands")
                 await ctx.send(f"Failed to sync: {e}")
+
+    @pubhelper.command(name="setinstructions")
+    async def set_instructions(
+        self, ctx: commands.Context, *, text: str = None
+    ) -> None:
+        """Update the installation instructions text.
+
+        **Usage:**
+        `[p]pubhelper setinstructions <text>` - Set new instructions text
+        `[p]pubhelper setinstructions` - View current instructions
+
+        **Placeholders:**
+        - `{game_name}` - Will be replaced with the game's display name
+        - `{install_path}` - Will be replaced with the game's install path
+
+        **Example:**
+        ```
+        [p]pubhelper setinstructions 1. Extract files to {install_path}
+        2. Run START_GAME.exe as Admin
+        3. Tell bartender if it works
+        ```
+        """
+        if not text:
+            # Show current instructions
+            current = await self.config.instructions_text()
+            embed = discord.Embed(
+                title="Current Installation Instructions",
+                description=f"```\n{current}\n```",
+                color=discord.Color.blue(),
+            )
+            embed.add_field(
+                name="Placeholders",
+                value="`{game_name}` - Game display name\n`{install_path}` - Install path",
+                inline=False,
+            )
+            await ctx.send(embed=embed)
+            return
+
+        await self.config.instructions_text.set(text)
+        await ctx.send(
+            embed=discord.Embed(
+                description="✅ Instructions updated!\n\nPreview:\n"
+                + text.format(game_name="Example Game", install_path="Game/bin/"),
+                color=discord.Color.green(),
+            )
+        )
+
+    @pubhelper.command(name="setinstructionsimage")
+    async def set_instructions_image(
+        self, ctx: commands.Context, url: str = None
+    ) -> None:
+        """Update the installation instructions image URL.
+
+        **Usage:**
+        `[p]pubhelper setinstructionsimage <url>` - Set new image
+        `[p]pubhelper setinstructionsimage clear` - Remove image
+        `[p]pubhelper setinstructionsimage` - View current image
+
+        **Example:**
+        ```
+        [p]pubhelper setinstructionsimage https://i.imgur.com/abc123.png
+        ```
+        """
+        if not url:
+            # Show current image
+            current = await self.config.instructions_image()
+            if current:
+                embed = discord.Embed(
+                    title="Current Instructions Image",
+                    color=discord.Color.blue(),
+                )
+                embed.set_image(url=current)
+                embed.add_field(name="URL", value=current, inline=False)
+                await ctx.send(embed=embed)
+            else:
+                await ctx.send("No instructions image is currently set.")
+            return
+
+        if url.lower() == "clear":
+            await self.config.instructions_image.set("")
+            await ctx.send("✅ Instructions image cleared.")
+            return
+
+        await self.config.instructions_image.set(url)
+        embed = discord.Embed(
+            description="✅ Instructions image updated!",
+            color=discord.Color.green(),
+        )
+        embed.set_image(url=url)
+        await ctx.send(embed=embed)
 
     @pubhelper.command(name="removegame")
     async def remove_game(self, ctx: commands.Context, game: str) -> None:
@@ -1092,6 +1237,8 @@ class SabPubHelper(commands.Cog):
                 "`[p]pubhelper removegame <id>` - Remove a game profile\n"
                 "`[p]pubhelper updatedll` - Update steamclient64.dll in all basefiles\n"
                 "`[p]pubhelper syncslash` - Sync slash commands to Discord\n"
+                "`[p]pubhelper setinstructions` - Update installation instructions\n"
+                "`[p]pubhelper setinstructionsimage` - Update instructions image\n"
                 "`[p]pubhelper help` - This guide"
             ),
             inline=False,
@@ -1123,6 +1270,9 @@ class SabPubHelper(commands.Cog):
                 ephemeral=True,
             )
             return
+
+        # Extract filename from URL to use as output name
+        url_filename = _extract_filename_from_url(url)
 
         await interaction.response.send_message(
             embed=discord.Embed(
@@ -1172,8 +1322,10 @@ class SabPubHelper(commands.Cog):
                 )
             )
 
-            filename, data = result
-            file = discord.File(io.BytesIO(data), filename=filename)
+            _, data = result
+            # Use URL filename if available, otherwise fallback to profile output_name
+            output_filename = url_filename if url_filename else profile["output_name"]
+            file = discord.File(io.BytesIO(data), filename=output_filename)
             size_mb = len(data) / (1024 * 1024)
 
             await interaction.edit_original_response(
@@ -1183,6 +1335,29 @@ class SabPubHelper(commands.Cog):
                 ),
                 attachments=[file],
             )
+
+            # Send instructions as a follow-up message
+            install_path = profile.get("install_path", "the game folder")
+
+            # Get instructions from config
+            instructions_text = await self.config.instructions_text()
+            instructions_image = await self.config.instructions_image()
+
+            # Format the text with game-specific values
+            formatted_text = instructions_text.format(
+                game_name=profile["name"], install_path=install_path
+            )
+
+            instructions_embed = discord.Embed(
+                title="Installation Instructions",
+                description=formatted_text,
+                color=discord.Color.blue(),
+            )
+
+            if instructions_image:
+                instructions_embed.set_image(url=instructions_image)
+
+            await interaction.followup.send(embed=instructions_embed)
 
         except Exception as e:
             log.exception("Error processing config")
