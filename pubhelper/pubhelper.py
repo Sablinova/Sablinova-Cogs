@@ -338,13 +338,13 @@ class SabPubHelper(commands.Cog):
         )
         self.config.register_global(
             profiles=DEFAULT_PROFILES,
-            instructions_text=(
+            base_instructions_text=(
                 "1. Extract the folder as well as the 2 files into the game folder\n"
                 "   → For {game_name} into **{install_path}**\n\n"
                 "2. Run **START_GAME.exe** as Administrator\n\n"
                 "3. Let your bartender know if it works"
             ),
-            instructions_image="https://cdn.discordapp.com/attachments/1483155606545367040/1486841498904563782/image.png",
+            base_instructions_image="https://cdn.discordapp.com/attachments/1483155606545367040/1486841498904563782/image.png",
             log_channel=None,  # Channel ID for logging command usage
         )
         self.data_path = cog_data_path(self)
@@ -624,7 +624,7 @@ class SabPubHelper(commands.Cog):
 
             # Success message
             embed = discord.Embed(
-                title="Game Added Successfully!",
+                title="✅ Game Added Successfully!",
                 description=(
                     f"**Game ID:** `{game_id}`\n"
                     f"**Name:** {display_name}\n"
@@ -635,7 +635,11 @@ class SabPubHelper(commands.Cog):
                     f"1. Reload cog: `[p]reload pubhelper`\n"
                     f"2. Enable command: `[p]slash enable {game_id}cc`\n"
                     f"3. Sync slash: `[p]slash sync ~`\n"
-                    f"4. Upload basefiles: `[p]pubhelper setup` and select {display_name}\n\n"
+                    f"4. Upload basefiles: `[p]pubhelper setup` and select {display_name}\n"
+                    f"5. **📝 Set custom instructions (recommended):**\n"
+                    f"   • `[p]pubhelper setinstructions {game_id} <text>`\n"
+                    f"   • `[p]pubhelper setinstructionsimage {game_id} <url>`\n\n"
+                    f"ℹ️ Until you set custom instructions, the game will use base/default instructions.\n\n"
                     f"After sync, `/{game_id}cc` will be available."
                 ),
                 color=discord.Color.green(),
@@ -662,33 +666,174 @@ class SabPubHelper(commands.Cog):
 
     @pubhelper.command(name="setinstructions")
     async def set_instructions(
-        self, ctx: commands.Context, *, text: str = None
+        self, ctx: commands.Context, game: str = None, *, text: str = None
     ) -> None:
-        """Update the installation instructions text.
+        """Update installation instructions for a specific game or the base default.
 
         **Usage:**
-        `[p]pubhelper setinstructions <text>` - Set new instructions text
-        `[p]pubhelper setinstructions` - View current instructions
+        `[p]pubhelper setinstructions <game_id> <text>` - Set game-specific instructions
+        `[p]pubhelper setinstructions base <text>` - Set base/default instructions
+        `[p]pubhelper setinstructions <game_id>` - View game's current instructions
+        `[p]pubhelper setinstructions` - View base instructions
 
         **Placeholders:**
         - `{game_name}` - Will be replaced with the game's display name
         - `{install_path}` - Will be replaced with the game's install path
 
-        **Example:**
+        **Examples:**
         ```
-        [p]pubhelper setinstructions 1. Extract files to {install_path}
-        2. Run START_GAME.exe as Admin
-        3. Tell bartender if it works
+        [p]pubhelper setinstructions re9 1. Extract to {install_path}
+        2. Run the game
+        3. Enjoy!
+        ```
+
+        ```
+        [p]pubhelper setinstructions base 1. Extract files to {install_path}
+        2. Run START_GAME.exe
         ```
         """
-        if not text:
-            # Show current instructions
-            current = await self.config.instructions_text()
+        profiles = await self.config.profiles()
+
+        # No game specified - show guide and base instructions
+        if not game:
+            current = await self.config.base_instructions_text()
+            current_image = await self.config.base_instructions_image()
+
             embed = discord.Embed(
-                title="Current Installation Instructions",
-                description=f"```\n{current}\n```",
-                color=discord.Color.blue(),
+                title="📝 Per-Game Instructions & Images",
+                description=(
+                    "**Each game can have custom instructions and images!**\n\n"
+                    "Games without custom instructions use the **base/default** as fallback.\n\n"
+                ),
+                color=discord.Color.blurple(),
             )
+
+            # Show available games
+            game_list = ", ".join([f"`{g}`" for g in profiles.keys()])
+            embed.add_field(
+                name="Available Games",
+                value=game_list,
+                inline=False,
+            )
+
+            # How to set instructions
+            embed.add_field(
+                name="📄 Set Instructions Text",
+                value=(
+                    "**Set for specific game:**\n"
+                    "`[p]pubhelper setinstructions <game> <text>`\n"
+                    "Example: `[p]pubhelper setinstructions re9 1. Extract...`\n\n"
+                    "**Set base/default:**\n"
+                    "`[p]pubhelper setinstructions base <text>`\n\n"
+                    "**View game's current:**\n"
+                    "`[p]pubhelper setinstructions <game>`"
+                ),
+                inline=False,
+            )
+
+            # How to set images
+            embed.add_field(
+                name="🖼️ Set Instructions Image",
+                value=(
+                    "**Set for specific game:**\n"
+                    "`[p]pubhelper setinstructionsimage <game> <url>`\n"
+                    "Example: `[p]pubhelper setinstructionsimage cd https://i.imgur.com/...`\n\n"
+                    "**Set base/default:**\n"
+                    "`[p]pubhelper setinstructionsimage base <url>`\n\n"
+                    "**Clear custom image:**\n"
+                    "`[p]pubhelper setinstructionsimage <game> clear`"
+                ),
+                inline=False,
+            )
+
+            # Placeholders
+            embed.add_field(
+                name="✨ Placeholders (for text)",
+                value=(
+                    "`{game_name}` - Game display name\n`{install_path}` - Install path"
+                ),
+                inline=False,
+            )
+
+            # Current base
+            embed.add_field(
+                name="📋 Current Base Instructions",
+                value=f"```\n{current[:500]}{'...' if len(current) > 500 else ''}\n```",
+                inline=False,
+            )
+
+            if current_image:
+                embed.add_field(
+                    name="🖼️ Current Base Image",
+                    value=f"[View Image]({current_image})",
+                    inline=False,
+                )
+
+            embed.set_footer(
+                text="💡 Tip: Set custom instructions when adding new games!"
+            )
+            await ctx.send(embed=embed)
+            return
+
+        game = game.lower()
+
+        # Setting base instructions
+        if game == "base":
+            if not text:
+                current = await self.config.base_instructions_text()
+                embed = discord.Embed(
+                    title="Base Installation Instructions (Default Fallback)",
+                    description=f"```\n{current}\n```",
+                    color=discord.Color.blue(),
+                )
+                embed.add_field(
+                    name="Placeholders",
+                    value="`{game_name}` - Game display name\n`{install_path}` - Install path",
+                    inline=False,
+                )
+                await ctx.send(embed=embed)
+                return
+
+            await self.config.base_instructions_text.set(text)
+            await ctx.send(
+                embed=discord.Embed(
+                    description="✅ Base instructions updated!\n\nPreview:\n"
+                    + text.format(game_name="Example Game", install_path="Game/bin/"),
+                    color=discord.Color.green(),
+                )
+            )
+            return
+
+        # Game-specific instructions
+        if game not in profiles:
+            await ctx.send(
+                f"Unknown game `{game}`. Available: {', '.join(profiles.keys())}, base"
+            )
+            return
+
+        profile = profiles[game]
+
+        # View current instructions for this game
+        if not text:
+            custom_text = profile.get("instructions_text")
+            if custom_text:
+                embed = discord.Embed(
+                    title=f"{profile['name']} - Custom Instructions",
+                    description=f"```\n{custom_text}\n```",
+                    color=discord.Color.green(),
+                )
+                embed.set_footer(text=f"Custom instructions for {game}")
+            else:
+                base_text = await self.config.base_instructions_text()
+                embed = discord.Embed(
+                    title=f"{profile['name']} - Using Base Instructions",
+                    description=f"```\n{base_text}\n```",
+                    color=discord.Color.orange(),
+                )
+                embed.set_footer(
+                    text=f"No custom instructions set for {game}. Using base fallback."
+                )
+
             embed.add_field(
                 name="Placeholders",
                 value="`{game_name}` - Game display name\n`{install_path}` - Install path",
@@ -697,54 +842,218 @@ class SabPubHelper(commands.Cog):
             await ctx.send(embed=embed)
             return
 
-        await self.config.instructions_text.set(text)
+        # Set custom instructions for this game
+        async with self.config.profiles() as profiles:
+            profiles[game]["instructions_text"] = text
+
         await ctx.send(
             embed=discord.Embed(
-                description="✅ Instructions updated!\n\nPreview:\n"
-                + text.format(game_name="Example Game", install_path="Game/bin/"),
+                description=f"✅ Custom instructions set for **{profile['name']}**!\n\nPreview:\n"
+                + text.format(
+                    game_name=profile["name"],
+                    install_path=profile.get("install_path", "Game folder"),
+                ),
                 color=discord.Color.green(),
             )
         )
 
     @pubhelper.command(name="setinstructionsimage")
     async def set_instructions_image(
-        self, ctx: commands.Context, url: str = None
+        self, ctx: commands.Context, game: str = None, url: str = None
     ) -> None:
-        """Update the installation instructions image URL.
+        """Update installation instructions image for a specific game or the base default.
 
         **Usage:**
-        `[p]pubhelper setinstructionsimage <url>` - Set new image
-        `[p]pubhelper setinstructionsimage clear` - Remove image
-        `[p]pubhelper setinstructionsimage` - View current image
+        `[p]pubhelper setinstructionsimage <game_id> <url>` - Set game-specific image from URL
+        `[p]pubhelper setinstructionsimage <game_id>` - Set from attached image
+        `[p]pubhelper setinstructionsimage <game_id> clear` - Remove game's custom image
+        `[p]pubhelper setinstructionsimage base <url>` - Set base/default image
+        `[p]pubhelper setinstructionsimage` - Show guide
 
-        **Example:**
+        **Examples:**
         ```
-        [p]pubhelper setinstructionsimage https://i.imgur.com/abc123.png
+        [p]pubhelper setinstructionsimage re9 https://i.imgur.com/abc123.png
+        [p]pubhelper setinstructionsimage cd clear
+        [p]pubhelper setinstructionsimage base https://i.imgur.com/default.png
+        ```
+
+        **Or attach an image to your message:**
+        ```
+        [p]pubhelper setinstructionsimage re9
+        [attach image]
         ```
         """
-        if not url:
-            # Show current image
-            current = await self.config.instructions_image()
+        profiles = await self.config.profiles()
+
+        # Check for image attachment if no URL provided
+        if not url and ctx.message.attachments:
+            attachment = ctx.message.attachments[0]
+            # Verify it's an image
+            if attachment.content_type and attachment.content_type.startswith("image/"):
+                url = attachment.url
+            else:
+                await ctx.send("❌ The attachment must be an image file.")
+                return
+
+        # No game specified - show guide and base image
+        if not game:
+            current = await self.config.base_instructions_image()
+            current_text = await self.config.base_instructions_text()
+
+            embed = discord.Embed(
+                title="🖼️ Per-Game Instructions Images",
+                description=(
+                    "**Each game can have a custom instructions image!**\n\n"
+                    "Games without custom images use the **base/default** as fallback.\n\n"
+                ),
+                color=discord.Color.blurple(),
+            )
+
+            # Show available games
+            game_list = ", ".join([f"`{g}`" for g in profiles.keys()])
+            embed.add_field(
+                name="Available Games",
+                value=game_list,
+                inline=False,
+            )
+
+            # How to set images
+            embed.add_field(
+                name="🖼️ Set Instructions Image",
+                value=(
+                    "**Set from URL:**\n"
+                    "`[p]pubhelper setinstructionsimage <game> <url>`\n\n"
+                    "**Set from attachment:**\n"
+                    "`[p]pubhelper setinstructionsimage <game>` + attach image\n\n"
+                    "**Set base/default:**\n"
+                    "`[p]pubhelper setinstructionsimage base <url>`\n\n"
+                    "**View game's current:**\n"
+                    "`[p]pubhelper setinstructionsimage <game>`\n\n"
+                    "**Clear custom image:**\n"
+                    "`[p]pubhelper setinstructionsimage <game> clear`"
+                ),
+                inline=False,
+            )
+
+            # How to set text
+            embed.add_field(
+                name="📄 Set Instructions Text",
+                value=(
+                    "**Set for specific game:**\n"
+                    "`[p]pubhelper setinstructions <game> <text>`\n\n"
+                    "**Set base/default:**\n"
+                    "`[p]pubhelper setinstructions base <text>`\n\n"
+                    "Use `[p]pubhelper setinstructions` for full guide."
+                ),
+                inline=False,
+            )
+
             if current:
-                embed = discord.Embed(
-                    title="Current Instructions Image",
-                    color=discord.Color.blue(),
+                embed.add_field(
+                    name="📋 Current Base Image",
+                    value=f"[View Image]({current})\n`{current}`",
+                    inline=False,
                 )
                 embed.set_image(url=current)
-                embed.add_field(name="URL", value=current, inline=False)
-                await ctx.send(embed=embed)
             else:
-                await ctx.send("No instructions image is currently set.")
+                embed.add_field(
+                    name="📋 Current Base Image",
+                    value="No base image set.",
+                    inline=False,
+                )
+
+            embed.set_footer(text="💡 Tip: Combine custom text + image for each game!")
+            await ctx.send(embed=embed)
             return
 
+        game = game.lower()
+
+        # Setting base image
+        if game == "base":
+            if not url:
+                current = await self.config.base_instructions_image()
+                if current:
+                    embed = discord.Embed(
+                        title="Base Instructions Image (Default Fallback)",
+                        color=discord.Color.blue(),
+                    )
+                    embed.set_image(url=current)
+                    embed.add_field(name="URL", value=current, inline=False)
+                    await ctx.send(embed=embed)
+                else:
+                    await ctx.send("No base instructions image is currently set.")
+                return
+
+            if url.lower() == "clear":
+                await self.config.base_instructions_image.set("")
+                await ctx.send("✅ Base instructions image cleared.")
+                return
+
+            await self.config.base_instructions_image.set(url)
+            embed = discord.Embed(
+                description="✅ Base instructions image updated!",
+                color=discord.Color.green(),
+            )
+            embed.set_image(url=url)
+            await ctx.send(embed=embed)
+            return
+
+        # Game-specific image
+        if game not in profiles:
+            await ctx.send(
+                f"Unknown game `{game}`. Available: {', '.join(profiles.keys())}, base"
+            )
+            return
+
+        profile = profiles[game]
+
+        # View current image for this game
+        if not url:
+            custom_image = profile.get("instructions_image")
+            if custom_image:
+                embed = discord.Embed(
+                    title=f"{profile['name']} - Custom Instructions Image",
+                    color=discord.Color.green(),
+                )
+                embed.set_image(url=custom_image)
+                embed.add_field(name="URL", value=custom_image, inline=False)
+                embed.set_footer(text=f"Custom image for {game}")
+            else:
+                base_image = await self.config.base_instructions_image()
+                if base_image:
+                    embed = discord.Embed(
+                        title=f"{profile['name']} - Using Base Image",
+                        color=discord.Color.orange(),
+                    )
+                    embed.set_image(url=base_image)
+                    embed.add_field(name="URL", value=base_image, inline=False)
+                    embed.set_footer(
+                        text=f"No custom image set for {game}. Using base fallback."
+                    )
+                else:
+                    await ctx.send(
+                        f"**{profile['name']}** has no custom image, and no base image is set."
+                    )
+                    return
+            await ctx.send(embed=embed)
+            return
+
+        # Clear custom image
         if url.lower() == "clear":
-            await self.config.instructions_image.set("")
-            await ctx.send("✅ Instructions image cleared.")
+            async with self.config.profiles() as profiles:
+                if "instructions_image" in profiles[game]:
+                    del profiles[game]["instructions_image"]
+            await ctx.send(
+                f"✅ Custom image cleared for **{profile['name']}**. Will use base image as fallback."
+            )
             return
 
-        await self.config.instructions_image.set(url)
+        # Set custom image for this game
+        async with self.config.profiles() as profiles:
+            profiles[game]["instructions_image"] = url
+
         embed = discord.Embed(
-            description="✅ Instructions image updated!",
+            description=f"✅ Custom image set for **{profile['name']}**!",
             color=discord.Color.green(),
         )
         embed.set_image(url=url)
@@ -1337,6 +1646,93 @@ class SabPubHelper(commands.Cog):
         except Exception as e:
             return f"Error: {e}"
 
+    @pubhelper.command(name="pullbasefiles")
+    async def pull_basefiles(self, ctx: commands.Context, game: str) -> None:
+        """Export a game's basefiles archive via Discord.
+
+        **Usage:**
+        `[p]pubhelper pullbasefiles <game_id>`
+
+        **Examples:**
+        `[p]pubhelper pullbasefiles re9`
+        `[p]pubhelper pullbasefiles cd`
+        `[p]pubhelper pullbasefiles mhw`
+
+        This uploads the basefiles archive as a Discord attachment for download.
+        """
+        game = game.lower()
+        profiles = await self.config.profiles()
+
+        if game not in profiles:
+            await ctx.send(
+                f"Unknown game `{game}`. Available: {', '.join(profiles.keys())}"
+            )
+            return
+
+        profile = profiles[game]
+        basefiles_path = self._find_basefiles_path(game)
+        is_set = profile.get("basefiles_set", False)
+
+        if not is_set or not basefiles_path or not basefiles_path.exists():
+            await ctx.send(
+                f"{profile['name']} basefiles not configured. "
+                f"Run `[p]pubhelper setup` to upload basefiles first."
+            )
+            return
+
+        # Check file size (Discord has limits)
+        file_size_mb = basefiles_path.stat().st_size / (1024 * 1024)
+
+        # Discord file size limit (8MB for non-boosted, 50MB for boosted servers)
+        # We'll use a safe limit of 45MB to account for variations
+        max_size_mb = 45
+
+        if file_size_mb > max_size_mb:
+            await ctx.send(
+                f"⚠️ **File too large for Discord upload**\n\n"
+                f"**{profile['name']}** basefiles: `{file_size_mb:.2f} MB`\n"
+                f"Discord limit: `{max_size_mb} MB`\n\n"
+                f"The basefiles are too large to upload directly via Discord. "
+                f"Consider using an external file host or splitting the archive."
+            )
+            return
+
+        async with ctx.typing():
+            try:
+                fmt = basefiles_path.suffix.lstrip(".")
+                file = discord.File(
+                    str(basefiles_path),
+                    filename=f"{game}_basefiles.{fmt}",
+                )
+
+                embed = discord.Embed(
+                    title=f"📦 {profile['name']} Basefiles",
+                    color=discord.Color.green(),
+                )
+                embed.add_field(name="Game ID", value=f"`{game}`", inline=True)
+                embed.add_field(name="Format", value=fmt.upper(), inline=True)
+                embed.add_field(
+                    name="Size", value=f"{file_size_mb:.2f} MB", inline=True
+                )
+                embed.add_field(
+                    name="Config Target",
+                    value=f"`{profile['config_target']}`",
+                    inline=False,
+                )
+
+                await ctx.send(embed=embed, file=file)
+
+            except discord.HTTPException as e:
+                log.exception("Failed to upload basefiles")
+                await ctx.send(
+                    f"❌ **Failed to upload basefiles**\n\n"
+                    f"Discord error: {e}\n\n"
+                    f"The file may be too large for this server's upload limit."
+                )
+            except Exception as e:
+                log.exception("Error exporting basefiles")
+                await ctx.send(f"Error exporting basefiles: {e}")
+
     @pubhelper.command(name="help")
     async def help_command(self, ctx: commands.Context) -> None:
         """Show detailed setup and usage guide."""
@@ -1402,6 +1798,7 @@ class SabPubHelper(commands.Cog):
             value=(
                 "`[p]pubhelper status` - Check all games status & paths\n"
                 "`[p]pubhelper structure <game>` - Show basefiles file structure\n"
+                "`[p]pubhelper pullbasefiles <game>` - Export basefiles via Discord\n"
                 "`[p]pubhelper logchannel #channel` - Set command usage log channel\n"
                 "`[p]pubhelper setup` - Interactive basefiles setup\n"
                 "`[p]pubhelper setpath` - Interactive path change\n"
@@ -1409,8 +1806,8 @@ class SabPubHelper(commands.Cog):
                 "`[p]pubhelper removegame <id>` - Remove a game profile\n"
                 "`[p]pubhelper updatedll` - Update steamclient64.dll in all basefiles\n"
                 "`[p]pubhelper syncslash` - Sync slash commands to Discord\n"
-                "`[p]pubhelper setinstructions` - Update installation instructions\n"
-                "`[p]pubhelper setinstructionsimage` - Update instructions image\n"
+                "`[p]pubhelper setinstructions <game|base>` - Set game or base instructions\n"
+                "`[p]pubhelper setinstructionsimage <game|base>` - Set game or base image\n"
                 "`[p]pubhelper help` - This guide"
             ),
             inline=False,
@@ -1511,9 +1908,14 @@ class SabPubHelper(commands.Cog):
             # Send instructions as a follow-up message
             install_path = profile.get("install_path", "the game folder")
 
-            # Get instructions from config
-            instructions_text = await self.config.instructions_text()
-            instructions_image = await self.config.instructions_image()
+            # Get instructions (per-game with fallback to base)
+            instructions_text = profile.get("instructions_text")
+            if not instructions_text:
+                instructions_text = await self.config.base_instructions_text()
+
+            instructions_image = profile.get("instructions_image")
+            if not instructions_image:
+                instructions_image = await self.config.base_instructions_image()
 
             # Format the text with game-specific values
             formatted_text = instructions_text.format(
