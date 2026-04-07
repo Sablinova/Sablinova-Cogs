@@ -101,6 +101,7 @@ The bot will:
 | `[p]pubhelper removegame <id>` | Remove a game profile |
 | `[p]pubhelper status` | Check all games status & paths |
 | `[p]pubhelper structure <game>` | Show basefiles directory tree |
+| `[p]pubhelper ccini <game>` | Show ColdClientLoader.ini from basefiles |
 | `[p]pubhelper pullbasefiles <game>` | Export basefiles archive via Discord |
 
 ### Configuration

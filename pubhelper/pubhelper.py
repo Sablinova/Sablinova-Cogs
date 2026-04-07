@@ -1733,6 +1733,112 @@ class SabPubHelper(commands.Cog):
                 log.exception("Error exporting basefiles")
                 await ctx.send(f"Error exporting basefiles: {e}")
 
+    @pubhelper.command(name="ccini")
+    async def show_ccini(self, ctx: commands.Context, game: str) -> None:
+        """Show ColdClientLoader.ini from a game's basefiles.
+
+        **Usage:**
+        `[p]pubhelper ccini <game_id>`
+
+        **Examples:**
+        `[p]pubhelper ccini re9`
+        `[p]pubhelper ccini cd`
+        `[p]pubhelper ccini mhw`
+
+        This extracts and displays the ColdClientLoader.ini file from the basefiles.
+        """
+        game = game.lower()
+        profiles = await self.config.profiles()
+
+        if game not in profiles:
+            await ctx.send(
+                f"Unknown game `{game}`. Available: {', '.join(profiles.keys())}"
+            )
+            return
+
+        profile = profiles[game]
+        basefiles_path = self._find_basefiles_path(game)
+        is_set = profile.get("basefiles_set", False)
+
+        if not is_set or not basefiles_path or not basefiles_path.exists():
+            await ctx.send(
+                f"{profile['name']} basefiles not configured. "
+                f"Run `[p]pubhelper setup` to upload basefiles first."
+            )
+            return
+
+        async with ctx.typing():
+            try:
+                loop = asyncio.get_event_loop()
+                ini_content = await loop.run_in_executor(
+                    None, self._extract_ccini, basefiles_path
+                )
+
+                if isinstance(ini_content, str) and ini_content.startswith("Error:"):
+                    await ctx.send(ini_content)
+                    return
+
+                # Send as text file if content is too long, otherwise as code block
+                if len(ini_content) > 1800:
+                    file = discord.File(
+                        io.BytesIO(ini_content.encode("utf-8")),
+                        filename=f"{game}_ColdClientLoader.ini",
+                    )
+                    await ctx.send(
+                        f"📄 **{profile['name']} - ColdClientLoader.ini**",
+                        file=file,
+                    )
+                else:
+                    await ctx.send(
+                        f"📄 **{profile['name']} - ColdClientLoader.ini**\n```ini\n{ini_content}\n```"
+                    )
+
+            except Exception as e:
+                log.exception("Error reading ColdClientLoader.ini")
+                await ctx.send(f"Error reading ColdClientLoader.ini: {e}")
+
+    def _extract_ccini(self, archive_path: Path) -> str:
+        """Extract and return ColdClientLoader.ini content from archive."""
+        try:
+            fmt = archive_path.suffix.lstrip(".")
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmpdir = Path(tmpdir)
+                extract_dir = tmpdir / "extracted"
+                extract_dir.mkdir()
+
+                # Extract archive
+                if fmt == "7z":
+                    with py7zr.SevenZipFile(archive_path, "r") as z:
+                        z.extractall(extract_dir)
+                else:  # zip
+                    with zipfile.ZipFile(archive_path, "r") as z:
+                        z.extractall(extract_dir)
+
+                # Find ColdClientLoader.ini
+                ini_files = list(extract_dir.rglob("ColdClientLoader.ini"))
+
+                if not ini_files:
+                    return "Error: ColdClientLoader.ini not found in basefiles"
+
+                if len(ini_files) > 1:
+                    # Multiple found, list them
+                    paths = [str(f.relative_to(extract_dir)) for f in ini_files]
+                    return (
+                        f"Error: Multiple ColdClientLoader.ini files found:\n"
+                        + "\n".join(f"  - {p}" for p in paths)
+                    )
+
+                # Read the ini file
+                ini_path = ini_files[0]
+                with open(ini_path, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+
+                return content
+
+        except Exception as e:
+            return f"Error: {e}"
+
     @pubhelper.command(name="help")
     async def help_command(self, ctx: commands.Context) -> None:
         """Show detailed setup and usage guide."""
@@ -1798,6 +1904,7 @@ class SabPubHelper(commands.Cog):
             value=(
                 "`[p]pubhelper status` - Check all games status & paths\n"
                 "`[p]pubhelper structure <game>` - Show basefiles file structure\n"
+                "`[p]pubhelper ccini <game>` - Show ColdClientLoader.ini\n"
                 "`[p]pubhelper pullbasefiles <game>` - Export basefiles via Discord\n"
                 "`[p]pubhelper logchannel #channel` - Set command usage log channel\n"
                 "`[p]pubhelper setup` - Interactive basefiles setup\n"
