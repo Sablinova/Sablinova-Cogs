@@ -276,6 +276,208 @@ class SabMuteMessage(commands.Cog):
             file.unlink()
         await ctx.send("Image unset.")
 
+    @sabmutemessage.command(name="setup")
+    async def sabmutemessage_setup(self, ctx: GuildContext) -> None:
+        """Interactive setup wizard for SabMuteMessage."""
+        guild = ctx.guild
+        author = ctx.author
+
+        await ctx.send(
+            "**Welcome to SabMuteMessage setup!**\n\n"
+            "I'll guide you through the configuration process.\n"
+            "You can type `cancel` at any time to exit setup.\n\n"
+            "First, let's set up the channel where mute messages will be sent."
+        )
+
+        # Step 1: Channel selection
+        await ctx.send(
+            "**Step 1/5:** Please mention a channel or type its name/ID where mute messages should be sent."
+        )
+        pred = MessagePredicate.valid_text_channel(ctx)
+        try:
+            await self.bot.wait_for("message", check=pred, timeout=60)
+        except asyncio.TimeoutError:
+            await ctx.send("Setup timed out. Run the command again to restart.")
+            return
+
+        if pred.result is None:
+            await ctx.send("Setup cancelled.")
+            return
+
+        channel = pred.result
+        await self.config.guild(guild).channel.set(channel.id)
+        await ctx.send(f"Channel set to {channel.mention}")
+
+        # Step 2: Detection mode
+        await ctx.send(
+            "**Step 2/5:** What should trigger mute messages?\n\n"
+            "Reply with:\n"
+            "`1` - Only Discord timeouts (recommended)\n"
+            "`2` - Only mute role assignment\n"
+            "`3` - Both timeouts and mute role\n"
+            "`4` - Skip this step"
+        )
+        pred_mode = MessagePredicate.valid_int(ctx)
+        try:
+            await self.bot.wait_for(
+                "message",
+                check=lambda m: pred_mode(m) and 1 <= pred_mode.result <= 4,
+                timeout=60,
+            )
+        except asyncio.TimeoutError:
+            await ctx.send("Setup timed out. Current progress has been saved.")
+            return
+
+        mode = pred_mode.result
+        if mode == 1:
+            await self.config.guild(guild).detect_timeout.set(True)
+            await self.config.guild(guild).detect_role.set(False)
+            await ctx.send("Detection mode: Discord timeouts only")
+        elif mode == 2:
+            await self.config.guild(guild).detect_timeout.set(False)
+            await self.config.guild(guild).detect_role.set(True)
+            await ctx.send("Detection mode: Mute role only")
+        elif mode == 3:
+            await self.config.guild(guild).detect_timeout.set(True)
+            await self.config.guild(guild).detect_role.set(True)
+            await ctx.send("Detection mode: Both timeouts and mute role")
+        else:
+            await ctx.send("Skipped detection mode configuration.")
+
+        # Step 3: Mute role (if role detection enabled)
+        settings = await self.config.guild(guild).all()
+        if settings["detect_role"]:
+            await ctx.send(
+                "**Step 3/5:** Please mention the mute role, type its name/ID, or type `skip` to configure later."
+            )
+            pred_role = MessagePredicate.valid_role(ctx)
+            pred_skip = MessagePredicate.contained_in(["skip"], ctx)
+
+            def check(m):
+                return (
+                    m.author == author
+                    and m.channel == ctx.channel
+                    and (pred_role(m) or pred_skip(m))
+                )
+
+            try:
+                msg = await self.bot.wait_for("message", check=check, timeout=60)
+            except asyncio.TimeoutError:
+                await ctx.send("Setup timed out. Current progress has been saved.")
+                return
+
+            if pred_skip.result:
+                await ctx.send(
+                    "Skipped mute role configuration. You can set it later with `[p]sabmm muterole`"
+                )
+            else:
+                role = pred_role.result
+                await self.config.guild(guild).mute_role.set(role.id)
+                await ctx.send(f"Mute role set to {role.mention}")
+        else:
+            await ctx.send("**Step 3/5:** Skipped (mute role detection is disabled)")
+
+        # Step 4: Message template
+        await ctx.send(
+            "**Step 4/5:** Now let's add a mute message template.\n\n"
+            "Available variables:\n"
+            "`$username` - The muted user's name\n"
+            "`$server` - Server name\n"
+            "`$duration` - Mute duration (e.g., '1 hour')\n"
+            "`$moderator` - Who issued the mute\n"
+            "`$reason` - Mute reason\n\n"
+            "Example: `$username was muted in $server for $duration by $moderator. Reason: $reason`\n\n"
+            "Type your message template or `skip` to use a default message:"
+        )
+        pred_msg = MessagePredicate.same_context(ctx)
+        try:
+            await self.bot.wait_for("message", check=pred_msg, timeout=120)
+        except asyncio.TimeoutError:
+            await ctx.send("Setup timed out. Current progress has been saved.")
+            return
+
+        message = pred_msg.result.content
+        if message.lower() == "skip":
+            message = "$username was muted in $server for $duration by $moderator. Reason: $reason"
+            await ctx.send("Using default message template.")
+
+        async with self.config.guild(guild).all() as guild_settings:
+            guild_settings["message_templates"].append(message)
+
+        await ctx.send("Message template added!")
+
+        # Step 5: Image (optional)
+        await ctx.send(
+            "**Step 5/5:** (Optional) You can attach an image that will be sent with mute messages.\n\n"
+            "Reply with an image attachment, or type `skip` to finish setup without an image."
+        )
+
+        def check_image(m):
+            return (
+                m.author == author
+                and m.channel == ctx.channel
+                and (len(m.attachments) == 1 or m.content.lower() == "skip")
+            )
+
+        try:
+            msg = await self.bot.wait_for("message", check=check_image, timeout=60)
+        except asyncio.TimeoutError:
+            await ctx.send(
+                "Setup timed out. Configuration is complete without an image."
+            )
+            await self._show_setup_summary(ctx)
+            return
+
+        if msg.content.lower() == "skip":
+            await ctx.send("Skipped image configuration.")
+        else:
+            a = msg.attachments[0]
+            if a.width is None:
+                await ctx.send(
+                    "The attachment must be an image. Skipping image configuration."
+                )
+            else:
+                ext = a.filename.rpartition(".")[2]
+                filename = self.message_images / f"{guild.id}.{ext}"
+                with open(filename, "wb") as fp:
+                    await a.save(fp)
+
+                for file in self.message_images.glob(f"{guild.id}.*"):
+                    if not file == filename:
+                        file.unlink()
+
+                await ctx.send("Image saved!")
+
+        # Final summary
+        await self._show_setup_summary(ctx)
+
+    async def _show_setup_summary(self, ctx: GuildContext) -> None:
+        """Show setup completion summary."""
+        guild = ctx.guild
+        settings = await self.config.guild(guild).all()
+
+        channel = (
+            guild.get_channel(settings["channel"]) if settings["channel"] else None
+        )
+        mute_role = (
+            guild.get_role(settings["mute_role"]) if settings["mute_role"] else None
+        )
+        has_image = any(self.message_images.glob(f"{guild.id}.*"))
+
+        msg = (
+            "**Setup Complete!**\n\n"
+            "**Current Configuration:**\n"
+            f"Channel: {channel.mention if channel else 'Not set'}\n"
+            f"Detect timeouts: {settings['detect_timeout']}\n"
+            f"Detect mute role: {settings['detect_role']}\n"
+            f"Mute role: {mute_role.mention if mute_role else 'Not set'}\n"
+            f"Message templates: {len(settings['message_templates'])}\n"
+            f"Image: {'Set' if has_image else 'Not set'}\n\n"
+            "SabMuteMessage is now ready to use! You can modify settings anytime with `[p]sabmm` commands.\n"
+            "Use `[p]sabmm settings` to view current configuration."
+        )
+        await ctx.send(msg)
+
     @sabmutemessage.command(name="settings")
     async def sabmutemessage_settings(self, ctx: GuildContext) -> None:
         """Show current mute message settings."""

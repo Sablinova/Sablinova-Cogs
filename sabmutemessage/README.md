@@ -18,7 +18,22 @@ Send customizable messages to a designated channel when members are muted.
 [p]load sabmutemessage
 ```
 
-## Configuration
+## Quick Setup (Interactive)
+
+The easiest way to configure SabMuteMessage:
+
+```
+[p]sabmutemessage setup
+```
+
+This interactive wizard will guide you through:
+1. Setting the mute message channel
+2. Choosing detection mode (timeouts, mute role, or both)
+3. Configuring the mute role (if needed)
+4. Adding your first message template
+5. Optionally adding an image
+
+## Manual Configuration
 
 ### Set the channel for mute messages
 
@@ -69,6 +84,7 @@ Attach an image to your command:
 
 | Command | Description |
 |---------|-------------|
+| `[p]sabmutemessage setup` | **Interactive setup wizard (recommended)** |
 | `[p]sabmutemessage channel [#channel]` | Set channel for mute messages (empty = disable) |
 | `[p]sabmutemessage muterole [@role]` | Set the mute role to detect (empty = disable) |
 | `[p]sabmutemessage detecttimeout [true/false]` | Toggle timeout detection |
@@ -92,6 +108,13 @@ The bot needs the following permissions for full functionality:
 
 ## Example Setup
 
+**Quick setup (recommended):**
+```
+[p]sabmutemessage setup
+```
+Follow the interactive prompts to configure everything in one go.
+
+**Manual setup:**
 ```
 [p]sabmutemessage channel #mod-log
 [p]sabmutemessage detecttimeout true
