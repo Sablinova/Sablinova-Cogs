@@ -601,10 +601,18 @@ class SabMuteMessage(commands.Cog):
         guild = after.guild
         settings = await self.config.guild(guild).all()
 
+        # Debug: Log all member updates where timeout changes
+        if before.timed_out_until != after.timed_out_until:
+            log.info(
+                f"Timeout change detected for {after} (ID: {after.id}) in guild {guild.name} (ID: {guild.id}): "
+                f"before={before.timed_out_until}, after={after.timed_out_until}"
+            )
+
         # Check for Discord timeout
         if settings["detect_timeout"]:
             if before.timed_out_until is None and after.timed_out_until is not None:
                 # Timeout applied
+                log.info(f"Timeout detected for {after}, sending mute message")
                 duration = after.timed_out_until - discord.utils.utcnow()
                 moderator, reason = await self._get_audit_info(
                     after, discord.AuditLogAction.member_update
@@ -620,6 +628,7 @@ class SabMuteMessage(commands.Cog):
 
             if mute_role_id in after_roles and mute_role_id not in before_roles:
                 # Mute role added
+                log.info(f"Mute role added to {after}, sending mute message")
                 moderator, reason = await self._get_audit_info(
                     after, discord.AuditLogAction.member_role_update
                 )
