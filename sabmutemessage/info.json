@@ -1,0 +1,24 @@
+{
+    "name": "SabMuteMessage",
+    "short": "Send message on mute in a chosen channel. Supports images and audit log info!",
+    "description": "Send customizable messages to a designated channel when members are muted (via Discord timeout or mute role). Supports multiple message templates with variable substitution ($username, $server, $duration, $moderator, $reason), image attachments, and random template selection. Requires View Audit Log permission for moderator/reason tracking.",
+    "end_user_data_statement": "This cog does not persistently store data or metadata about users.",
+    "install_msg": "Thanks for installing SabMuteMessage. Configure with `[p]sabmutemessage` (or `[p]sabmm`).\n\nThis cog saves images set with `[p]sabmutemessage setimage` to data path.\n\nNote: The bot needs **View Audit Log** permission to show moderator and reason in messages.",
+    "author": [
+        "Sablinova (https://github.com/Sablinova)"
+    ],
+    "required_cogs": {},
+    "requirements": [
+        "humanize"
+    ],
+    "tags": [
+        "mutemessage",
+        "moderation",
+        "tools",
+        "utility"
+    ],
+    "min_bot_version": "3.5.0",
+    "hidden": false,
+    "disabled": false,
+    "type": "COG"
+}
