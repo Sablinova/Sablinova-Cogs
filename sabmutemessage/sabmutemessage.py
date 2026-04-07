@@ -293,18 +293,27 @@ class SabMuteMessage(commands.Cog):
         await ctx.send(
             "**Step 1/5:** Please mention a channel or type its name/ID where mute messages should be sent."
         )
-        pred = MessagePredicate.valid_text_channel(ctx)
+        pred_channel = MessagePredicate.valid_text_channel(ctx)
+        pred_cancel = MessagePredicate.contained_in(["cancel"], ctx)
+
+        def check_channel(m):
+            return (
+                m.author == author
+                and m.channel == ctx.channel
+                and (pred_channel(m) or pred_cancel(m))
+            )
+
         try:
-            await self.bot.wait_for("message", check=pred, timeout=60)
+            await self.bot.wait_for("message", check=check_channel, timeout=60)
         except asyncio.TimeoutError:
             await ctx.send("Setup timed out. Run the command again to restart.")
             return
 
-        if pred.result is None:
+        if pred_cancel.result:
             await ctx.send("Setup cancelled.")
             return
 
-        channel = pred.result
+        channel = pred_channel.result
         await self.config.guild(guild).channel.set(channel.id)
         await ctx.send(f"Channel set to {channel.mention}")
 
