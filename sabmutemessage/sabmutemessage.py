@@ -610,8 +610,12 @@ class SabMuteMessage(commands.Cog):
 
         # Check for Discord timeout
         if settings["detect_timeout"]:
-            if before.timed_out_until is None and after.timed_out_until is not None:
-                # Timeout applied
+            # Detect timeout being applied OR extended
+            if (
+                after.timed_out_until is not None
+                and before.timed_out_until != after.timed_out_until
+            ):
+                # Timeout applied or extended
                 log.info(f"Timeout detected for {after}, sending mute message")
                 duration = after.timed_out_until - discord.utils.utcnow()
                 moderator, reason = await self._get_audit_info(
