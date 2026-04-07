@@ -396,17 +396,20 @@ class SabMuteMessage(commands.Cog):
             "`$moderator` - Who issued the mute\n"
             "`$reason` - Mute reason\n\n"
             "Example: `$username was muted in $server for $duration by $moderator. Reason: $reason`\n\n"
-            "Type your message template or `skip` to use a default message:"
+            "Type your message template, `skip` to use a default message, or `cancel` to exit:"
         )
         pred_msg = MessagePredicate.same_context(ctx)
         try:
-            await self.bot.wait_for("message", check=pred_msg, timeout=120)
+            msg = await self.bot.wait_for("message", check=pred_msg, timeout=120)
         except asyncio.TimeoutError:
             await ctx.send("Setup timed out. Current progress has been saved.")
             return
 
-        message = pred_msg.result.content
-        if message.lower() == "skip":
+        message = msg.content
+        if message.lower() == "cancel":
+            await ctx.send("Setup cancelled.")
+            return
+        elif message.lower() == "skip":
             message = "$username was muted in $server for $duration by $moderator. Reason: $reason"
             await ctx.send("Using default message template.")
 
