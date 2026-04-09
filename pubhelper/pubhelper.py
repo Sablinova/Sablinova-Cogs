@@ -2635,17 +2635,46 @@ class SabPubHelper(commands.Cog):
                 except asyncio.CancelledError:
                     break
 
-                if log_buffer and cli_log_channel and log_message:
-                    log_text = "\n".join(log_buffer[-10:])
-                    try:
-                        await log_message.edit(
-                            content=f"🔄 **Savebrute running for {interaction.user.name}**\nGame: {SAVE_PROFILES[game]['name']}\n```\n{log_text}\n```"
-                        )
-                    except Exception as e:
-                        log.warning(f"Failed to update log message: {e}")
+                if log_buffer:
+                    display_lines = []
+                    latest_progress = None
+                    # Only check the last 50 lines to avoid CPU usage growing over time
+                    for l in log_buffer[-50:]:
+                        if "Brute-forcing:" in l or "%]" in l:
+                            latest_progress = l
+                        else:
+                            if l not in display_lines:  # simple dedup
+                                display_lines.append(l)
 
-        if cli_log_channel:
-            progress_task = asyncio.create_task(log_updater())
+                    if latest_progress:
+                        display_lines.append(latest_progress)
+
+                    log_text = "\n".join(display_lines[-10:])
+
+                    if cli_log_channel and log_message:
+                        try:
+                            await log_message.edit(
+                                content=f"🔄 **Savebrute running for {interaction.user.name}**\nGame: {SAVE_PROFILES[game]['name']}\n```\n{log_text}\n```"
+                            )
+                        except Exception as e:
+                            log.warning(f"Failed to update log message: {e}")
+
+                    # Update the user's view so they can see the counting live!
+                    if latest_progress:
+                        try:
+                            await interaction.edit_original_response(
+                                content=(
+                                    f"⏳ Bruteforcing User ID for **{SAVE_PROFILES[game]['name']}**...\n"
+                                    f"**Progress:** `{latest_progress}`\n"
+                                    f"_(Note: It will stop before 100% as soon as it guesses the ID!)_"
+                                )
+                            )
+                        except Exception:
+                            pass
+
+                    await asyncio.sleep(2.5)  # Avoid Discord API rate limits
+
+        progress_task = asyncio.create_task(log_updater())
 
         success = False
         try:
@@ -2662,7 +2691,7 @@ class SabPubHelper(commands.Cog):
                     await interaction.edit_original_response(
                         content=(
                             f"⏳ Still bruteforcing **{SAVE_PROFILES[game]['name']}**...\n"
-                            f"_This can take up to 2 hours for Steam saves. I will DM you the files when done!_"
+                            f"_This is taking longer than usual! I will DM you the files when it's completely finished._"
                         )
                     )
                 except Exception:
