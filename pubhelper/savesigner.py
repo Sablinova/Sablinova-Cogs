@@ -133,8 +133,10 @@ class SaveSigner:
             data_path = None
             fallback_path = None
 
-            # Sort files so we predictably pick the lowest numbered one
-            bin_files = sorted(extract_dir.rglob("*.bin"), key=lambda p: p.name.lower())
+            # Sort files by size (smallest first)
+            bin_files = sorted(
+                extract_dir.rglob("*.bin"), key=lambda p: p.stat().st_size
+            )
 
             for file_path in bin_files:
                 name_lower = file_path.name.lower()
