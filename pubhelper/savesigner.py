@@ -133,20 +133,22 @@ class SaveSigner:
             data_path = None
             fallback_path = None
 
-            # Sort files so we predictably pick the lowest numbered one (e.g. data002)
+            # Sort files so we predictably pick the lowest numbered one
             bin_files = sorted(extract_dir.rglob("*.bin"), key=lambda p: p.name.lower())
 
             for file_path in bin_files:
                 name_lower = file_path.name.lower()
+
+                # Blacklist data000, data001, and ANY file with "slot" in the name
                 if (
                     name_lower == "data000.bin"
                     or name_lower == "data001.bin"
-                    or name_lower == "data000slot.bin"
-                    or name_lower == "data001slot.bin"
+                    or "slot" in name_lower
                 ):
                     if fallback_path is None:
                         fallback_path = file_path
                     continue
+
                 data_path = file_path
                 break
 
