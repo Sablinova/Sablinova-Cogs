@@ -129,11 +129,19 @@ class SaveSigner:
                 except Exception:
                     return None
 
-            # Find the first .bin file recursively
+            # Find the first .bin file recursively (prefer files other than data000/data001)
             data_path = None
+            fallback_path = None
             for file_path in extract_dir.rglob("*.bin"):
+                if file_path.name.lower() in ["data000.bin", "data001.bin"]:
+                    if fallback_path is None:
+                        fallback_path = file_path
+                    continue
                 data_path = file_path
                 break
+
+            if not data_path:
+                data_path = fallback_path
 
             if not data_path:
                 return None
@@ -166,7 +174,7 @@ class SaveSigner:
                 # Read output in chunks to handle \r progress bars correctly
                 if proc.stdout is None:
                     return None
-                
+
                 while True:
                     chunk = await proc.stdout.read(1024)
                     if not chunk:
