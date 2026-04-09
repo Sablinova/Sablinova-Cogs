@@ -2728,8 +2728,14 @@ class SabPubHelper(commands.Cog):
                 return
 
             found_id = brute_result["user_id"]
+            updated = False
             if found_id not in known_ids:
                 known_ids.append(found_id)
+                updated = True
+            if new_id not in known_ids:
+                known_ids.append(new_id)
+                updated = True
+            if updated:
                 await self.config.known_save_ids.set(known_ids)
 
             await send_final_message(
@@ -2870,7 +2876,18 @@ class SabPubHelper(commands.Cog):
             )
             return
 
-        # Success - send zip
+        # Success - update known IDs cache and send zip
+        known_ids = await self.config.known_save_ids()
+        updated = False
+        if old_id not in known_ids:
+            known_ids.append(old_id)
+            updated = True
+        if new_id not in known_ids:
+            known_ids.append(new_id)
+            updated = True
+        if updated:
+            await self.config.known_save_ids.set(known_ids)
+
         success_msg = (
             f"✅ **Re-sign Complete!**\n\n"
             f"Game: {SAVE_PROFILES[game]['name']}\n"
