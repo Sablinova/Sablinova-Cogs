@@ -132,8 +132,18 @@ class SaveSigner:
             # Find the first .bin file recursively (prefer files other than data000/data001)
             data_path = None
             fallback_path = None
-            for file_path in extract_dir.rglob("*.bin"):
-                if file_path.name.lower() in ["data000.bin", "data001.bin"]:
+
+            # Sort files so we predictably pick the lowest numbered one (e.g. data002)
+            bin_files = sorted(extract_dir.rglob("*.bin"), key=lambda p: p.name.lower())
+
+            for file_path in bin_files:
+                name_lower = file_path.name.lower()
+                if (
+                    name_lower == "data000.bin"
+                    or name_lower == "data001.bin"
+                    or name_lower == "data000slot.bin"
+                    or name_lower == "data001slot.bin"
+                ):
                     if fallback_path is None:
                         fallback_path = file_path
                     continue
