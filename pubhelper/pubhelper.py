@@ -1994,7 +1994,7 @@ class SabPubHelper(commands.Cog):
             async with aiohttp.ClientSession() as session:
                 # Download Linux CLI binary
                 async with session.get(
-                    "https://github.com/Sablinova/MandarinJuice-ProMax/releases/download/promax-v1.1.0/mandarin-juice-promax.zip",
+                    "https://github.com/Sablinova/MandarinJuice-ProMax/releases/download/promax-v1.2.0/mandarin-juice-promax.zip",
                     timeout=aiohttp.ClientTimeout(total=120),
                 ) as resp:
                     if resp.status != 200:
