@@ -389,6 +389,7 @@ class SabPubHelper(commands.Cog):
         )
         self.data_path = cog_data_path(self)
         self.save_signer = SaveSigner(self.data_path)
+        self.active_brutes: dict[int, asyncio.Task] = {}
 
     def _get_basefiles_path(self, game: str, fmt: str = "7z") -> Path:
         """Get the basefiles path for a game profile."""
@@ -2486,6 +2487,12 @@ class SabPubHelper(commands.Cog):
 
         save_archive = result
 
+        if interaction.user.id in getattr(self, "active_brutes", {}):
+            task = self.active_brutes[interaction.user.id]
+            if not task.done():
+                await interaction.followup.send("❌ You already have a savebrute running. Use `/cancelbrute` to stop it first.", ephemeral=True)
+                return
+
         # Send initial message
         await interaction.followup.send(
             f"⏳ Bruteforcing User ID for **{SAVE_PROFILES[game]['name']}**...\n"
@@ -2496,6 +2503,7 @@ class SabPubHelper(commands.Cog):
         task = asyncio.create_task(
             self._savebrute_task(interaction, game, new_id, save_archive)
         )
+        self.active_brutes[interaction.user.id] = task
 
     async def _savebrute_task(
         self,
@@ -2680,11 +2688,14 @@ class SabPubHelper(commands.Cog):
             success = True
 
         except asyncio.CancelledError:
-            raise
+            await send_final_message(f"🛑 **Savebrute Cancelled manually by user.**")
         except Exception as e:
             log.error(f"Savebrute error: {e}", exc_info=True)
             await send_final_message(f"❌ **Error**: {str(e)}")
         finally:
+            if getattr(self, "active_brutes", {}).get(interaction.user.id) == asyncio.current_task():
+                self.active_brutes.pop(interaction.user.id, None)
+            
             if progress_task:
                 progress_task.cancel()
                 if cli_log_channel and log_message:
@@ -2697,6 +2708,25 @@ class SabPubHelper(commands.Cog):
                         )
                     except Exception:
                         pass
+
+    @app_commands.command(
+        name="cancelbrute",
+        description="Cancel your currently running savebrute task",
+    )
+    async def cancelbrute(self, interaction: discord.Interaction) -> None:
+        task = getattr(self, "active_brutes", {}).get(interaction.user.id)
+        if task and not task.done():
+            task.cancel()
+            self.active_brutes.pop(interaction.user.id, None)
+            await interaction.response.send_message(
+                "🛑 Successfully sent cancellation signal to your savebrute task. It will stop shortly.",
+                ephemeral=True
+            )
+        else:
+            await interaction.response.send_message(
+                "❌ You don't have any active savebrute tasks running.",
+                ephemeral=True
+            )
 
     @app_commands.command(
         name="savesign",
