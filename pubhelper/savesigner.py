@@ -53,13 +53,17 @@ class SaveSigner:
         """Initialize SaveSigner with cog data path."""
         self.data_path = data_path
         self.tools_path = data_path / "tools"
-        self.cli_path = self.tools_path / "mandarin-juice-cli"
+        # Support both the old name and the new ProMax name
+        self.cli_path_old = self.tools_path / "mandarin-juice-cli"
+        self.cli_path_new = self.tools_path / "mandarin-juice-promax"
         self.profiles_path = self.tools_path / "profiles"
 
     def get_tool_path(self) -> Path | None:
         """Get path to MandarinJuice CLI. Returns None if not installed."""
-        if self.cli_path.exists() and self.cli_path.is_file():
-            return self.cli_path
+        if self.cli_path_new.exists() and self.cli_path_new.is_file():
+            return self.cli_path_new
+        if self.cli_path_old.exists() and self.cli_path_old.is_file():
+            return self.cli_path_old
         return None
 
     def get_profile_path(self, game: str) -> Path | None:

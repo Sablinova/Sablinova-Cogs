@@ -1994,7 +1994,7 @@ class SabPubHelper(commands.Cog):
             async with aiohttp.ClientSession() as session:
                 # Download Linux CLI binary
                 async with session.get(
-                    "https://github.com/mi5hmash/MandarinJuice/releases/download/v1.1.0/linux-x64_v1.1.0.zip",
+                    "https://github.com/Sablinova/Sablinova-Cogs/releases/download/mandarin-juice-promax-v1.0.0/mandarin-juice-promax.zip",
                     timeout=aiohttp.ClientTimeout(total=120),
                 ) as resp:
                     if resp.status != 200:
@@ -2025,7 +2025,7 @@ class SabPubHelper(commands.Cog):
 
                 # Find the CLI binary in extracted files
                 cli_binary = None
-                for file in (tmpdir_path / "cli").rglob("mandarin-juice-cli"):
+                for file in (tmpdir_path / "cli").rglob("mandarin-juice-promax"):
                     if file.is_file():
                         cli_binary = file
                         break
@@ -2035,7 +2035,7 @@ class SabPubHelper(commands.Cog):
                     return
 
                 # Copy CLI to tools directory
-                target_cli = tools_dir / "mandarin-juice-cli"
+                target_cli = tools_dir / "mandarin-juice-promax"
                 shutil.copy(cli_binary, target_cli)
                 target_cli.chmod(0o755)  # Make executable
 
@@ -2059,7 +2059,7 @@ class SabPubHelper(commands.Cog):
             )
 
             await ctx.send(
-                f"✅ **MandarinJuice CLI installed successfully!**\n\n"
+                f"✅ **MandarinJuice ProMax CLI installed successfully!**\n\n"
                 f"CLI: `{target_cli}`\n"
                 f"Profiles: `{profiles_dir}`\n"
                 f"Available games: {profile_list}"
@@ -2091,7 +2091,7 @@ class SabPubHelper(commands.Cog):
             )
 
         await ctx.send(
-            f"✅ **MandarinJuice CLI Installed**\n\n"
+            f"✅ **MandarinJuice ProMax Installed**\n\n"
             f"**Game Profiles:**\n" + "\n".join(profile_list)
         )
 
