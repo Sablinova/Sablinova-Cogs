@@ -2583,21 +2583,21 @@ class SabPubHelper(commands.Cog):
                 log.error(f"Failed to send initial log message: {e}")
                 cli_log_channel = None
 
+        log_buffer = []
         async def log_updater():
-            buffer = []
             while True:
                 try:
                     line = await asyncio.wait_for(log_queue.get(), timeout=15.0)
-                    buffer.append(line)
+                    log_buffer.append(line)
                     while not log_queue.empty():
-                        buffer.append(log_queue.get_nowait())
+                        log_buffer.append(log_queue.get_nowait())
                 except asyncio.TimeoutError:
                     pass
                 except asyncio.CancelledError:
                     break
 
-                if buffer and cli_log_channel and log_message:
-                    log_text = "\n".join(buffer[-10:])
+                if log_buffer and cli_log_channel and log_message:
+                    log_text = "\n".join(log_buffer[-10:])
                     try:
                         await log_message.edit(
                             content=f"🔄 **Savebrute running for {interaction.user.name}**\nGame: {SAVE_PROFILES[game]['name']}\n```\n{log_text}\n```"
@@ -2691,8 +2691,9 @@ class SabPubHelper(commands.Cog):
                     try:
                         icon = "✅" if success else "❌"
                         status_text = "finished" if success else "failed"
+                        final_logs = "\n".join(log_buffer[-10:]) if log_buffer else "No logs produced."
                         await log_message.edit(
-                            content=f"{icon} **Savebrute {status_text} for {interaction.user.name}**\nGame: {SAVE_PROFILES[game]['name']}"
+                            content=f"{icon} **Savebrute {status_text} for {interaction.user.name}**\nGame: {SAVE_PROFILES[game]['name']}\n```\n{final_logs}\n```"
                         )
                     except Exception:
                         pass

@@ -129,17 +129,17 @@ class SaveSigner:
                 except Exception:
                     return None
 
-            # Find data000.bin recursively
-            data000_path = None
-            for file_path in extract_dir.rglob("data000.bin"):
-                data000_path = file_path
+            # Find the first .bin file recursively
+            data_path = None
+            for file_path in extract_dir.rglob("*.bin"):
+                data_path = file_path
                 break
 
-            if not data000_path:
+            if not data_path:
                 return None
 
-            # Copy only data000.bin to input directory
-            shutil.copy(data000_path, input_dir / "data000.bin")
+            # Copy the first save file to input directory
+            shutil.copy(data_path, input_dir / data_path.name)
 
             # Run bruteforce
             cmd = [
