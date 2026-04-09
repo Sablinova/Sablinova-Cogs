@@ -2520,7 +2520,7 @@ class SabPubHelper(commands.Cog):
         # Send initial message
         await interaction.followup.send(
             f"⏳ Bruteforcing User ID for **{SAVE_PROFILES[game]['name']}**...\n"
-            f"_This may take 1-2 hours for large Steam saves. I'll update you when done!_"
+            f"_This usually takes around ~60 seconds now! I'll update you when done._"
         )
 
         # Create background task with timeout
