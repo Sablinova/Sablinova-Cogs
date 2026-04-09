@@ -157,22 +157,49 @@ class SaveSigner:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd,
                     stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
                 )
 
                 user_id = None
+                buf = b""
 
-                # Read stdout line by line
+                # Read output in chunks to handle \r progress bars correctly
+                if proc.stdout is None:
+                    return None
+                
                 while True:
-                    line = await proc.stdout.readline()
-                    if not line:
+                    chunk = await proc.stdout.read(1024)
+                    if not chunk:
                         break
+                    buf += chunk
 
-                    line_str = line.decode("utf-8", errors="ignore").strip()
+                    while True:
+                        n_idx = buf.find(b"\n")
+                        r_idx = buf.find(b"\r")
+
+                        if n_idx != -1 and r_idx != -1:
+                            idx = min(n_idx, r_idx)
+                        else:
+                            idx = max(n_idx, r_idx)
+
+                        if idx == -1:
+                            break
+
+                        line_str = buf[:idx].decode("utf-8", errors="ignore").strip()
+                        buf = buf[idx + 1 :]
+
+                        if line_str and progress_callback:
+                            await progress_callback(line_str)
+
+                        # Parse output for "Found UserID: XXXXX"
+                        match = re.search(r"Found UserID:\s*(\d+)", line_str)
+                        if match:
+                            user_id = match.group(1)
+
+                if buf:
+                    line_str = buf.decode("utf-8", errors="ignore").strip()
                     if line_str and progress_callback:
                         await progress_callback(line_str)
-
-                    # Parse output for "Found UserID: XXXXX"
                     match = re.search(r"Found UserID:\s*(\d+)", line_str)
                     if match:
                         user_id = match.group(1)
@@ -187,8 +214,9 @@ class SaveSigner:
                     proc.kill()
                     await proc.wait()
                 raise
-            except Exception:
-                pass
+            except Exception as e:
+                if progress_callback:
+                    await progress_callback(f"Exception running tool: {e}")
             finally:
                 if proc and proc.returncode is None:
                     proc.kill()
@@ -269,16 +297,16 @@ class SaveSigner:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd,
                     stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
                 )
 
-                stdout, stderr = await proc.communicate()
+                stdout, _ = await proc.communicate()
             except asyncio.CancelledError:
                 if proc and proc.returncode is None:
                     proc.kill()
                     await proc.wait()
                 raise
-            except Exception:
+            except Exception as e:
                 return None
             finally:
                 if proc and proc.returncode is None:

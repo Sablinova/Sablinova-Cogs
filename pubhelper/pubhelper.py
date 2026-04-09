@@ -2536,14 +2536,21 @@ class SabPubHelper(commands.Cog):
                 return
             except discord.Forbidden as e:
                 log.warning(f"Failed to send DM to {interaction.user}: {e}")
-                if fallback_channel:
+                
+                # If they have DMs closed, send it in the channel they ran the command in,
+                # or fallback to the general log channel.
+                channel_to_send = fallback_channel
+                if interaction.channel and hasattr(interaction.channel, "send"):
+                    channel_to_send = interaction.channel
+                    
+                if channel_to_send:
                     kwargs = {"content": f"{interaction.user.mention} {content}"}
                     if file and hasattr(file, "fp"):
                         file.fp.seek(0)
                     if file:
                         kwargs["file"] = file
                     try:
-                        await fallback_channel.send(**kwargs)
+                        await channel_to_send.send(**kwargs)
                     except Exception as e2:
                         log.error(f"Failed to send to fallback channel: {e2}")
             except Exception as e:
@@ -2591,6 +2598,7 @@ class SabPubHelper(commands.Cog):
         if cli_log_channel:
             progress_task = asyncio.create_task(log_updater())
 
+        success = False
         try:
             brute_task = asyncio.create_task(
                 self.save_signer.run_bruteforce(game, save_archive, progress_callback)
@@ -2659,6 +2667,7 @@ class SabPubHelper(commands.Cog):
                 f"Original ID: `{found_id}` → New ID: `{new_id}`",
                 file=zip_file
             )
+            success = True
 
         except asyncio.CancelledError:
             raise
@@ -2670,8 +2679,10 @@ class SabPubHelper(commands.Cog):
                 progress_task.cancel()
                 if cli_log_channel and log_message:
                     try:
+                        icon = "✅" if success else "❌"
+                        status_text = "finished" if success else "failed"
                         await log_message.edit(
-                            content=f"✅ **Savebrute finished for {interaction.user.name}**\nGame: {SAVE_PROFILES[game]['name']}"
+                            content=f"{icon} **Savebrute {status_text} for {interaction.user.name}**\nGame: {SAVE_PROFILES[game]['name']}"
                         )
                     except Exception:
                         pass
