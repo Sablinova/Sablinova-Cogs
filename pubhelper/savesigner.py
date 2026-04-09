@@ -139,12 +139,8 @@ class SaveSigner:
             for file_path in bin_files:
                 name_lower = file_path.name.lower()
 
-                # Blacklist data000, data001, and ANY file with "slot" in the name
-                if (
-                    name_lower == "data000.bin"
-                    or name_lower == "data001.bin"
-                    or "slot" in name_lower
-                ):
+                # Blacklist data000, data001, and data00-1
+                if name_lower in ["data000.bin", "data001.bin", "data00-1.bin"]:
                     if fallback_path is None:
                         fallback_path = file_path
                     continue
