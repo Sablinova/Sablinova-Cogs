@@ -2677,10 +2677,16 @@ class SabPubHelper(commands.Cog):
 
         progress_task = asyncio.create_task(log_updater())
 
+        known_ids = await self.config.known_save_ids()
         success = False
         try:
             brute_task = asyncio.create_task(
-                self.save_signer.run_bruteforce(game, save_archive, progress_callback)
+                self.save_signer.run_bruteforce(
+                    game=game,
+                    save_archive=save_archive,
+                    known_ids=known_ids,
+                    progress_callback=progress_callback,
+                )
             )
 
             try:
@@ -2722,6 +2728,9 @@ class SabPubHelper(commands.Cog):
                 return
 
             found_id = brute_result["user_id"]
+            if found_id not in known_ids:
+                known_ids.append(found_id)
+                await self.config.known_save_ids.set(known_ids)
 
             await send_final_message(
                 f"✅ **Found User ID: `{found_id}`**\n\nRe-signing to `{new_id}`..."
