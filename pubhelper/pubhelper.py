@@ -2537,22 +2537,32 @@ class SabPubHelper(commands.Cog):
             except discord.Forbidden as e:
                 log.warning(f"Failed to send DM to {interaction.user}: {e}")
                 
-                # If they have DMs closed, send it in the channel they ran the command in,
-                # or fallback to the general log channel.
-                channel_to_send = fallback_channel
+                # Fallback chain: command channel -> general log channel -> cli log channel
+                fallback_channels = []
                 if interaction.channel and hasattr(interaction.channel, "send"):
-                    channel_to_send = interaction.channel
+                    fallback_channels.append(interaction.channel)
+                if fallback_channel:
+                    fallback_channels.append(fallback_channel)
+                if cli_log_channel:
+                    fallback_channels.append(cli_log_channel)
                     
-                if channel_to_send:
+                sent = False
+                for ch in fallback_channels:
                     kwargs = {"content": f"{interaction.user.mention} {content}"}
                     if file and hasattr(file, "fp"):
                         file.fp.seek(0)
                     if file:
                         kwargs["file"] = file
                     try:
-                        await channel_to_send.send(**kwargs)
+                        await ch.send(**kwargs)
+                        sent = True
+                        break
                     except Exception as e2:
-                        log.error(f"Failed to send to fallback channel: {e2}")
+                        log.error(f"Failed to send to fallback channel {ch.id}: {e2}")
+                        continue
+                
+                if not sent:
+                    log.error(f"Failed to deliver savebrute results to {interaction.user} via any fallback channel.")
             except Exception as e:
                 log.error(f"Unexpected error sending DM: {e}")
 
