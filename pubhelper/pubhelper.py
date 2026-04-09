@@ -2872,7 +2872,12 @@ class SabPubHelper(commands.Cog):
 
         if resign_result is None:
             await interaction.edit_original_response(
-                content=f"❌ Re-sign failed. Make sure the archive contains valid save files."
+                content=(
+                    f"❌ **Re-sign failed!**\n\n"
+                    f"This usually means the **Original ID** (`{old_id}`) you provided is incorrect, "
+                    f"or the archive does not contain valid save files for this game.\n\n"
+                    f"💡 *If you don't know the exact original Steam ID that created these saves, please use the `/savebrute` command instead!*"
+                )
             )
             return
 
