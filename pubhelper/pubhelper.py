@@ -2095,6 +2095,27 @@ class SabPubHelper(commands.Cog):
             f"**Game Profiles:**\n" + "\n".join(profile_list)
         )
 
+    @pubhelper.command(name="cancelbrute")
+    async def admin_cancelbrute(
+        self, ctx: commands.Context, user: discord.Member
+    ) -> None:
+        """Cancel a specific user's active savebrute task.
+
+        **Usage:**
+        `[p]pubhelper cancelbrute <user>`
+        """
+        task = getattr(self, "active_brutes", {}).get(user.id)
+        if task and not task.done():
+            task.cancel()
+            self.active_brutes.pop(user.id, None)
+            await ctx.send(
+                f"🛑 Successfully cancelled savebrute task for **{user.display_name}**."
+            )
+        else:
+            await ctx.send(
+                f"❌ **{user.display_name}** doesn't have any active savebrute tasks running."
+            )
+
     @pubhelper.command(name="updateexe")
     async def update_exe(self, ctx: commands.Context, exe_link: str) -> None:
         """Update start_game.exe in all basefiles.
@@ -2490,7 +2511,10 @@ class SabPubHelper(commands.Cog):
         if interaction.user.id in getattr(self, "active_brutes", {}):
             task = self.active_brutes[interaction.user.id]
             if not task.done():
-                await interaction.followup.send("❌ You already have a savebrute running. Use `/cancelbrute` to stop it first.", ephemeral=True)
+                await interaction.followup.send(
+                    "❌ You already have a savebrute running. Use `/cancelbrute` to stop it first.",
+                    ephemeral=True,
+                )
                 return
 
         # Send initial message
@@ -2518,10 +2542,14 @@ class SabPubHelper(commands.Cog):
         max_timeout = 7200  # 120 minutes
 
         log_channel_id = await self.config.log_channel()
-        fallback_channel = self.bot.get_channel(log_channel_id) if log_channel_id else None
+        fallback_channel = (
+            self.bot.get_channel(log_channel_id) if log_channel_id else None
+        )
 
         cli_log_channel_id = await self.config.cli_log_channel()
-        cli_log_channel = self.bot.get_channel(cli_log_channel_id) if cli_log_channel_id else None
+        cli_log_channel = (
+            self.bot.get_channel(cli_log_channel_id) if cli_log_channel_id else None
+        )
 
         async def send_final_message(content, file=None):
             elapsed = asyncio.get_event_loop().time() - start_time
@@ -2544,7 +2572,7 @@ class SabPubHelper(commands.Cog):
                 return
             except discord.Forbidden as e:
                 log.warning(f"Failed to send DM to {interaction.user}: {e}")
-                
+
                 # Fallback chain: command channel -> general log channel -> cli log channel
                 fallback_channels = []
                 if interaction.channel and hasattr(interaction.channel, "send"):
@@ -2553,7 +2581,7 @@ class SabPubHelper(commands.Cog):
                     fallback_channels.append(fallback_channel)
                 if cli_log_channel:
                     fallback_channels.append(cli_log_channel)
-                    
+
                 sent = False
                 for ch in fallback_channels:
                     kwargs = {"content": f"{interaction.user.mention} {content}"}
@@ -2568,9 +2596,11 @@ class SabPubHelper(commands.Cog):
                     except Exception as e2:
                         log.error(f"Failed to send to fallback channel {ch.id}: {e2}")
                         continue
-                
+
                 if not sent:
-                    log.error(f"Failed to deliver savebrute results to {interaction.user} via any fallback channel.")
+                    log.error(
+                        f"Failed to deliver savebrute results to {interaction.user} via any fallback channel."
+                    )
             except Exception as e:
                 log.error(f"Unexpected error sending DM: {e}")
 
@@ -2592,6 +2622,7 @@ class SabPubHelper(commands.Cog):
                 cli_log_channel = None
 
         log_buffer = []
+
         async def log_updater():
             while True:
                 try:
@@ -2683,7 +2714,7 @@ class SabPubHelper(commands.Cog):
                 f"✅ **Savebrute Complete!**\n\n"
                 f"Game: {SAVE_PROFILES[game]['name']}\n"
                 f"Original ID: `{found_id}` → New ID: `{new_id}`",
-                file=zip_file
+                file=zip_file,
             )
             success = True
 
@@ -2693,16 +2724,23 @@ class SabPubHelper(commands.Cog):
             log.error(f"Savebrute error: {e}", exc_info=True)
             await send_final_message(f"❌ **Error**: {str(e)}")
         finally:
-            if getattr(self, "active_brutes", {}).get(interaction.user.id) == asyncio.current_task():
+            if (
+                getattr(self, "active_brutes", {}).get(interaction.user.id)
+                == asyncio.current_task()
+            ):
                 self.active_brutes.pop(interaction.user.id, None)
-            
+
             if progress_task:
                 progress_task.cancel()
                 if cli_log_channel and log_message:
                     try:
                         icon = "✅" if success else "❌"
                         status_text = "finished" if success else "failed"
-                        final_logs = "\n".join(log_buffer[-10:]) if log_buffer else "No logs produced."
+                        final_logs = (
+                            "\n".join(log_buffer[-10:])
+                            if log_buffer
+                            else "No logs produced."
+                        )
                         await log_message.edit(
                             content=f"{icon} **Savebrute {status_text} for {interaction.user.name}**\nGame: {SAVE_PROFILES[game]['name']}\n```\n{final_logs}\n```"
                         )
@@ -2720,12 +2758,11 @@ class SabPubHelper(commands.Cog):
             self.active_brutes.pop(interaction.user.id, None)
             await interaction.response.send_message(
                 "🛑 Successfully sent cancellation signal to your savebrute task. It will stop shortly.",
-                ephemeral=True
+                ephemeral=True,
             )
         else:
             await interaction.response.send_message(
-                "❌ You don't have any active savebrute tasks running.",
-                ephemeral=True
+                "❌ You don't have any active savebrute tasks running.", ephemeral=True
             )
 
     @app_commands.command(
