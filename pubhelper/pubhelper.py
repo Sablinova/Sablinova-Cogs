@@ -8,6 +8,7 @@ import asyncio
 import io
 import logging
 import os
+import shutil
 import tempfile
 import zipfile
 from pathlib import Path
@@ -20,6 +21,8 @@ from discord import app_commands
 from redbot.core import Config, commands
 from redbot.core.bot import Red
 from redbot.core.data_manager import cog_data_path
+
+from .savesigner import SAVE_PROFILES, SaveSigner
 
 log = logging.getLogger("red.sablinova.pubhelper")
 
@@ -46,6 +49,42 @@ DEFAULT_PROFILES = {
         "install_path": "Crimson Desert/bin64/",
     },
 }
+
+# MandarinJuice save signing profiles
+SAVE_PROFILES = {
+    "re9": {
+        "name": "Resident Evil 9 Requiem",
+        "profile": "Resident Evil 9 Requiem v1.bin",
+    },
+    "dd2": {
+        "name": "Dragon's Dogma 2",
+        "profile": "Dragon's Dogma 2 v1.bin",
+    },
+    "mhwilds": {
+        "name": "Monster Hunter Wilds",
+        "profile": "Monster Hunter Wilds v1.bin",
+    },
+    "kunitsu": {
+        "name": "Kunitsu-Gami Path of the Goddess",
+        "profile": "Kunitsu-Gami Path of the Goddess v1.bin",
+    },
+    "deadrising": {
+        "name": "Dead Rising Deluxe Remaster",
+        "profile": "Dead Rising Deluxe Remaster v1.bin",
+    },
+    "mhstories3": {
+        "name": "Monster Hunter Stories 3 Twisted Reflection",
+        "profile": "Monster Hunter Stories 3 Twisted Reflection v1.bin",
+    },
+    "megaman": {
+        "name": "Mega Man Star Force Legacy Collection",
+        "profile": "Mega Man Star Force Legacy Collection v1.bin",
+    },
+}
+
+# Bruteforce timeouts
+BRUTEFORCE_INLINE_TIMEOUT = 840  # 14 minutes - switch to DM mode
+BRUTEFORCE_MAX_TIMEOUT = 3600  # 60 minutes - give up
 
 
 def _extract_filename_from_url(url: str) -> str | None:
@@ -346,8 +385,10 @@ class SabPubHelper(commands.Cog):
             ),
             base_instructions_image="https://cdn.discordapp.com/attachments/1483155606545367040/1486841498904563782/image.png",
             log_channel=None,  # Channel ID for logging command usage
+            cli_log_channel=None,  # Channel ID for live CLI progress logs
         )
         self.data_path = cog_data_path(self)
+        self.save_signer = SaveSigner(self.data_path)
 
     def _get_basefiles_path(self, game: str, fmt: str = "7z") -> Path:
         """Get the basefiles path for a game profile."""
@@ -424,6 +465,21 @@ class SabPubHelper(commands.Cog):
     async def pubhelper(self, ctx: commands.Context) -> None:
         """PubHelper configuration commands."""
         pass
+
+    @pubhelper.command(name="setclilog")
+    async def set_cli_log_channel(
+        self, ctx: commands.Context, channel: discord.TextChannel = None
+    ) -> None:
+        """Set the channel for live CLI progress logs (e.g. savebrute).
+
+        Leave blank to disable logging.
+        """
+        if channel:
+            await self.config.cli_log_channel.set(channel.id)
+            await ctx.send(f"CLI progress logs will now be sent to {channel.mention}.")
+        else:
+            await self.config.cli_log_channel.set(None)
+            await ctx.send("CLI progress logging has been disabled.")
 
     @pubhelper.command(name="setup")
     async def setup_interactive(self, ctx: commands.Context) -> None:
@@ -1922,6 +1978,245 @@ class SabPubHelper(commands.Cog):
 
         await ctx.send(embed=embed)
 
+    @pubhelper.command(name="setuptool")
+    @commands.is_owner()
+    async def setuptool(self, ctx: commands.Context) -> None:
+        """Download and install MandarinJuice CLI and game profiles."""
+        await ctx.send("⏳ Downloading MandarinJuice CLI and profiles from GitHub...")
+
+        tools_dir = self.data_path / "tools"
+        profiles_dir = tools_dir / "profiles"
+        tools_dir.mkdir(parents=True, exist_ok=True)
+        profiles_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                # Download Linux CLI binary
+                async with session.get(
+                    "https://github.com/mi5hmash/MandarinJuice/releases/download/v1.1.0/linux-x64_v1.1.0.zip",
+                    timeout=aiohttp.ClientTimeout(total=120),
+                ) as resp:
+                    if resp.status != 200:
+                        await ctx.send(f"❌ Failed to download CLI: HTTP {resp.status}")
+                        return
+                    cli_zip = await resp.read()
+
+                # Download profiles
+                async with session.get(
+                    "https://github.com/mi5hmash/MandarinJuice/releases/download/v1.1.0/_profiles.zip",
+                    timeout=aiohttp.ClientTimeout(total=120),
+                ) as resp:
+                    if resp.status != 200:
+                        await ctx.send(
+                            f"❌ Failed to download profiles: HTTP {resp.status}"
+                        )
+                        return
+                    profiles_zip = await resp.read()
+
+            # Extract CLI
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmpdir_path = Path(tmpdir)
+                cli_zip_path = tmpdir_path / "cli.zip"
+                cli_zip_path.write_bytes(cli_zip)
+
+                with zipfile.ZipFile(cli_zip_path, "r") as zf:
+                    zf.extractall(tmpdir_path / "cli")
+
+                # Find the CLI binary in extracted files
+                cli_binary = None
+                for file in (tmpdir_path / "cli").rglob("mandarin-juice-cli"):
+                    if file.is_file():
+                        cli_binary = file
+                        break
+
+                if not cli_binary:
+                    await ctx.send("❌ Could not find CLI binary in archive")
+                    return
+
+                # Copy CLI to tools directory
+                target_cli = tools_dir / "mandarin-juice-cli"
+                shutil.copy(cli_binary, target_cli)
+                target_cli.chmod(0o755)  # Make executable
+
+            # Extract profiles
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmpdir_path = Path(tmpdir)
+                profiles_zip_path = tmpdir_path / "profiles.zip"
+                profiles_zip_path.write_bytes(profiles_zip)
+
+                with zipfile.ZipFile(profiles_zip_path, "r") as zf:
+                    zf.extractall(tmpdir_path / "profiles")
+
+                # Find the _profiles directory and copy contents
+                for item in (tmpdir_path / "profiles").rglob("*.bin"):
+                    shutil.copy(item, profiles_dir / item.name)
+
+            # Verify installation
+            available_profiles = self.save_signer.get_available_profiles()
+            profile_list = (
+                ", ".join(available_profiles) if available_profiles else "None"
+            )
+
+            await ctx.send(
+                f"✅ **MandarinJuice CLI installed successfully!**\n\n"
+                f"CLI: `{target_cli}`\n"
+                f"Profiles: `{profiles_dir}`\n"
+                f"Available games: {profile_list}"
+            )
+
+        except Exception as e:
+            log.error(f"setuptool error: {e}", exc_info=True)
+            await ctx.send(f"❌ Installation failed: {str(e)}")
+
+    @pubhelper.command(name="toolstatus")
+    async def toolstatus(self, ctx: commands.Context) -> None:
+        """Check MandarinJuice CLI installation status."""
+        tool_path = self.save_signer.get_tool_path()
+        available_profiles = self.save_signer.get_available_profiles()
+
+        if not tool_path:
+            await ctx.send(
+                "❌ **MandarinJuice CLI not installed**\n\n"
+                "Run `[p]pubhelper setuptool` to install."
+            )
+            return
+
+        profile_list = []
+        for game_id in SAVE_PROFILES:
+            profile_path = self.save_signer.get_profile_path(game_id)
+            status = "✅" if profile_path else "❌"
+            profile_list.append(
+                f"{status} **{game_id}**: {SAVE_PROFILES[game_id]['name']}"
+            )
+
+        await ctx.send(
+            f"✅ **MandarinJuice CLI Installed**\n\n"
+            f"**Game Profiles:**\n" + "\n".join(profile_list)
+        )
+
+    @pubhelper.command(name="updateexe")
+    async def update_exe(self, ctx: commands.Context, exe_link: str) -> None:
+        """Update start_game.exe in all basefiles.
+
+        Downloads the exe and updates it in all configured game basefiles,
+        renaming it appropriately for each game (start_re9.exe, start_cd.exe, etc.).
+
+        Args:
+            exe_link: Direct download link to the new start_game.exe
+        """
+        msg = await ctx.send("⏳ Downloading exe...")
+
+        try:
+            # Download the exe
+            download_result = await self._download_file(exe_link)
+            if isinstance(download_result, str):
+                await msg.edit(content=f"❌ Download failed: {download_result}")
+                return
+
+            exe_data = download_result
+
+            # Get all configured profiles
+            profiles = await self.config.profiles()
+            updated_games = []
+            failed_games = []
+            skipped_games = []
+
+            await msg.edit(content="⏳ Updating basefiles...")
+
+            for game_id, profile in profiles.items():
+                # Skip if basefiles not set
+                if not profile.get("basefiles_set", False):
+                    skipped_games.append(f"{game_id} (no basefiles)")
+                    continue
+
+                basefiles_path = self._find_basefiles_path(game_id)
+                if not basefiles_path or not basefiles_path.exists():
+                    skipped_games.append(f"{game_id} (basefiles missing)")
+                    continue
+
+                try:
+                    # Get old file size
+                    old_size_mb = basefiles_path.stat().st_size / (1024 * 1024)
+
+                    # Determine the target exe name
+                    new_exe_name = f"start_{game_id}.exe"
+                    fmt = basefiles_path.suffix.lstrip(".")
+
+                    # Create a temporary directory for processing
+                    with tempfile.TemporaryDirectory() as temp_dir:
+                        temp_path = Path(temp_dir)
+                        extract_path = temp_path / "extracted"
+                        extract_path.mkdir()
+
+                        # Extract basefiles
+                        if fmt == "7z":
+                            with py7zr.SevenZipFile(basefiles_path, "r") as z:
+                                z.extractall(extract_path)
+                        else:
+                            with zipfile.ZipFile(basefiles_path, "r") as z:
+                                z.extractall(extract_path)
+
+                        # Find and replace any existing start_*.exe files (case-insensitive)
+                        exe_found = False
+                        for exe_file in extract_path.rglob("*.exe"):
+                            if exe_file.name.lower().startswith("start_"):
+                                exe_file.unlink()  # Remove old exe
+                                exe_found = True
+
+                        # Write new exe with game-specific name
+                        # Place it in the root of extracted files
+                        new_exe_path = extract_path / new_exe_name
+                        with open(new_exe_path, "wb") as f:
+                            f.write(exe_data)
+
+                        # Repackage the basefiles
+                        if fmt == "7z":
+                            with py7zr.SevenZipFile(basefiles_path, "w") as z:
+                                for item in extract_path.rglob("*"):
+                                    if item.is_file():
+                                        arcname = item.relative_to(extract_path)
+                                        z.write(item, arcname)
+                        else:
+                            with zipfile.ZipFile(
+                                basefiles_path, "w", zipfile.ZIP_DEFLATED
+                            ) as z:
+                                for item in extract_path.rglob("*"):
+                                    if item.is_file():
+                                        arcname = item.relative_to(extract_path)
+                                        z.write(item, arcname)
+
+                        # Get new file size
+                        new_size_mb = basefiles_path.stat().st_size / (1024 * 1024)
+                        size_diff = new_size_mb - old_size_mb
+                        size_sign = "+" if size_diff > 0 else ""
+
+                        updated_games.append(
+                            f"✅ {game_id} → `{new_exe_name}` "
+                            f"({old_size_mb:.1f} MB → {new_size_mb:.1f} MB, {size_sign}{size_diff:.1f} MB)"
+                        )
+
+                except Exception as e:
+                    failed_games.append(f"❌ {game_id}: {str(e)}")
+                    log.exception(f"Failed to update exe in {game_id} basefiles")
+
+            # Build result message
+            result_parts = []
+            if updated_games:
+                result_parts.append("**Updated:**\n" + "\n".join(updated_games))
+            if failed_games:
+                result_parts.append("\n**Failed:**\n" + "\n".join(failed_games))
+            if skipped_games:
+                result_parts.append("\n**Skipped:**\n" + "\n".join(skipped_games))
+
+            if not result_parts:
+                await msg.edit(content="⚠️ No games to update (no basefiles configured)")
+            else:
+                await msg.edit(content="\n".join(result_parts))
+
+        except Exception as e:
+            await msg.edit(content=f"❌ Error: {str(e)}")
+            log.exception("Error in update_exe command")
+
     async def _process_command(
         self, interaction: discord.Interaction, url: str, game: str
     ) -> None:
@@ -2146,6 +2441,320 @@ class SabPubHelper(commands.Cog):
     async def cdcc(self, interaction: discord.Interaction, url: str) -> None:
         """Combine user config with CD basefiles."""
         await self._process_command(interaction, url, "cd")
+
+    @app_commands.command(
+        name="savebrute",
+        description="Bruteforce save User ID and re-sign to your Steam ID",
+    )
+    @app_commands.describe(
+        game="Select game",
+        new_id="Your Steam ID to sign saves to",
+        link="URL to save archive (zip/7z)",
+    )
+    @app_commands.choices(
+        game=[
+            app_commands.Choice(name=profile["name"], value=game_id)
+            for game_id, profile in SAVE_PROFILES.items()
+        ]
+    )
+    async def savebrute(
+        self, interaction: discord.Interaction, game: str, new_id: str, link: str
+    ) -> None:
+        """Bruteforce User ID from save and re-sign to new ID."""
+        await interaction.response.defer(thinking=True)
+
+        # Check if tool is installed
+        if not self.save_signer.is_tool_installed():
+            await interaction.followup.send(
+                "❌ MandarinJuice CLI is not installed. Please ask an admin to run `[p]pubhelper setuptool`",
+                ephemeral=True,
+            )
+            return
+
+        # Check if profile exists
+        if not self.save_signer.get_profile_path(game):
+            await interaction.followup.send(
+                f"❌ Game profile for {game} not found.", ephemeral=True
+            )
+            return
+
+        # Download archive
+        result = await self._download_file(link)
+        if isinstance(result, str):
+            await interaction.followup.send(f"❌ Download failed: {result}")
+            return
+
+        save_archive = result
+
+        # Send initial message
+        await interaction.followup.send(
+            f"⏳ Bruteforcing User ID for **{SAVE_PROFILES[game]['name']}**...\n"
+            f"_This may take 1-2 hours for large Steam saves. I'll update you when done!_"
+        )
+
+        # Create background task with timeout
+        task = asyncio.create_task(
+            self._savebrute_task(interaction, game, new_id, save_archive)
+        )
+
+    async def _savebrute_task(
+        self,
+        interaction: discord.Interaction,
+        game: str,
+        new_id: str,
+        save_archive: bytes,
+    ):
+        """Background task for savebrute with timeout handling."""
+        start_time = asyncio.get_event_loop().time()
+        inline_timeout = 840  # 14 minutes
+        max_timeout = 7200  # 120 minutes
+
+        log_channel_id = await self.config.log_channel()
+        fallback_channel = self.bot.get_channel(log_channel_id) if log_channel_id else None
+
+        cli_log_channel_id = await self.config.cli_log_channel()
+        cli_log_channel = self.bot.get_channel(cli_log_channel_id) if cli_log_channel_id else None
+
+        async def send_final_message(content, file=None):
+            elapsed = asyncio.get_event_loop().time() - start_time
+            if elapsed < inline_timeout:
+                try:
+                    kwargs = {"content": content}
+                    if file:
+                        kwargs["attachments"] = [file]
+                    await interaction.edit_original_response(**kwargs)
+                    return
+                except Exception as e:
+                    log.warning(f"Failed to edit original response: {e}")
+
+            # Interaction expired or failed, try DM
+            try:
+                kwargs = {"content": content}
+                if file:
+                    kwargs["file"] = file
+                await interaction.user.send(**kwargs)
+                return
+            except discord.Forbidden as e:
+                log.warning(f"Failed to send DM to {interaction.user}: {e}")
+                if fallback_channel:
+                    kwargs = {"content": f"{interaction.user.mention} {content}"}
+                    if file and hasattr(file, "fp"):
+                        file.fp.seek(0)
+                    if file:
+                        kwargs["file"] = file
+                    try:
+                        await fallback_channel.send(**kwargs)
+                    except Exception as e2:
+                        log.error(f"Failed to send to fallback channel: {e2}")
+            except Exception as e:
+                log.error(f"Unexpected error sending DM: {e}")
+
+        log_queue = asyncio.Queue()
+
+        async def progress_callback(line: str):
+            await log_queue.put(line)
+
+        progress_task = None
+        log_message = None
+
+        if cli_log_channel:
+            try:
+                log_message = await cli_log_channel.send(
+                    f"🔄 **Savebrute started for {interaction.user.name}**\nGame: {SAVE_PROFILES[game]['name']}\n```\nWaiting for logs...\n```"
+                )
+            except Exception as e:
+                log.error(f"Failed to send initial log message: {e}")
+                cli_log_channel = None
+
+        async def log_updater():
+            buffer = []
+            while True:
+                try:
+                    line = await asyncio.wait_for(log_queue.get(), timeout=15.0)
+                    buffer.append(line)
+                    while not log_queue.empty():
+                        buffer.append(log_queue.get_nowait())
+                except asyncio.TimeoutError:
+                    pass
+                except asyncio.CancelledError:
+                    break
+
+                if buffer and cli_log_channel and log_message:
+                    log_text = "\n".join(buffer[-10:])
+                    try:
+                        await log_message.edit(
+                            content=f"🔄 **Savebrute running for {interaction.user.name}**\nGame: {SAVE_PROFILES[game]['name']}\n```\n{log_text}\n```"
+                        )
+                    except Exception as e:
+                        log.warning(f"Failed to update log message: {e}")
+
+        if cli_log_channel:
+            progress_task = asyncio.create_task(log_updater())
+
+        try:
+            brute_task = asyncio.create_task(
+                self.save_signer.run_bruteforce(game, save_archive, progress_callback)
+            )
+
+            try:
+                brute_result = await asyncio.wait_for(
+                    brute_task, timeout=inline_timeout
+                )
+            except asyncio.TimeoutError:
+                try:
+                    await interaction.edit_original_response(
+                        content=(
+                            f"⏳ Still bruteforcing **{SAVE_PROFILES[game]['name']}**...\n"
+                            f"_This can take up to 2 hours for Steam saves. I will DM you the files when done!_"
+                        )
+                    )
+                except Exception:
+                    pass
+
+                remaining_time = max_timeout - inline_timeout
+                try:
+                    brute_result = await asyncio.wait_for(
+                        brute_task, timeout=remaining_time
+                    )
+                except asyncio.TimeoutError:
+                    brute_task.cancel()
+                    await send_final_message(
+                        f"❌ **Savebrute Timed Out**\n\n"
+                        f"Game: {SAVE_PROFILES[game]['name']}\n"
+                        f"Bruteforce exceeded 120 minutes. This appears to be a very large Steam save.\n"
+                        f"Please find your Steam64 ID manually and use `/savesign` instead."
+                    )
+                    return
+
+            if brute_result is None:
+                await send_final_message(
+                    f"❌ **Bruteforce Failed**\n\n"
+                    f"Game: {SAVE_PROFILES[game]['name']}\n"
+                    f"Could not find User ID. Make sure the archive contains save files."
+                )
+                return
+
+            found_id = brute_result["user_id"]
+
+            await send_final_message(
+                f"✅ **Found User ID: `{found_id}`**\n\nRe-signing to `{new_id}`..."
+            )
+
+            resign_result = await self.save_signer.run_resign(
+                game, save_archive, found_id, new_id
+            )
+
+            if resign_result is None:
+                await send_final_message(
+                    f"❌ **Re-sign Failed**\n\nFound ID: `{found_id}`\nCould not re-sign saves."
+                )
+                return
+
+            zip_file = discord.File(
+                io.BytesIO(resign_result), filename=f"{game}_resigned.zip"
+            )
+            await send_final_message(
+                f"✅ **Savebrute Complete!**\n\n"
+                f"Game: {SAVE_PROFILES[game]['name']}\n"
+                f"Original ID: `{found_id}` → New ID: `{new_id}`",
+                file=zip_file
+            )
+
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.error(f"Savebrute error: {e}", exc_info=True)
+            await send_final_message(f"❌ **Error**: {str(e)}")
+        finally:
+            if progress_task:
+                progress_task.cancel()
+                if cli_log_channel and log_message:
+                    try:
+                        await log_message.edit(
+                            content=f"✅ **Savebrute finished for {interaction.user.name}**\nGame: {SAVE_PROFILES[game]['name']}"
+                        )
+                    except Exception:
+                        pass
+
+    @app_commands.command(
+        name="savesign",
+        description="Re-sign save files to a new Steam ID",
+    )
+    @app_commands.describe(
+        game="Select game",
+        old_id="Original User ID",
+        new_id="Your Steam ID to sign saves to",
+        link="URL to save archive (zip/7z)",
+    )
+    @app_commands.choices(
+        game=[
+            app_commands.Choice(name=profile["name"], value=game_id)
+            for game_id, profile in SAVE_PROFILES.items()
+        ]
+    )
+    async def savesign(
+        self,
+        interaction: discord.Interaction,
+        game: str,
+        old_id: str,
+        new_id: str,
+        link: str,
+    ) -> None:
+        """Re-sign save files to a new User ID."""
+        await interaction.response.defer(thinking=True)
+
+        # Check if tool is installed
+        if not self.save_signer.is_tool_installed():
+            await interaction.followup.send(
+                "❌ MandarinJuice CLI is not installed. Please ask an admin to run `[p]pubhelper setuptool`",
+                ephemeral=True,
+            )
+            return
+
+        # Check if profile exists
+        if not self.save_signer.get_profile_path(game):
+            await interaction.followup.send(
+                f"❌ Game profile for {game} not found.", ephemeral=True
+            )
+            return
+
+        # Download archive
+        result = await self._download_file(link)
+        if isinstance(result, str):
+            await interaction.followup.send(f"❌ Download failed: {result}")
+            return
+
+        save_archive = result
+
+        # Send initial message
+        await interaction.followup.send(
+            f"⏳ Re-signing saves for **{SAVE_PROFILES[game]['name']}**..."
+        )
+
+        # Run re-sign
+        resign_result = await self.save_signer.run_resign(
+            game, save_archive, old_id, new_id
+        )
+
+        if resign_result is None:
+            await interaction.edit_original_response(
+                content=f"❌ Re-sign failed. Make sure the archive contains valid save files."
+            )
+            return
+
+        # Success - send zip
+        success_msg = (
+            f"✅ **Re-sign Complete!**\n\n"
+            f"Game: {SAVE_PROFILES[game]['name']}\n"
+            f"Original ID: `{old_id}` → New ID: `{new_id}`"
+        )
+        zip_file = discord.File(
+            io.BytesIO(resign_result), filename=f"{game}_resigned.zip"
+        )
+
+        await interaction.edit_original_response(
+            content=success_msg, attachments=[zip_file]
+        )
 
     async def _download_file(self, url: str) -> bytes | str:
         """Download file from URL. Returns bytes on success, error string on failure."""
