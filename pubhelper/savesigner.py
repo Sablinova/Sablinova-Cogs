@@ -91,7 +91,11 @@ class SaveSigner:
         return available
 
     async def run_bruteforce(
-        self, game: str, save_archive: bytes, progress_callback=None
+        self,
+        game: str,
+        save_archive: bytes,
+        known_ids: list[str] | None = None,
+        progress_callback=None,
     ) -> dict | None:
         """
         Run bruteforce to find User ID.
@@ -99,6 +103,7 @@ class SaveSigner:
         Args:
             game: Game profile ID (e.g., "re9")
             save_archive: Archive file contents (zip or 7z)
+            known_ids: Optional list of known save IDs to test first
             progress_callback: Optional async function to call with stdout lines
 
         Returns:
@@ -176,6 +181,9 @@ class SaveSigner:
                 "-p",
                 str(input_dir),
             ]
+
+            if known_ids:
+                cmd.extend(["-u", ",".join(known_ids)])
 
             proc = None
             try:

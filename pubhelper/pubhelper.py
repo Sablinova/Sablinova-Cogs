@@ -386,6 +386,7 @@ class SabPubHelper(commands.Cog):
             base_instructions_image="https://cdn.discordapp.com/attachments/1483155606545367040/1486841498904563782/image.png",
             log_channel=None,  # Channel ID for logging command usage
             cli_log_channel=None,  # Channel ID for live CLI progress logs
+            known_save_ids=[],
         )
         self.data_path = cog_data_path(self)
         self.save_signer = SaveSigner(self.data_path)
