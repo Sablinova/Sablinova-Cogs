@@ -2633,8 +2633,12 @@ class SabPubHelper(commands.Cog):
                     else:
                         await send_fn(**send_kwargs)
                     return True
-                except discord.HTTPException:
-                    pass
+                except discord.HTTPException as e:
+                    log.warning(
+                        "Discord file upload failed (%s %s), falling back to AnonDrop",
+                        e.status,
+                        e.code,
+                    )
                 # AnonDrop fallback
                 if data and fname:
                     anon_url = await self.save_signer.upload_to_anondrop(data, fname)
@@ -3017,7 +3021,12 @@ class SabPubHelper(commands.Cog):
             await interaction.followup.send(
                 file=discord.File(io.BytesIO(resign_result), filename=zip_filename)
             )
-        except discord.HTTPException:
+        except discord.HTTPException as e:
+            log.warning(
+                "Discord file upload failed (%s %s), falling back to AnonDrop",
+                e.status,
+                e.code,
+            )
             # File too large for Discord — upload to AnonDrop and send link
             anon_url = await self.save_signer.upload_to_anondrop(
                 resign_result, zip_filename
