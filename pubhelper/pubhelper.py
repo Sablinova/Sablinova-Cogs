@@ -2616,27 +2616,67 @@ class SabPubHelper(commands.Cog):
             self.bot.get_channel(cli_log_channel_id) if cli_log_channel_id else None
         )
 
-        async def send_final_message(content, file=None):
+        async def send_final_message(
+            content, file=None, anon_filename=None, anon_data=None
+        ):
+            """Send the final result message, with Discord → AnonDrop fallback for large files."""
+
+            async def _send_file_with_fallback(
+                send_fn, send_kwargs, file_obj, data, fname
+            ):
+                """Try Discord file upload; fall back to AnonDrop on 413."""
+                try:
+                    if file_obj:
+                        if hasattr(file_obj, "fp"):
+                            file_obj.fp.seek(0)
+                        await send_fn(**send_kwargs, file=file_obj)
+                    else:
+                        await send_fn(**send_kwargs)
+                    return True
+                except discord.HTTPException:
+                    pass
+                # AnonDrop fallback
+                if data and fname:
+                    anon_url = await self.save_signer.upload_to_anondrop(data, fname)
+                    if anon_url:
+                        send_kwargs["content"] = send_kwargs.get("content", "") + (
+                            f"\n_(File too large for Discord — uploaded to AnonDrop instead)_\n{anon_url}"
+                        )
+                    else:
+                        send_kwargs["content"] = send_kwargs.get("content", "") + (
+                            "\n❌ File was too large for Discord and AnonDrop upload also failed."
+                        )
+                    await send_fn(**send_kwargs)
+                return False
+
             elapsed = asyncio.get_event_loop().time() - start_time
             if elapsed < inline_timeout:
                 try:
-                    # Always update the text via edit; send file separately via followup
-                    # to avoid the 8MB Discord limit on edit_original_response attachments
                     await interaction.edit_original_response(content=content)
                     if file:
-                        await interaction.followup.send(file=file)
+                        await _send_file_with_fallback(
+                            interaction.followup.send,
+                            {},
+                            file,
+                            anon_data,
+                            anon_filename,
+                        )
                     return
                 except Exception as e:
                     log.warning(f"Failed to edit original response: {e}")
 
             # Interaction expired or failed, try DM
             try:
-                kwargs = {"content": content}
                 if file:
                     if hasattr(file, "fp"):
                         file.fp.seek(0)
-                    kwargs["file"] = file
-                await interaction.user.send(**kwargs)
+                await _send_file_with_fallback(
+                    interaction.user.send,
+                    {"content": content},
+                    file,
+                    anon_data,
+                    anon_filename,
+                )
                 return
             except (discord.Forbidden, discord.HTTPException) as e:
                 log.warning(f"Failed to send DM to {interaction.user}: {e}")
@@ -2652,13 +2692,17 @@ class SabPubHelper(commands.Cog):
 
                 sent = False
                 for ch in fallback_channels:
-                    kwargs = {"content": f"{interaction.user.mention} {content}"}
+                    mention_content = f"{interaction.user.mention} {content}"
                     if file and hasattr(file, "fp"):
                         file.fp.seek(0)
-                    if file:
-                        kwargs["file"] = file
                     try:
-                        await ch.send(**kwargs)
+                        await _send_file_with_fallback(
+                            ch.send,
+                            {"content": mention_content},
+                            file,
+                            anon_data,
+                            anon_filename,
+                        )
                         sent = True
                         break
                     except Exception as e2:
@@ -2819,14 +2863,15 @@ class SabPubHelper(commands.Cog):
                 )
                 return
 
-            zip_file = discord.File(
-                io.BytesIO(resign_result), filename=f"{game}_resigned.zip"
-            )
+            zip_filename = f"{game}_resigned.zip"
+            zip_file = discord.File(io.BytesIO(resign_result), filename=zip_filename)
             await send_final_message(
                 f"✅ **Savebrute Complete!**\n\n"
                 f"Game: {SAVE_PROFILES[game]['name']}\n"
                 f"Original ID: `{found_id}` → New ID: `{new_id}`",
                 file=zip_file,
+                anon_data=resign_result,
+                anon_filename=zip_filename,
             )
             success = True
 
@@ -2965,13 +3010,26 @@ class SabPubHelper(commands.Cog):
             f"Game: {SAVE_PROFILES[game]['name']}\n"
             f"Original ID: `{old_id}` → New ID: `{new_id}`"
         )
-        zip_file = discord.File(
-            io.BytesIO(resign_result), filename=f"{game}_resigned.zip"
-        )
+        zip_filename = f"{game}_resigned.zip"
 
-        # Use followup.send instead of edit_original_response to support files >8MB
         await interaction.edit_original_response(content=success_msg)
-        await interaction.followup.send(file=zip_file)
+        try:
+            await interaction.followup.send(
+                file=discord.File(io.BytesIO(resign_result), filename=zip_filename)
+            )
+        except discord.HTTPException:
+            # File too large for Discord — upload to AnonDrop and send link
+            anon_url = await self.save_signer.upload_to_anondrop(
+                resign_result, zip_filename
+            )
+            if anon_url:
+                await interaction.followup.send(
+                    f"_(File too large for Discord — uploaded to AnonDrop instead)_\n{anon_url}"
+                )
+            else:
+                await interaction.followup.send(
+                    "❌ File was too large for Discord and AnonDrop upload also failed."
+                )
 
     async def _download_file(self, url: str) -> bytes | str:
         """Download file from URL. Returns bytes on success, error string on failure."""

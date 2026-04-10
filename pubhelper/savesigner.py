@@ -10,8 +10,12 @@ import shutil
 import tempfile
 import zipfile
 from pathlib import Path
+from urllib.parse import urlparse
 
+import aiohttp
 import py7zr
+
+_ANONDROP_CHUNK_SIZE = 9 * 1024 * 1024  # 9 MB
 
 # MandarinJuice save signing profiles
 SAVE_PROFILES = {
@@ -386,3 +390,147 @@ class SaveSigner:
             return zip_buffer.read_bytes()
 
         return None
+
+    # ------------------------------------------------------------------
+    # AnonDrop upload helpers (fallback when zip is too large for Discord)
+    # ------------------------------------------------------------------
+
+    async def upload_to_anondrop(self, data: bytes, filename: str) -> str | None:
+        """
+        Upload bytes to AnonDrop.net and return the download URL, or None on failure.
+
+        Uses simple POST for files ≤ 8 MB, chunked upload otherwise.
+        """
+        async with aiohttp.ClientSession() as session:
+            if len(data) <= 8 * 1024 * 1024:
+                return await self._anondrop_simple_upload(session, data, filename)
+            else:
+                return await self._anondrop_chunked_upload(session, data, filename)
+
+    @staticmethod
+    async def _anondrop_register(session: aiohttp.ClientSession) -> str | None:
+        """Register on AnonDrop to get a userkey for chunked uploads."""
+        try:
+            async with session.get(
+                "https://anondrop.net/register",
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                html = await resp.text()
+                match = re.search(
+                    r"localStorage\.setItem\(['\"]userkey['\"],\s*['\"](\d+)['\"]",
+                    html,
+                )
+                if match:
+                    return match.group(1)
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _parse_anondrop_link(html: str) -> str | None:
+        """Extract the AnonDrop download URL from response HTML."""
+        match = re.search(r"(https?://anondrop\.net/\d+/[^\s\"'<>]+)", html)
+        if match:
+            return match.group(1)
+        match = re.search(r"(https?://anondrop\.net/[a-zA-Z0-9]+)", html)
+        if match:
+            link = match.group(1)
+            path = urlparse(link).path.strip("/")
+            if path and path not in (
+                "upload",
+                "register",
+                "initiateupload",
+                "uploadchunk",
+                "endupload",
+                "embed",
+            ):
+                return link
+        match = re.search(r"anondrop\.net/([a-zA-Z0-9]{6,})", html)
+        if match:
+            return f"https://anondrop.net/{match.group(1)}"
+        return None
+
+    async def _anondrop_simple_upload(
+        self,
+        session: aiohttp.ClientSession,
+        data: bytes,
+        filename: str,
+    ) -> str | None:
+        """Simple multipart POST for files ≤ 8 MB."""
+        try:
+            form = aiohttp.FormData()
+            form.add_field("file", data, filename=filename)
+            async with session.post(
+                "https://anondrop.net/upload",
+                data=form,
+                timeout=aiohttp.ClientTimeout(total=120),
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                return self._parse_anondrop_link(await resp.text())
+        except Exception:
+            return None
+
+    async def _anondrop_chunked_upload(
+        self,
+        session: aiohttp.ClientSession,
+        data: bytes,
+        filename: str,
+    ) -> str | None:
+        """Chunked upload for files > 8 MB."""
+        try:
+            userkey = await self._anondrop_register(session)
+            if not userkey:
+                return None
+
+            # Step 1: Initiate
+            async with session.get(
+                "https://anondrop.net/initiateupload",
+                params={"filename": filename, "key": userkey},
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                session_hash = (await resp.text()).strip()
+
+            if not session_hash:
+                return None
+
+            # Step 2: Upload chunks
+            total = len(data)
+            offset = 0
+            chunk_num = 0
+            while offset < total:
+                chunk = data[offset : offset + _ANONDROP_CHUNK_SIZE]
+                offset += _ANONDROP_CHUNK_SIZE
+                chunk_num += 1
+                chunk_form = aiohttp.FormData()
+                chunk_form.add_field(
+                    "file",
+                    chunk,
+                    filename=f"chunk_{chunk_num}",
+                    content_type="application/octet-stream",
+                )
+                async with session.post(
+                    "https://anondrop.net/uploadchunk",
+                    params={"session_hash": session_hash},
+                    data=chunk_form,
+                    timeout=aiohttp.ClientTimeout(total=120),
+                ) as resp:
+                    if resp.status != 200:
+                        return None
+
+            # Step 3: Finalize
+            async with session.get(
+                "https://anondrop.net/endupload",
+                params={"session_hash": session_hash},
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                return self._parse_anondrop_link(await resp.text())
+
+        except Exception:
+            return None
