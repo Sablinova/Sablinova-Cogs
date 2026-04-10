@@ -147,8 +147,6 @@ class SaveSigner:
                 extract_dir.rglob("*.bin"), key=lambda p: p.stat().st_size
             )
 
-            fallback_path = None
-
             for file_path in bin_files:
                 name_lower = file_path.name.lower()
 
@@ -161,10 +159,9 @@ class SaveSigner:
                 if name_lower == "data000.bin" and fallback_path is None:
                     fallback_path = file_path
 
-                else:
-                    # No slot file found, use fallback
-                    if fallback_path is not None:
-                        data_path = fallback_path
+            # No slot file found, use fallback
+            if not data_path and fallback_path is not None:
+                data_path = fallback_path
 
             if not data_path:
                 return None
