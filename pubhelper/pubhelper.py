@@ -476,9 +476,20 @@ class SabPubHelper(commands.Cog):
         """Context menu handler to extract and format links from a message."""
         urls = []
 
+        # Better regex to avoid trailing markdown syntax characters
+        url_pattern = re.compile(r'(https?://[^\s\)>"\'\]]+)')
+
         # Find all URLs in message text
-        text_urls = re.findall(r"(https?://[^\s]+)", message.content)
-        urls.extend(text_urls)
+        for u in url_pattern.findall(message.content):
+            if u not in urls:
+                urls.append(u)
+
+        # Find all URLs in embeds
+        for embed in message.embeds:
+            embed_text = str(embed.to_dict())
+            for u in url_pattern.findall(embed_text):
+                if u not in urls:
+                    urls.append(u)
 
         # Add URLs from attachments
         for attachment in message.attachments:
