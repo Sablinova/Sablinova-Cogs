@@ -138,9 +138,15 @@ class SaveSigner:
                 except Exception:
                     return None
 
-            # Find the first .bin file recursively (prefer files other than data000/data001)
+            # Find the best .bin file to bruteforce:
+            # Priority 1: slot files (e.g. 001Slot.bin, SaveSlot.bin)
+            # Priority 2: known data files (data000.bin, data001.bin, data00-1.bin)
+            # Priority 3: any other .bin file
             data_path = None
-            fallback_path = None
+            data_fallback = None  # data000/001/00-1.bin
+            any_fallback = None  # any other .bin
+
+            _DATA_NAMES = {"data000.bin", "data001.bin", "data00-1.bin"}
 
             # Sort files by size (smallest first)
             bin_files = sorted(
@@ -150,18 +156,22 @@ class SaveSigner:
             for file_path in bin_files:
                 name_lower = file_path.name.lower()
 
-                # Valid save file must end with "slot.bin"
+                # Priority 1: slot files
                 if name_lower.endswith("slot.bin"):
                     data_path = file_path
                     break
 
-                # Save data000.bin as fallback only
-                if name_lower == "data000.bin" and fallback_path is None:
-                    fallback_path = file_path
+                # Priority 2: known data files
+                if name_lower in _DATA_NAMES and data_fallback is None:
+                    data_fallback = file_path
+                    continue
 
-            # No slot file found, use fallback
-            if not data_path and fallback_path is not None:
-                data_path = fallback_path
+                # Priority 3: any other .bin
+                if any_fallback is None:
+                    any_fallback = file_path
+
+            if not data_path:
+                data_path = data_fallback or any_fallback
 
             if not data_path:
                 return None
