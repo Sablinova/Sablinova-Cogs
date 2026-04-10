@@ -2620,10 +2620,11 @@ class SabPubHelper(commands.Cog):
             elapsed = asyncio.get_event_loop().time() - start_time
             if elapsed < inline_timeout:
                 try:
-                    kwargs = {"content": content}
+                    # Always update the text via edit; send file separately via followup
+                    # to avoid the 8MB Discord limit on edit_original_response attachments
+                    await interaction.edit_original_response(content=content)
                     if file:
-                        kwargs["attachments"] = [file]
-                    await interaction.edit_original_response(**kwargs)
+                        await interaction.followup.send(file=file)
                     return
                 except Exception as e:
                     log.warning(f"Failed to edit original response: {e}")
@@ -2632,10 +2633,12 @@ class SabPubHelper(commands.Cog):
             try:
                 kwargs = {"content": content}
                 if file:
+                    if hasattr(file, "fp"):
+                        file.fp.seek(0)
                     kwargs["file"] = file
                 await interaction.user.send(**kwargs)
                 return
-            except discord.Forbidden as e:
+            except (discord.Forbidden, discord.HTTPException) as e:
                 log.warning(f"Failed to send DM to {interaction.user}: {e}")
 
                 # Fallback chain: command channel -> general log channel -> cli log channel
@@ -2966,9 +2969,9 @@ class SabPubHelper(commands.Cog):
             io.BytesIO(resign_result), filename=f"{game}_resigned.zip"
         )
 
-        await interaction.edit_original_response(
-            content=success_msg, attachments=[zip_file]
-        )
+        # Use followup.send instead of edit_original_response to support files >8MB
+        await interaction.edit_original_response(content=success_msg)
+        await interaction.followup.send(file=zip_file)
 
     async def _download_file(self, url: str) -> bytes | str:
         """Download file from URL. Returns bytes on success, error string on failure."""
