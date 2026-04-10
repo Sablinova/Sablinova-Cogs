@@ -38,8 +38,8 @@ def _patch_user_install(cmd) -> None:
     """
     original_to_dict = cmd.to_dict
 
-    def patched_to_dict(tree):
-        payload = original_to_dict(tree)
+    def patched_to_dict(*args, **kwargs):
+        payload = original_to_dict(*args, **kwargs)
         payload["integration_types"] = [0, 1]
         payload["contexts"] = [0, 1, 2]
         return payload

@@ -372,13 +372,13 @@ def _patch_user_install(cmd) -> None:
     """Patch a command to support user-installed apps."""
     original_to_dict = cmd.to_dict
 
-    def to_dict(self):
-        res = original_to_dict()
+    def to_dict(*args, **kwargs):
+        res = original_to_dict(*args, **kwargs)
         res["integration_types"] = [0, 1]  # Guild + User install
         res["contexts"] = [0, 1, 2]  # Guild channels, bot DMs, private channels
         return res
 
-    cmd.to_dict = to_dict.__get__(cmd, cmd.__class__)
+    cmd.to_dict = to_dict
 
 
 class SabPubHelper(commands.Cog):
