@@ -8,6 +8,7 @@ import asyncio
 import io
 import logging
 import os
+import re
 import shutil
 import tempfile
 import zipfile
@@ -367,6 +368,19 @@ class GameSelectView(discord.ui.View):
             )
 
 
+def _patch_user_install(cmd) -> None:
+    """Patch a command to support user-installed apps."""
+    original_to_dict = cmd.to_dict
+
+    def to_dict(self):
+        res = original_to_dict()
+        res["integration_types"] = [0, 1]  # Guild + User install
+        res["contexts"] = [0, 1, 2]  # Guild channels, bot DMs, private channels
+        return res
+
+    cmd.to_dict = to_dict.__get__(cmd, cmd.__class__)
+
+
 class SabPubHelper(commands.Cog):
     """Config combiner - extracts configs.user.ini and combines with basefiles."""
 
@@ -448,10 +462,49 @@ class SabPubHelper(commands.Cog):
                     profiles[game]["basefiles_format"] = fmt
                     log.info(f"Auto-detected {game} basefiles at {basefiles_path}")
 
+        # Register Copy Links context menu
+        self._copy_links_menu = app_commands.ContextMenu(
+            name="Copy Links",
+            callback=self._context_copy_links,
+        )
+        _patch_user_install(self._copy_links_menu)
+        self.bot.tree.add_command(self._copy_links_menu)
+
+    async def _context_copy_links(
+        self, interaction: discord.Interaction, message: discord.Message
+    ) -> None:
+        """Context menu handler to extract and format links from a message."""
+        urls = []
+
+        # Find all URLs in message text
+        text_urls = re.findall(r"(https?://[^\s]+)", message.content)
+        urls.extend(text_urls)
+
+        # Add URLs from attachments
+        for attachment in message.attachments:
+            if attachment.url not in urls:
+                urls.append(attachment.url)
+
+        if not urls:
+            await interaction.response.send_message(
+                "❌ No links found in this message.", ephemeral=True
+            )
+            return
+
+        formatted_links = "\n".join(urls)
+        msg_text = f"**Found Links:**\n```\n{formatted_links}\n```"
+
+        await interaction.response.send_message(msg_text, ephemeral=True)
+
     async def cog_unload(self) -> None:
         """Called when the cog is unloaded."""
         profiles = await self.config.profiles()
         builtin_games = {"re9", "cd"}
+
+        # Remove context menu
+        self.bot.tree.remove_command(
+            self._copy_links_menu.name, type=self._copy_links_menu.type
+        )
 
         # Remove dynamic slash commands
         for game_id in profiles:
