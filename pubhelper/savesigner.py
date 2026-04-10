@@ -166,9 +166,6 @@ class SaveSigner:
                     if fallback_path is not None:
                         data_path = fallback_path
 
-                        if not data_path:
-                            data_path = fallback_path
-
             if not data_path:
                 return None
 
