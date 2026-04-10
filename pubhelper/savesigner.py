@@ -5,6 +5,7 @@ Handles bruteforce and re-signing operations for RE Engine saves.
 """
 
 import asyncio
+import logging
 import re
 import shutil
 import tempfile
@@ -14,6 +15,8 @@ from urllib.parse import urlparse
 
 import aiohttp
 import py7zr
+
+log = logging.getLogger("red.sablinova.pubhelper")
 
 _ANONDROP_CHUNK_SIZE = 9 * 1024 * 1024  # 9 MB
 
@@ -401,11 +404,18 @@ class SaveSigner:
 
         Uses simple POST for files ≤ 8 MB, chunked upload otherwise.
         """
-        async with aiohttp.ClientSession() as session:
-            if len(data) <= 8 * 1024 * 1024:
-                return await self._anondrop_simple_upload(session, data, filename)
-            else:
-                return await self._anondrop_chunked_upload(session, data, filename)
+        log.info("AnonDrop: uploading %s (%d bytes)", filename, len(data))
+        try:
+            async with aiohttp.ClientSession() as session:
+                if len(data) <= 8 * 1024 * 1024:
+                    return await self._anondrop_simple_upload(session, data, filename)
+                else:
+                    return await self._anondrop_chunked_upload(session, data, filename)
+        except Exception as e:
+            log.warning(
+                "AnonDrop: unexpected error in upload_to_anondrop: %s", e, exc_info=True
+            )
+            return None
 
     @staticmethod
     async def _anondrop_register(session: aiohttp.ClientSession) -> str | None:
@@ -415,7 +425,9 @@ class SaveSigner:
                 "https://anondrop.net/register",
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as resp:
+                log.debug("AnonDrop register status: %d", resp.status)
                 if resp.status != 200:
+                    log.warning("AnonDrop register HTTP %d", resp.status)
                     return None
                 html = await resp.text()
                 match = re.search(
@@ -424,8 +436,9 @@ class SaveSigner:
                 )
                 if match:
                     return match.group(1)
-        except Exception:
-            pass
+                log.warning("AnonDrop register: no userkey in response: %s", html[:200])
+        except Exception as e:
+            log.warning("AnonDrop register error: %s", e)
         return None
 
     @staticmethod
@@ -450,6 +463,7 @@ class SaveSigner:
         match = re.search(r"anondrop\.net/([a-zA-Z0-9]{6,})", html)
         if match:
             return f"https://anondrop.net/{match.group(1)}"
+        log.warning("AnonDrop: could not parse link from response: %s", html[:300])
         return None
 
     async def _anondrop_simple_upload(
@@ -467,10 +481,13 @@ class SaveSigner:
                 data=form,
                 timeout=aiohttp.ClientTimeout(total=120),
             ) as resp:
+                log.debug("AnonDrop simple upload status: %d", resp.status)
                 if resp.status != 200:
+                    log.warning("AnonDrop simple upload HTTP %d", resp.status)
                     return None
                 return self._parse_anondrop_link(await resp.text())
-        except Exception:
+        except Exception as e:
+            log.warning("AnonDrop simple upload error: %s", e)
             return None
 
     async def _anondrop_chunked_upload(
@@ -483,6 +500,7 @@ class SaveSigner:
         try:
             userkey = await self._anondrop_register(session)
             if not userkey:
+                log.warning("AnonDrop chunked: could not get userkey")
                 return None
 
             # Step 1: Initiate
@@ -491,21 +509,28 @@ class SaveSigner:
                 params={"filename": filename, "key": userkey},
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as resp:
+                log.debug("AnonDrop initiate status: %d", resp.status)
                 if resp.status != 200:
+                    log.warning("AnonDrop initiate HTTP %d", resp.status)
                     return None
                 session_hash = (await resp.text()).strip()
 
             if not session_hash:
+                log.warning("AnonDrop: empty session hash after initiate")
                 return None
+
+            log.debug("AnonDrop session_hash: %s", session_hash)
 
             # Step 2: Upload chunks
             total = len(data)
+            total_chunks = (total + _ANONDROP_CHUNK_SIZE - 1) // _ANONDROP_CHUNK_SIZE
             offset = 0
             chunk_num = 0
             while offset < total:
                 chunk = data[offset : offset + _ANONDROP_CHUNK_SIZE]
                 offset += _ANONDROP_CHUNK_SIZE
                 chunk_num += 1
+                log.debug("AnonDrop uploading chunk %d/%d", chunk_num, total_chunks)
                 chunk_form = aiohttp.FormData()
                 chunk_form.add_field(
                     "file",
@@ -520,6 +545,12 @@ class SaveSigner:
                     timeout=aiohttp.ClientTimeout(total=120),
                 ) as resp:
                     if resp.status != 200:
+                        log.warning(
+                            "AnonDrop chunk %d/%d HTTP %d",
+                            chunk_num,
+                            total_chunks,
+                            resp.status,
+                        )
                         return None
 
             # Step 3: Finalize
@@ -528,9 +559,16 @@ class SaveSigner:
                 params={"session_hash": session_hash},
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as resp:
+                log.debug("AnonDrop endupload status: %d", resp.status)
                 if resp.status != 200:
+                    log.warning("AnonDrop endupload HTTP %d", resp.status)
                     return None
-                return self._parse_anondrop_link(await resp.text())
+                html = await resp.text()
+                link = self._parse_anondrop_link(html)
+                if link:
+                    log.info("AnonDrop upload complete: %s", link)
+                return link
 
-        except Exception:
+        except Exception as e:
+            log.warning("AnonDrop chunked upload error: %s", e, exc_info=True)
             return None
