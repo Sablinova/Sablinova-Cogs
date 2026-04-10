@@ -2641,10 +2641,27 @@ class SabPubHelper(commands.Cog):
                     )
                 # AnonDrop fallback
                 if data and fname:
-                    anon_url = await self.save_signer.upload_to_anondrop(data, fname)
+                    _nitro_note = "\n-# 💡 Non-Nitro Discord limit is 10MB. Have Nitro? The file would've been sent directly — no upload needed."
+
+                    async def _progress(percent: int):
+                        bar = "█" * (percent // 10) + "░" * (10 - percent // 10)
+                        try:
+                            await interaction.edit_original_response(
+                                content=f"{content}\n⬆️ Uploading to AnonDrop... `[{bar}] {percent}%`"
+                            )
+                        except Exception:
+                            pass
+
+                    await interaction.edit_original_response(
+                        content=f"{content}\n⬆️ Uploading to AnonDrop... `[░░░░░░░░░░] 0%`"
+                    )
+                    anon_url = await self.save_signer.upload_to_anondrop(
+                        data, fname, _progress
+                    )
                     if anon_url:
-                        send_kwargs["content"] = send_kwargs.get("content", "") + (
-                            f"\n_(File too large for Discord — uploaded to AnonDrop instead)_\n{anon_url}"
+                        send_kwargs["content"] = (
+                            send_kwargs.get("content", "")
+                            + f"\n📎 {anon_url}{_nitro_note}"
                         )
                     else:
                         send_kwargs["content"] = send_kwargs.get("content", "") + (
@@ -3027,14 +3044,26 @@ class SabPubHelper(commands.Cog):
                 e.status,
                 e.code,
             )
-            # File too large for Discord — upload to AnonDrop and send link
+            _nitro_note = "\n-# 💡 Non-Nitro Discord limit is 10MB. Have Nitro? The file would've been sent directly — no upload needed."
+
+            async def _progress(percent: int):
+                bar = "█" * (percent // 10) + "░" * (10 - percent // 10)
+                try:
+                    await interaction.edit_original_response(
+                        content=f"{success_msg}\n⬆️ Uploading to AnonDrop... `[{bar}] {percent}%`"
+                    )
+                except Exception:
+                    pass
+
+            await interaction.edit_original_response(
+                content=f"{success_msg}\n⬆️ Uploading to AnonDrop... `[░░░░░░░░░░] 0%`"
+            )
             anon_url = await self.save_signer.upload_to_anondrop(
-                resign_result, zip_filename
+                resign_result, zip_filename, _progress
             )
             if anon_url:
-                await interaction.followup.send(
-                    f"_(File too large for Discord — uploaded to AnonDrop instead)_\n{anon_url}"
-                )
+                await interaction.edit_original_response(content=success_msg)
+                await interaction.followup.send(f"📎 {anon_url}{_nitro_note}")
             else:
                 await interaction.followup.send(
                     "❌ File was too large for Discord and AnonDrop upload also failed."

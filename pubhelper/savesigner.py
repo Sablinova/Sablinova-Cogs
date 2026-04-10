@@ -398,11 +398,17 @@ class SaveSigner:
     # AnonDrop upload helpers (fallback when zip is too large for Discord)
     # ------------------------------------------------------------------
 
-    async def upload_to_anondrop(self, data: bytes, filename: str) -> str | None:
+    async def upload_to_anondrop(
+        self,
+        data: bytes,
+        filename: str,
+        progress_callback=None,
+    ) -> str | None:
         """
         Upload bytes to AnonDrop.net and return the download URL, or None on failure.
 
         Uses simple POST for files ≤ 8 MB, chunked upload otherwise.
+        progress_callback: optional async callable(percent: int) called during chunked upload.
         """
         log.info("AnonDrop: uploading %s (%d bytes)", filename, len(data))
         try:
@@ -410,7 +416,9 @@ class SaveSigner:
                 if len(data) <= 8 * 1024 * 1024:
                     return await self._anondrop_simple_upload(session, data, filename)
                 else:
-                    return await self._anondrop_chunked_upload(session, data, filename)
+                    return await self._anondrop_chunked_upload(
+                        session, data, filename, progress_callback
+                    )
         except Exception as e:
             log.warning(
                 "AnonDrop: unexpected error in upload_to_anondrop: %s", e, exc_info=True
@@ -495,6 +503,7 @@ class SaveSigner:
         session: aiohttp.ClientSession,
         data: bytes,
         filename: str,
+        progress_callback=None,
     ) -> str | None:
         """Chunked upload for files > 8 MB."""
         try:
@@ -552,6 +561,10 @@ class SaveSigner:
                             resp.status,
                         )
                         return None
+
+                if progress_callback:
+                    percent = int((chunk_num / total_chunks) * 100)
+                    await progress_callback(percent)
 
             # Step 3: Finalize
             async with session.get(
