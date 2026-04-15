@@ -2828,7 +2828,7 @@ class SabPubHelper(commands.Cog):
 
                 if brute_result == "Unsupported format":
                     await send_final_message(
-                    f"❌ **Unsupported format of zip. Please send .7z or .zip"
+                    f"❌ **Unsupported format** of zip. Please send .7z or .zip"
                 )
             except asyncio.TimeoutError:
                 try:
@@ -2891,7 +2891,7 @@ class SabPubHelper(commands.Cog):
             
             if resign_result == "Unsupported format":
                 await send_final_message(
-                    f"❌ **Unsupported format of zip. Please send .7z or .zip"
+                    f"❌ **Unsupported format** of zip. Please send .7z or .zip"
                 )
 
             zip_filename = f"{game}_resigned.zip"
