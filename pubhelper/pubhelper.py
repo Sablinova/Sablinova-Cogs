@@ -2825,11 +2825,6 @@ class SabPubHelper(commands.Cog):
                 brute_result = await asyncio.wait_for(
                     brute_task, timeout=inline_timeout
                 )
-
-                if brute_result == "Unsupported format":
-                    await send_final_message(
-                    f"❌ **Unsupported format** of zip. Please send .7z or .zip"
-                )
             except asyncio.TimeoutError:
                 try:
                     await interaction.edit_original_response(
@@ -2863,6 +2858,11 @@ class SabPubHelper(commands.Cog):
                     f"Could not find User ID. Make sure the archive contains save files."
                 )
                 return
+            
+            if brute_result == "Unsupported format":
+                await send_final_message(
+                    f"❌ **Unsupported Format**. Send .7z/.zip"
+                )
 
             found_id = brute_result["user_id"]
             updated = False
@@ -2891,7 +2891,7 @@ class SabPubHelper(commands.Cog):
             
             if resign_result == "Unsupported format":
                 await send_final_message(
-                    f"❌ **Unsupported format** of zip. Please send .7z or .zip"
+                    f"❌ **Unsupported format**. Send .7z/.zip"
                 )
 
             zip_filename = f"{game}_resigned.zip"
