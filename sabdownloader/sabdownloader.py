@@ -1,16 +1,16 @@
 import asyncio
 import ipaddress
-import json as _json
 import logging
 import os
 import re
 import shutil
+import sys
 import tempfile
 import time
 import uuid
 from functools import partial
 from typing import Callable, Dict, List, Optional, Tuple
-from urllib.parse import quote, urlparse
+from urllib.parse import urlparse
 
 import aiohttp
 import discord
@@ -541,16 +541,6 @@ def _detect_platform(url: str) -> str:
             "nitter.net": "Twitter/X (Nitter)",
             "open.spotify.com": "Spotify",
             "spotify.com": "Spotify",
-            "tidal.com": "Tidal",
-            "listen.tidal.com": "Tidal",
-            "www.deezer.com": "Deezer",
-            "deezer.com": "Deezer",
-            "deezer.page.link": "Deezer",
-            "music.apple.com": "Apple Music",
-            "music.amazon.com": "Amazon Music",
-            "www.qobuz.com": "Qobuz",
-            "play.qobuz.com": "Qobuz",
-            "open.qobuz.com": "Qobuz",
         }
         return platform_map.get(hostname, hostname or "Unknown")
     except Exception:
@@ -566,59 +556,66 @@ def _get_domain(url: str) -> str:
 
 
 def _is_spotify_url(url: str) -> bool:
-    """Check if a URL is a Spotify or supported music service link.
-
-    Supports: Spotify, Tidal, Deezer, Apple Music, Amazon Music, Qobuz.
-    Non-Spotify URLs are resolved to Spotify by the SabFLACer/SpotiFLAC
-    CLI binary. SoundCloud and YouTube Music are excluded because they
-    contain exclusive content that may not exist on Spotify, and yt-dlp
-    already handles those services.
-    """
+    """Check if a URL is a Spotify link."""
     domain = _get_domain(url)
-    return domain in (
-        "open.spotify.com",
-        "spotify.com",
-        "tidal.com",
-        "listen.tidal.com",
-        "www.deezer.com",
-        "deezer.com",
-        "deezer.page.link",
-        "music.apple.com",
-        "music.amazon.com",
-        "www.qobuz.com",
-        "play.qobuz.com",
-        "open.qobuz.com",
-    )
+    return domain in ("open.spotify.com", "spotify.com")
 
 
-# SpotiFLAC CLI binary path — headless build of afkarxyz/SpotiFLAC
-# Downloads lossless FLAC from Tidal/Amazon/Qobuz via Spotify URLs
-SPOTIFLAC_PATH = "/tmp/spotiflac_cli"
+def _get_venv_executable(cmd: str) -> str:
+    """Get the path to an executable in the same virtualenv as Python.
 
-
-def _parse_spotiflac_json(output: str) -> Optional[dict]:
-    """Extract the JSON object from SpotiFLAC CLI output.
-
-    SpotiFLAC prints progress/debug text followed by a JSON block.
-    We find the last top-level JSON object in the output.
+    Works on Linux/macOS (bin/) and Windows (Scripts/).
     """
-    # Find the last '{' that starts a JSON block and parse from there
-    # Walk backwards to find the outermost closing brace first
-    depth = 0
-    end_idx = -1
-    for i in range(len(output) - 1, -1, -1):
-        if output[i] == "}":
-            if depth == 0:
-                end_idx = i
-            depth += 1
-        elif output[i] == "{":
-            depth -= 1
-            if depth == 0:
-                try:
-                    return _json.loads(output[i : end_idx + 1])
-                except (ValueError, _json.JSONDecodeError):
-                    continue
-    return None
+    venv_bin = os.path.dirname(sys.executable)
+    # On Windows, executables have .exe extension
+    if sys.platform == "win32":
+        cmd_path = os.path.join(venv_bin, f"{cmd}.exe")
+        if os.path.isfile(cmd_path):
+            return cmd_path
+    # Linux/macOS or fallback
+    return os.path.join(venv_bin, cmd)
+
+
+async def _ensure_spotdl() -> bool:
+    """Ensure spotdl is installed. Returns True if available."""
+    spotdl_path = _get_venv_executable("spotdl")
+
+    # Check if spotdl is already installed in the venv
+    if os.path.isfile(spotdl_path):
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                spotdl_path,
+                "--version",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await proc.communicate()
+            if proc.returncode == 0:
+                return True
+        except Exception:
+            pass
+
+    # Try to install spotdl using the venv's pip
+    log.info("spotdl not found, attempting to install...")
+    pip_path = _get_venv_executable("pip")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            pip_path,
+            "install",
+            "spotdl",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode == 0:
+            log.info("spotdl installed successfully")
+            return True
+        else:
+            log.error("Failed to install spotdl: %s", stderr.decode())
+            return False
+    except Exception as e:
+        log.error("Failed to install spotdl: %s", e)
+        return False
 
 
 async def _download_spotify(
@@ -626,30 +623,33 @@ async def _download_spotify(
     temp_dir: str,
     timeout: int = 120,
 ) -> Tuple[List[str], Optional[dict]]:
-    """Download audio from Spotify using SpotiFLAC CLI.
+    """Download audio from Spotify using spotdl.
 
-    Downloads lossless FLAC from Tidal (with Amazon/Qobuz fallback)
-    using the headless SpotiFLAC binary. No API credentials required.
+    Uses the TzurSoffer fork with spotipyFree which doesn't require
+    Spotify API credentials.
 
     Returns (list of file paths, metadata dict or None).
     """
-    if not os.path.isfile(SPOTIFLAC_PATH):
-        raise RuntimeError(
-            f"SpotiFLAC CLI not found at {SPOTIFLAC_PATH}. "
-            "Install the headless binary from Sablinova/SabFlacker."
-        )
+    # Ensure spotdl is available
+    if not await _ensure_spotdl():
+        raise RuntimeError("spotdl is not available and could not be installed")
 
+    spotdl_path = _get_venv_executable("spotdl")
+
+    # Build command args - no credentials needed with spotipyFree fork
     cmd = [
-        SPOTIFLAC_PATH,
-        "-json",
-        "-fallback",
-        "-o",
-        temp_dir,
+        spotdl_path,
+        "download",
         url,
+        "--output",
+        temp_dir,
+        "--format",
+        "mp3",
+        "--bitrate",
+        "320k",
     ]
 
-    log.info("[SpotiFLAC] Running: %s", " ".join(cmd))
-
+    # Run spotdl with timeout
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
@@ -661,67 +661,35 @@ async def _download_spotify(
     except asyncio.TimeoutError:
         proc.kill()
         await proc.wait()
-        raise RuntimeError(f"SpotiFLAC timed out after {timeout}s")
+        raise RuntimeError(f"spotdl timed out after {timeout}s")
 
-    stdout_text = stdout.decode(errors="replace")
-    stderr_text = stderr.decode(errors="replace")
-    combined = stdout_text + stderr_text
+    output = stdout.decode() + stderr.decode()
 
-    log.debug("[SpotiFLAC] stdout: %s", stdout_text[:500])
-    log.debug("[SpotiFLAC] stderr: %s", stderr_text[:500])
+    # Check for rate limiting (shouldn't happen with spotipyFree, but just in case)
+    if "rate" in output.lower() and "limit" in output.lower():
+        raise RuntimeError(
+            "Spotify rate limit reached. Make sure you have the spotipyFree fork installed: "
+            "`pip install git+https://github.com/TzurSoffer/spotify-downloader`"
+        )
 
-    # Parse JSON result from output
-    result = _parse_spotiflac_json(combined)
+    if proc.returncode != 0:
+        error_msg = stderr.decode().strip() or stdout.decode().strip()
+        raise RuntimeError(f"spotdl failed: {error_msg}")
 
-    if result is None:
-        # No JSON found — binary might have crashed
-        error_hint = stderr_text.strip() or stdout_text.strip()
-        raise RuntimeError(f"SpotiFLAC produced no JSON output: {error_hint[:200]}")
+    # Collect downloaded files
+    files = _collect_real_files(temp_dir)
+    if not files:
+        raise RuntimeError("spotdl produced no output files")
 
-    # Check if any tracks succeeded
-    if result.get("success", 0) == 0:
-        # All tracks failed — extract error from first result
-        results = result.get("results", [])
-        if results:
-            err = results[0].get("error", "Unknown error")
-            raise RuntimeError(f"SpotiFLAC download failed: {err}")
-        raise RuntimeError("SpotiFLAC download failed with no results")
-
-    # Collect files from the result JSON (more reliable than scanning dir)
-    files = []
+    # Try to extract metadata from stdout
     metadata = None
-    for r in result.get("results", []):
-        if r.get("success") and r.get("file"):
-            fpath = r["file"]
-            if os.path.isfile(fpath):
-                files.append(fpath)
-                # Use first successful track for metadata
-                if metadata is None:
-                    parts = []
-                    if r.get("artist"):
-                        parts.append(r["artist"])
-                    if r.get("track_name"):
-                        parts.append(r["track_name"])
-                    title = " - ".join(parts) if parts else os.path.basename(fpath)
-                    metadata = {
-                        "title": title,
-                        "extractor": "spotify",
-                        "spotiflac_service": r.get("service", "unknown"),
-                        "spotiflac_format": "FLAC",
-                    }
-
-    # Fallback: scan directory if JSON file paths didn't work
-    if not files:
-        files = _collect_real_files(temp_dir)
-
-    if not files:
-        raise RuntimeError("SpotiFLAC completed but no output files found")
-
-    log.info(
-        "[SpotiFLAC] Downloaded %d file(s), total %.1f MB",
-        len(files),
-        sum(os.path.getsize(f) for f in files) / (1024 * 1024),
-    )
+    stdout_text = stdout.decode()
+    # spotdl outputs track info, try to parse it
+    # Format is usually: "Downloaded "Artist - Title""
+    match = re.search(r'Downloaded\s+"([^"]+)"', stdout_text)
+    if match:
+        title = match.group(1)
+        metadata = {"title": title, "extractor": "spotify"}
 
     return files, metadata
 
@@ -2044,11 +2012,8 @@ def _anondrop_to_embed(link: str, filename: Optional[str] = None) -> str:
     # Check whether the path already contains a filename (id/filename)
     parts = path.split("/", 1)
     if len(parts) == 1 and filename:
-        # Only the ID — append the URL-encoded filename
-        path = f"{parts[0]}/{quote(filename)}"
-    elif len(parts) == 2:
-        # Already has filename — URL-encode it
-        path = f"{parts[0]}/{quote(parts[1])}"
+        # Only the ID — append the filename
+        path = f"{parts[0]}/{filename}"
 
     # Determine the final filename to check if it's media
     final_filename = path.split("/")[-1] if "/" in path else (filename or "")
@@ -2093,6 +2058,9 @@ class SabDownloader(commands.Cog):
             anondrop_userkey=None,
             log_channel=None,
             delete_command=True,
+            spotify_client_id=None,
+            spotify_client_secret=None,
+            spotify_auth_token=None,  # OAuth access token for Spotify
         )
         self._semaphore: Optional[asyncio.Semaphore] = None
         self._cooldowns: Dict[int, float] = {}  # user_id -> last_use timestamp
@@ -2327,7 +2295,7 @@ class SabDownloader(commands.Cog):
         domain = _get_domain(url)
         info_dict = None
 
-        # Music services get special handling via SpotiFLAC/SabFLACer
+        # Spotify gets special handling via spotdl
         if _is_spotify_url(url):
             backends = ["spotify"]
         # Decide order based on domain
@@ -2361,9 +2329,9 @@ class SabDownloader(commands.Cog):
         for backend in backends:
             if backend == "spotify":
                 try:
-                    tracker.stage = "Downloading lossless audio"
+                    tracker.stage = "Searching & downloading from Spotify"
                     tracker.percent = (
-                        None  # SpotiFLAC doesn't give progress - animated bar
+                        None  # spotdl doesn't give progress - will show animated bar
                     )
                     files, info_dict = await _download_spotify(
                         url=url,
@@ -2373,7 +2341,7 @@ class SabDownloader(commands.Cog):
                         return files, info_dict
                 except Exception as e:
                     last_error = e
-                    log.warning("[_try_download] SpotiFLAC failed: %s", e)
+                    log.warning("[_try_download] spotdl failed: %s", e)
 
                 _purge_temp_files(temp_dir)
 
@@ -3059,51 +3027,54 @@ class SabDownloader(commands.Cog):
     @sabdownloader.group(name="spotify", invoke_without_command=True)
     @commands.is_owner()
     async def sd_spotify(self, ctx: commands.Context):
-        """Spotify configuration for lossless downloads.
+        """Spotify configuration for audio downloads.
 
-        Uses SpotiFLAC CLI to download lossless FLAC from Tidal/Amazon/Qobuz
-        via Spotify URLs. No API credentials required.
+        Spotify downloads now work without authentication thanks to
+        the spotipyFree library. No setup required!
         """
         await ctx.send_help(ctx.command)
 
     @sd_spotify.command(name="status")
     async def sd_spotify_status(self, ctx: commands.Context):
         """Check Spotify download status."""
-        binary_exists = os.path.isfile(SPOTIFLAC_PATH)
+        # Check if spotdl is available
+        spotdl_path = _get_venv_executable("spotdl")
 
-        if binary_exists:
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    SPOTIFLAC_PATH,
-                    "--help",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
-                status_text = "Ready"
-                # Extract first line for version/description
-                first_line = stdout.decode().split("\n")[0].strip()
-            except Exception:
-                status_text = "Binary found but not executable"
-                first_line = "Error running binary"
-        else:
-            status_text = "Not installed"
-            first_line = f"Binary not found at `{SPOTIFLAC_PATH}`"
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                spotdl_path,
+                "--version",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+            version = stdout.decode().strip()
+        except Exception:
+            version = "Not installed"
 
         embed = discord.Embed(
-            title="Spotify Status (SpotiFLAC)",
+            title="Spotify Status",
             color=discord.Color.green()
-            if status_text == "Ready"
-            else discord.Color.red(),
+            if "4.4.5" in version
+            else discord.Color.orange(),
         )
-        embed.add_field(name="Backend", value=f"`{first_line}`", inline=False)
-        embed.add_field(name="Binary", value=f"`{SPOTIFLAC_PATH}`", inline=False)
-        embed.add_field(name="Status", value=status_text, inline=False)
-        embed.add_field(
-            name="Format",
-            value="Lossless FLAC (Tidal > Amazon > Qobuz fallback)",
-            inline=False,
-        )
+        embed.add_field(name="spotdl Version", value=f"`{version}`", inline=False)
+
+        if "4.4.5" in version:
+            embed.add_field(
+                name="Status",
+                value="Ready! Using spotipyFree (no API credentials needed)",
+                inline=False,
+            )
+        else:
+            embed.add_field(
+                name="Status",
+                value=(
+                    "spotdl may need updating. Install the fixed fork:\n"
+                    "`pip install git+https://github.com/TzurSoffer/spotify-downloader`"
+                ),
+                inline=False,
+            )
 
         await ctx.send(embed=embed)
 
