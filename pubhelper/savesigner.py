@@ -143,7 +143,7 @@ class SaveSigner:
                     with zipfile.ZipFile(archive_path, "r") as archive:
                         archive.extractall(extract_dir)
                 except Exception:
-                    return None
+                    return "Unsupported format"
 
             # Find the best .bin file to bruteforce:
             # Priority 1: slot files (e.g. 001Slot.bin, SaveSlot.bin)
@@ -314,7 +314,7 @@ class SaveSigner:
                     with zipfile.ZipFile(archive_path, "r") as archive:
                         archive.extractall(extract_dir)
                 except Exception:
-                    return None
+                    return "Unsupported format"
 
             # Copy all .bin save files to input directory
             for file_path in extract_dir.rglob("*.bin"):
