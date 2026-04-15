@@ -2863,6 +2863,7 @@ class SabPubHelper(commands.Cog):
                 await send_final_message(
                     f"❌ **Unsupported Format**. Send .7z/.zip"
                 )
+                return
 
             found_id = brute_result["user_id"]
             updated = False
@@ -2893,6 +2894,7 @@ class SabPubHelper(commands.Cog):
                 await send_final_message(
                     f"❌ **Unsupported format**. Send .7z/.zip"
                 )
+                return
 
             zip_filename = f"{game}_resigned.zip"
             zip_file = discord.File(io.BytesIO(resign_result), filename=zip_filename)
