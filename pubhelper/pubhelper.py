@@ -2826,7 +2826,7 @@ class SabPubHelper(commands.Cog):
                     brute_task, timeout=inline_timeout
                 )
 
-                if brute_result is "Unsupported format":
+                if brute_result == "Unsupported format":
                     await send_final_message(
                     f"❌ **Unsupported format of zip. Please send .7z or .zip"
                 )
@@ -2889,7 +2889,7 @@ class SabPubHelper(commands.Cog):
                 )
                 return
             
-            if resign_result is "Unsupported format":
+            if resign_result == "Unsupported format":
                 await send_final_message(
                     f"❌ **Unsupported format of zip. Please send .7z or .zip"
                 )
