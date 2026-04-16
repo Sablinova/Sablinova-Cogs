@@ -81,6 +81,10 @@ SAVE_PROFILES = {
         "name": "Mega Man Star Force Legacy Collection",
         "profile": "Mega Man Star Force Legacy Collection v1.bin",
     },
+    "pragmata": {
+        "name": "Pragmata",
+        "profile": "PRAGMATA_v1.bin",
+    },
 }
 
 # Bruteforce timeouts
@@ -2858,11 +2862,9 @@ class SabPubHelper(commands.Cog):
                     f"Could not find User ID. Make sure the archive contains save files."
                 )
                 return
-            
+
             if brute_result == "Unsupported format":
-                await send_final_message(
-                    f"❌ **Unsupported Format**. Send .7z/.zip"
-                )
+                await send_final_message(f"❌ **Unsupported Format**. Send .7z/.zip")
                 return
 
             found_id = brute_result["user_id"]
@@ -2889,11 +2891,9 @@ class SabPubHelper(commands.Cog):
                     f"❌ **Re-sign Failed**\n\nFound ID: `{found_id}`\nCould not re-sign saves."
                 )
                 return
-            
+
             if resign_result == "Unsupported format":
-                await send_final_message(
-                    f"❌ **Unsupported format**. Send .7z/.zip"
-                )
+                await send_final_message(f"❌ **Unsupported format**. Send .7z/.zip")
                 return
 
             zip_filename = f"{game}_resigned.zip"

@@ -50,6 +50,10 @@ SAVE_PROFILES = {
         "name": "Mega Man Star Force Legacy Collection",
         "profile": "Mega Man Star Force Legacy Collection v1.bin",
     },
+    "pragmata": {
+        "name": "Pragmata",
+        "profile": "PRAGMATA_v1.bin",
+    },
 }
 
 
