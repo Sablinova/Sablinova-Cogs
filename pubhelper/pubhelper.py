@@ -23,7 +23,7 @@ from redbot.core import Config, commands
 from redbot.core.bot import Red
 from redbot.core.data_manager import cog_data_path
 
-from .savesigner import SAVE_PROFILES, SaveSigner
+from .savesigner import SAVE_PROFILES, SaveSigner, GAME_DATA, SAVE_INSTRUCTIONS
 
 log = logging.getLogger("red.sablinova.pubhelper")
 
@@ -2548,6 +2548,45 @@ class SabPubHelper(commands.Cog):
             for game_id, profile in SAVE_PROFILES.items()
         ]
     )
+    @app_commands.command(
+            name="saveinst",
+            description="sends save instructions for game ticket"
+        )
+    async def savepath(self, interaction: discord.Interaction) -> None:
+        channel_name = interaction.channel.name  # e.g. "johnsmith | Elden Ring"
+
+        # Extract game name after the |
+        if "|" not in channel_name:
+            await interaction.response.send_message(
+                "❌ Couldn't detect a game name from this channel. Make sure the channel is named in the format `username | Game Name`.",
+                ephemeral=True
+            )
+            return
+
+        game_name = channel_name.split("|", 1)[1].strip()
+
+        # Look up game data (case-insensitive)
+        matched_key = next(
+            (key for key in GAME_DATA if key.lower() == game_name.lower()),
+            None
+        )
+
+        if not matched_key:
+            await interaction.response.send_message(
+                f"❌ No data found for game: **{game_name}**. Please add it to the `GAME_DATA` dictionary.",
+                ephemeral=True
+            )
+            return
+
+        data = GAME_DATA[matched_key]
+
+        message = SAVE_INSTRUCTIONS.format(
+            steam_id=data["steam_id"],
+            config_folder=data["config_folder"]
+        )
+
+        await interaction.response.send_message(message)
+
     async def savebrute(
         self, interaction: discord.Interaction, game: str, new_id: str, link: str
     ) -> None:
