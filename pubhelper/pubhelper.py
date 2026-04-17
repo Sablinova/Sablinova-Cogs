@@ -2546,13 +2546,13 @@ class SabPubHelper(commands.Cog):
         game=[
             app_commands.Choice(name=profile["name"], value=game_id)
             for game_id, profile in SAVE_PROFILES.items()
-        ]
+        ],
     )
 
     @app_commands.command(
             name="saveinst",
-            description="sends save instructions for game ticket"
-        )
+            description="sends save instructions for game ticket",
+    )
     async def saveinst(self, interaction: discord.Interaction) -> None:
         channel_name = interaction.channel.name  # e.g. "johnsmith | Elden Ring"
 
