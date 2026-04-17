@@ -12,13 +12,36 @@ import tempfile
 import zipfile
 from pathlib import Path
 from urllib.parse import urlparse
-
+from discord import app_commands
+import discord
 import aiohttp
 import py7zr
 
 log = logging.getLogger("red.sablinova.pubhelper")
 
 _ANONDROP_CHUNK_SIZE = 9 * 1024 * 1024  # 9 MB
+
+#Cold game data
+GAME_DATA = {
+    "PRAGMATA": {
+        "steam_id": "3357650",
+        "config_folder": "pub_pragmata"
+    },
+    "Resident Evil Requiem": {
+        "steam_id": "3764200",
+        "config_folder": "pub_re9"
+    },
+}
+
+#Instructions for the save
+SAVE_INSTRUCTIONS = """**Save File Instructions**
+
+1. Press `Win + R`, paste the path below and hit Enter:
+`%USERPROFILE%\\AppData\\Roaming\\GSE Saves\\{steam_id}\\remote\\win64_save\\`
+
+2. Send a `.zip` / `.7z` of the `win64_save` folder
+
+3. Send `config.user.ini` — it can be found inside `{config_folder}/steam_setting`"""
 
 # MandarinJuice save signing profiles
 SAVE_PROFILES = {
@@ -100,6 +123,46 @@ class SaveSigner:
             if self.get_profile_path(game_id):
                 available.append(game_id)
         return available
+    
+    @app_commands.command(
+            name="saveinst",
+            description="sends save instructions for game ticket"
+        )
+    async def savepath(interaction: discord.Interaction) -> None:
+        channel_name = interaction.channel.name  # e.g. "johnsmith | Elden Ring"
+
+        # Extract game name after the |
+        if "|" not in channel_name:
+            await interaction.response.send_message(
+                "❌ Couldn't detect a game name from this channel. Make sure the channel is named in the format `username | Game Name`.",
+                ephemeral=True
+            )
+            return
+
+        game_name = channel_name.split("|", 1)[1].strip()
+
+        # Look up game data (case-insensitive)
+        matched_key = next(
+            (key for key in GAME_DATA if key.lower() == game_name.lower()),
+            None
+        )
+
+        if not matched_key:
+            await interaction.response.send_message(
+                f"❌ No data found for game: **{game_name}**. Please add it to the `GAME_DATA` dictionary.",
+                ephemeral=True
+            )
+            return
+
+        data = GAME_DATA[matched_key]
+
+        message = SAVE_INSTRUCTIONS.format(
+            steam_id=data["steam_id"],
+            config_folder=data["config_folder"]
+        )
+
+        await interaction.response.send_message(message)
+
 
     async def run_bruteforce(
         self,
