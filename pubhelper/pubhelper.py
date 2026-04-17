@@ -2534,21 +2534,6 @@ class SabPubHelper(commands.Cog):
         await self._process_command(interaction, url, "cd")
 
     @app_commands.command(
-        name="savebrute",
-        description="Bruteforce save User ID and re-sign to your Steam ID",
-    )
-    @app_commands.describe(
-        game="Select game",
-        new_id="Your Steam ID to sign saves to",
-        link="URL to save archive (zip/7z)",
-    )
-    @app_commands.choices(
-        game=[
-            app_commands.Choice(name=profile["name"], value=game_id)
-            for game_id, profile in SAVE_PROFILES.items()
-        ],
-    )
-    @app_commands.command(
         name="saveinst",
         description="sends save instructions for game ticket",
     )
@@ -2614,6 +2599,21 @@ class SabPubHelper(commands.Cog):
 
         await interaction.response.send_message(message)
 
+    @app_commands.command(
+        name="savebrute",
+        description="Bruteforce save User ID and re-sign to your Steam ID",
+    )
+    @app_commands.describe(
+        game="Select game",
+        new_id="Your Steam ID to sign saves to",
+        link="URL to save archive (zip/7z)",
+    )
+    @app_commands.choices(
+        game=[
+            app_commands.Choice(name=profile["name"], value=game_id)
+            for game_id, profile in SAVE_PROFILES.items()
+        ],
+    )
     async def savebrute(
         self, interaction: discord.Interaction, game: str, new_id: str, link: str
     ) -> None:
