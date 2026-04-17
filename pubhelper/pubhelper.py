@@ -2597,7 +2597,12 @@ class SabPubHelper(commands.Cog):
             steam_id=steam_id, config_folder=config_folder
         )
 
-        await interaction.response.send_message(message)
+        img_path = Path(__file__).parent / "save_instruction.png"
+        if img_path.exists():
+            file = discord.File(str(img_path), filename="save_instruction.png")
+            await interaction.response.send_message(message, file=file)
+        else:
+            await interaction.response.send_message(message)
 
     @app_commands.command(
         name="savebrute",
