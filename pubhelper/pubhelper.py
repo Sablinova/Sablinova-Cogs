@@ -23,7 +23,7 @@ from redbot.core import Config, commands
 from redbot.core.bot import Red
 from redbot.core.data_manager import cog_data_path
 
-from .savesigner import SAVE_PROFILES, SaveSigner, GAME_DATA, SAVE_INSTRUCTIONS
+from .savesigner import SAVE_PROFILES, SaveSigner, SAVE_INSTRUCTIONS
 
 log = logging.getLogger("red.sablinova.pubhelper")
 
@@ -2548,42 +2548,68 @@ class SabPubHelper(commands.Cog):
             for game_id, profile in SAVE_PROFILES.items()
         ],
     )
-
     @app_commands.command(
-            name="saveinst",
-            description="sends save instructions for game ticket",
+        name="saveinst",
+        description="sends save instructions for game ticket",
     )
     async def saveinst(self, interaction: discord.Interaction) -> None:
-        channel_name = interaction.channel.name  # e.g. "johnsmith | Elden Ring"
+        channel_name = (
+            interaction.channel.name
+        )  # e.g. "johnsmith-pragmata" or "johnsmith | Pragmata"
 
-        # Extract game name after the |
-        if "|" not in channel_name:
+        # Try splitting by standard Discord hyphen format or fallback to pipe
+        if "-" in channel_name:
+            # Often standard channels are "username-gamename", so we take everything after the first dash
+            # If there are multiple dashes (e.g. username-game-name), split only once
+            game_name = channel_name.split("-", 1)[1].strip().lower().replace("-", " ")
+        elif "|" in channel_name:
+            game_name = channel_name.split("|", 1)[1].strip().lower()
+        else:
             await interaction.response.send_message(
-                "❌ Couldn't detect a game name from this channel. Make sure the channel is named in the format `username | Game Name`.",
-                ephemeral=True
+                "❌ Couldn't detect a game name from this channel. Make sure the channel is named in the format `username-gamename` or `username | Game Name`.",
+                ephemeral=True,
             )
             return
 
-        game_name = channel_name.split("|", 1)[1].strip()
+        # Handle aliases (e.g. "resident evil requiem" -> "resident evil 9 requiem")
+        if "requiem" in game_name and "9" not in game_name:
+            game_name = game_name.replace("resident evil", "resident evil 9")
 
-        # Look up game data (case-insensitive)
-        matched_key = next(
-            (key for key in GAME_DATA if key.lower() == game_name.lower()),
-            None
-        )
+        # Look up game data in SAVE_PROFILES (case-insensitive fuzzy match)
+        matched_key = None
+        for key, profile in SAVE_PROFILES.items():
+            profile_name = profile["name"].lower()
+            if game_name == profile_name or game_name == key.lower():
+                matched_key = key
+                break
+
+            # Fuzzy fallback (e.g. if channel says 'resident evil 9' but profile is 'Resident Evil 9 Requiem')
+            if len(game_name) > 4 and (
+                game_name in profile_name or profile_name in game_name
+            ):
+                matched_key = key
+                break
 
         if not matched_key:
             await interaction.response.send_message(
-                f"❌ No data found for game: **{game_name}**. Please add it to the `GAME_DATA` dictionary.",
-                ephemeral=True
+                f"❌ No save path data found matching: **{game_name}**.\nAvailable profiles: {', '.join([p['name'] for p in SAVE_PROFILES.values()])}",
+                ephemeral=True,
             )
             return
 
-        data = GAME_DATA[matched_key]
+        data = SAVE_PROFILES[matched_key]
+        steam_id = data.get("steam_id", "")
+        config_folder = data.get("config_folder", "")
+
+        if not steam_id or not config_folder:
+            await interaction.response.send_message(
+                f"❌ Instructions for **{data['name']}** are missing steam_id or config_folder data.",
+                ephemeral=True,
+            )
+            return
 
         message = SAVE_INSTRUCTIONS.format(
-            steam_id=data["steam_id"],
-            config_folder=data["config_folder"]
+            steam_id=steam_id, config_folder=config_folder
         )
 
         await interaction.response.send_message(message)
@@ -2894,6 +2920,13 @@ class SabPubHelper(commands.Cog):
                         f"Please find your Steam64 ID manually and use `/savesign` instead."
                     )
                     return
+            except ValueError as e:
+                if str(e) == "Unsupported format":
+                    await send_final_message(
+                        f"❌ **Unsupported Format**. Send .7z/.zip"
+                    )
+                    return
+                raise e
 
             if brute_result is None:
                 await send_final_message(
@@ -2901,10 +2934,6 @@ class SabPubHelper(commands.Cog):
                     f"Game: {SAVE_PROFILES[game]['name']}\n"
                     f"Could not find User ID. Make sure the archive contains save files."
                 )
-                return
-
-            if brute_result == "Unsupported format":
-                await send_final_message(f"❌ **Unsupported Format**. Send .7z/.zip")
                 return
 
             found_id = brute_result["user_id"]
@@ -2922,18 +2951,22 @@ class SabPubHelper(commands.Cog):
                 f"✅ **Found User ID: `{found_id}`**\n\nRe-signing to `{new_id}`..."
             )
 
-            resign_result = await self.save_signer.run_resign(
-                game, save_archive, found_id, new_id
-            )
+            try:
+                resign_result = await self.save_signer.run_resign(
+                    game, save_archive, found_id, new_id
+                )
+            except ValueError as e:
+                if str(e) == "Unsupported format":
+                    await send_final_message(
+                        f"❌ **Unsupported format**. Send .7z/.zip"
+                    )
+                    return
+                raise e
 
             if resign_result is None:
                 await send_final_message(
                     f"❌ **Re-sign Failed**\n\nFound ID: `{found_id}`\nCould not re-sign saves."
                 )
-                return
-
-            if resign_result == "Unsupported format":
-                await send_final_message(f"❌ **Unsupported format**. Send .7z/.zip")
                 return
 
             zip_filename = f"{game}_resigned.zip"
@@ -3051,9 +3084,17 @@ class SabPubHelper(commands.Cog):
         )
 
         # Run re-sign
-        resign_result = await self.save_signer.run_resign(
-            game, save_archive, old_id, new_id
-        )
+        try:
+            resign_result = await self.save_signer.run_resign(
+                game, save_archive, old_id, new_id
+            )
+        except ValueError as e:
+            if str(e) == "Unsupported format":
+                await interaction.edit_original_response(
+                    content=f"❌ **Unsupported format**. Send .7z/.zip"
+                )
+                return
+            raise e
 
         if resign_result is None:
             await interaction.edit_original_response(

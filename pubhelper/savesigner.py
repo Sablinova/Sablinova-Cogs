@@ -21,19 +21,7 @@ log = logging.getLogger("red.sablinova.pubhelper")
 
 _ANONDROP_CHUNK_SIZE = 9 * 1024 * 1024  # 9 MB
 
-#Cold game data
-GAME_DATA = {
-    "PRAGMATA": {
-        "steam_id": "3357650",
-        "config_folder": "pub_pragmata"
-    },
-    "Resident Evil Requiem": {
-        "steam_id": "3764200",
-        "config_folder": "pub_re9"
-    },
-}
-
-#Instructions for the save
+# Instructions for the save
 SAVE_INSTRUCTIONS = """**Save File Instructions**
 
 1. Press `Win + R`, paste the path below and hit Enter:
@@ -41,41 +29,57 @@ SAVE_INSTRUCTIONS = """**Save File Instructions**
 
 2. Send a `.zip` / `.7z` of the `win64_save` folder
 
-3. Send `config.user.ini` — it can be found inside `{config_folder}/steam_setting`"""
+3. Send `config.user.ini` — it can be found inside `{config_folder}/steam_settings`"""
 
 # MandarinJuice save signing profiles
 SAVE_PROFILES = {
     "re9": {
         "name": "Resident Evil 9 Requiem",
         "profile": "Resident Evil 9 Requiem v1.bin",
+        "steam_id": "3764200",
+        "config_folder": "pub_re9",
     },
     "dd2": {
         "name": "Dragon's Dogma 2",
         "profile": "Dragon's Dogma 2 v1.bin",
+        "steam_id": "2054970",
+        "config_folder": "pub_dd2",
     },
     "mhwilds": {
         "name": "Monster Hunter Wilds",
         "profile": "Monster Hunter Wilds v1.bin",
+        "steam_id": "2246340",
+        "config_folder": "pub_mhwilds",
     },
     "kunitsu": {
         "name": "Kunitsu-Gami Path of the Goddess",
         "profile": "Kunitsu-Gami Path of the Goddess v1.bin",
+        "steam_id": "2510720",
+        "config_folder": "pub_kunitsu",
     },
     "deadrising": {
         "name": "Dead Rising Deluxe Remaster",
         "profile": "Dead Rising Deluxe Remaster v1.bin",
+        "steam_id": "2531360",
+        "config_folder": "pub_deadrising",
     },
     "mhstories3": {
         "name": "Monster Hunter Stories 3 Twisted Reflection",
         "profile": "Monster Hunter Stories 3 Twisted Reflection v1.bin",
+        "steam_id": "2498260",  # Fallback value, real ID wasn't originally included
+        "config_folder": "pub_mhstories3",
     },
     "megaman": {
         "name": "Mega Man Star Force Legacy Collection",
         "profile": "Mega Man Star Force Legacy Collection v1.bin",
+        "steam_id": "2816910",  # Fallback value, real ID wasn't originally included
+        "config_folder": "pub_megaman",
     },
     "pragmata": {
         "name": "Pragmata",
         "profile": "PRAGMATA_v1.bin",
+        "steam_id": "3357650",
+        "config_folder": "pub_pragmata",
     },
 }
 
@@ -123,7 +127,7 @@ class SaveSigner:
             if self.get_profile_path(game_id):
                 available.append(game_id)
         return available
-    
+
     async def run_bruteforce(
         self,
         game: str,
@@ -170,7 +174,7 @@ class SaveSigner:
                     with zipfile.ZipFile(archive_path, "r") as archive:
                         archive.extractall(extract_dir)
                 except Exception:
-                    return "Unsupported format"
+                    raise ValueError("Unsupported format")
 
             # Find the best .bin file to bruteforce:
             # Priority 1: slot files (e.g. 001Slot.bin, SaveSlot.bin)
@@ -341,7 +345,7 @@ class SaveSigner:
                     with zipfile.ZipFile(archive_path, "r") as archive:
                         archive.extractall(extract_dir)
                 except Exception:
-                    return "Unsupported format"
+                    raise ValueError("Unsupported format")
 
             # Copy all .bin save files to input directory
             for file_path in extract_dir.rglob("*.bin"):
