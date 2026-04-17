@@ -51,42 +51,6 @@ DEFAULT_PROFILES = {
     },
 }
 
-# MandarinJuice save signing profiles
-SAVE_PROFILES = {
-    "re9": {
-        "name": "Resident Evil 9 Requiem",
-        "profile": "Resident Evil 9 Requiem v1.bin",
-    },
-    "dd2": {
-        "name": "Dragon's Dogma 2",
-        "profile": "Dragon's Dogma 2 v1.bin",
-    },
-    "mhwilds": {
-        "name": "Monster Hunter Wilds",
-        "profile": "Monster Hunter Wilds v1.bin",
-    },
-    "kunitsu": {
-        "name": "Kunitsu-Gami Path of the Goddess",
-        "profile": "Kunitsu-Gami Path of the Goddess v1.bin",
-    },
-    "deadrising": {
-        "name": "Dead Rising Deluxe Remaster",
-        "profile": "Dead Rising Deluxe Remaster v1.bin",
-    },
-    "mhstories3": {
-        "name": "Monster Hunter Stories 3 Twisted Reflection",
-        "profile": "Monster Hunter Stories 3 Twisted Reflection v1.bin",
-    },
-    "megaman": {
-        "name": "Mega Man Star Force Legacy Collection",
-        "profile": "Mega Man Star Force Legacy Collection v1.bin",
-    },
-    "pragmata": {
-        "name": "Pragmata",
-        "profile": "PRAGMATA_v1.bin",
-    },
-}
-
 # Bruteforce timeouts
 BRUTEFORCE_INLINE_TIMEOUT = 840  # 14 minutes - switch to DM mode
 BRUTEFORCE_MAX_TIMEOUT = 3600  # 60 minutes - give up
