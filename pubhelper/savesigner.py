@@ -29,7 +29,7 @@ SAVE_INSTRUCTIONS = """**Save File Instructions**
 
 2. Send a `.zip` / `.7z` of the `win64_save` folder
 
-3. Send `config.user.ini` — it can be found inside `{config_folder}steam_settings`"""
+3. Send `configs.user.ini` — it can be found inside `{config_folder}steam_settings`"""
 
 # MandarinJuice save signing profiles
 SAVE_PROFILES = {
@@ -43,25 +43,25 @@ SAVE_PROFILES = {
         "name": "Dragon's Dogma 2",
         "profile": "Dragon's Dogma 2 v1.bin",
         "steam_id": "2054970",
-        "config_folder": "/",
+        "config_folder": "",
     },
     "mhwilds": {
         "name": "Monster Hunter Wilds",
         "profile": "Monster Hunter Wilds v1.bin",
         "steam_id": "2246340",
-        "config_folder": "/",
+        "config_folder": "",
     },
     "kunitsu": {
         "name": "Kunitsu-Gami Path of the Goddess",
         "profile": "Kunitsu-Gami Path of the Goddess v1.bin",
         "steam_id": "2510720",
-        "config_folder": "/",
+        "config_folder": "",
     },
     "deadrising": {
         "name": "Dead Rising Deluxe Remaster",
         "profile": "Dead Rising Deluxe Remaster v1.bin",
         "steam_id": "2531360",
-        "config_folder": "/",
+        "config_folder": "",
     },
     "mhstories3": {
         "name": "Monster Hunter Stories 3 Twisted Reflection",
@@ -73,7 +73,7 @@ SAVE_PROFILES = {
         "name": "Mega Man Star Force Legacy Collection",
         "profile": "Mega Man Star Force Legacy Collection v1.bin",
         "steam_id": "2816910",  # Fallback value, real ID wasn't originally included
-        "config_folder": "/",
+        "config_folder": "",
     },
     "pragmata": {
         "name": "Pragmata",
