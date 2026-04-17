@@ -2548,11 +2548,12 @@ class SabPubHelper(commands.Cog):
             for game_id, profile in SAVE_PROFILES.items()
         ]
     )
+
     @app_commands.command(
             name="saveinst",
             description="sends save instructions for game ticket"
         )
-    async def savepath(self, interaction: discord.Interaction) -> None:
+    async def saveinst(self, interaction: discord.Interaction) -> None:
         channel_name = interaction.channel.name  # e.g. "johnsmith | Elden Ring"
 
         # Extract game name after the |
