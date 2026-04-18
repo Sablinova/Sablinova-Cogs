@@ -1609,9 +1609,9 @@ class SabPubHelper(commands.Cog):
                         "attach_image": True,
                         "custom_image_url": "",
                     }
-                    await ctx.send(f"⚠️ Created a custom override for base game **{profile['name']}**.")
+                    await ctx.send(f"Created a custom override for base game **{profile['name']}**.")
                 else:
-                    await ctx.send(f"❌ No custom or base game found matching `{keyword}`.")
+                    await ctx.send(f"No custom or base game found matching `{keyword}`.")
                     return
 
             data = custom_games[matched_key]
@@ -1632,22 +1632,22 @@ class SabPubHelper(commands.Cog):
                     preview_snippet = clean_text[:40] + "..." if len(clean_text) > 40 else clean_text
                     text_preview = f"**Type:** `Custom Text`\n**Preview:** *{preview_snippet}*"
 
-                image_preview = "❌ None"
+                image_preview = "None"
                 if data.get("attach_image", False):
                     if data.get("custom_image_url"):
-                        image_preview = "🖼️ Custom URL/Upload"
+                        image_preview = "Custom URL/Upload"
                     else:
-                        image_preview = "📁 Default local image"
+                        image_preview = "Default local image"
 
                 embed = discord.Embed(
-                    title=f"✏️ Editing SaveInst: {display_name}",
+                    title=f"Editing SaveInst: {display_name}",
                     description="Type the **number** of the field you want to edit, or type `cancel` to exit and save.",
-                    color=discord.Color.orange()
+                    color=discord.Color.blurple()
                 )
-                embed.add_field(name="🔑 Keyword", value=f"`{keyword}`", inline=False)
-                embed.add_field(name="1️⃣ Display Name", value=f"**{display_name}**", inline=False)
-                embed.add_field(name="2️⃣ Setup Type & Text", value=text_preview, inline=False)
-                embed.add_field(name="3️⃣ Image", value=image_preview, inline=False)
+                embed.add_field(name="Keyword", value=f"`{keyword}`", inline=False)
+                embed.add_field(name="1. Display Name", value=f"**{display_name}**", inline=False)
+                embed.add_field(name="2. Setup Type & Text", value=text_preview, inline=False)
+                embed.add_field(name="3. Image", value=image_preview, inline=False)
 
                 await ctx.send(embed=embed)
 
@@ -1656,7 +1656,7 @@ class SabPubHelper(commands.Cog):
                     choice = msg.content.strip().lower()
 
                     if choice == "cancel":
-                        await ctx.send(f"✅ Exited editor for `{keyword}`.")
+                        await ctx.send(f"Exited editor for `{keyword}`.")
                         break
 
 
@@ -1666,7 +1666,7 @@ class SabPubHelper(commands.Cog):
                         if name_msg.content.lower() == "cancel":
                             continue
                         data["name"] = name_msg.content.strip()
-                        await ctx.send(f"✅ Display Name updated to **{data['name']}**.")
+                        await ctx.send(f"Display Name updated to **{data['name']}**.")
 
                     elif choice == "2":
                         await ctx.send(
@@ -1689,7 +1689,7 @@ class SabPubHelper(commands.Cog):
                             folder_msg = await ctx.bot.wait_for("message", check=check, timeout=120)
                             data["config_folder"] = folder_msg.content.strip()
                             data["custom_text"] = ""
-                            await ctx.send("✅ Setup Type updated to **ColdClient**.")
+                            await ctx.send("Setup Type updated to **ColdClient**.")
 
                         elif new_type == "custom":
                             data["type"] = "custom"
@@ -1698,9 +1698,9 @@ class SabPubHelper(commands.Cog):
                             data["custom_text"] = custom_msg.content.strip()
                             data["steam_id"] = ""
                             data["config_folder"] = ""
-                            await ctx.send("✅ Setup Type updated to **Custom**.")
+                            await ctx.send("Setup Type updated to **Custom**.")
                         else:
-                            await ctx.send("❌ Invalid type. Try again.")
+                            await ctx.send("Invalid type. Try again.")
 
                     elif choice == "3":
                         await ctx.send(
@@ -1720,29 +1720,29 @@ class SabPubHelper(commands.Cog):
                             if upload_msg.attachments:
                                 data["custom_image_url"] = upload_msg.attachments[0].url
                                 data["attach_image"] = True
-                                await ctx.send("✅ Image updated via attachment.")
+                                await ctx.send("Image updated via attachment.")
                             elif upload_msg.content.startswith("http"):
                                 data["custom_image_url"] = upload_msg.content.strip()
                                 data["attach_image"] = True
-                                await ctx.send("✅ Image updated via URL.")
+                                await ctx.send("Image updated via URL.")
                             else:
-                                await ctx.send("❌ No valid image or URL found.")
+                                await ctx.send("No valid image or URL found.")
                         elif img_choice == "2":
                             data["attach_image"] = True
                             data["custom_image_url"] = ""
-                            await ctx.send("✅ Image set to **Default**.")
+                            await ctx.send("Image set to **Default**.")
                         elif img_choice == "3":
                             data["attach_image"] = False
                             data["custom_image_url"] = ""
-                            await ctx.send("✅ Image set to **None**.")
+                            await ctx.send("Image set to **None**.")
                         else:
-                            await ctx.send("❌ Invalid choice. Try again.")
+                            await ctx.send("Invalid choice. Try again.")
 
                     else:
-                        await ctx.send("❌ Invalid choice. Type 1, 2, 3, or `cancel`.")
+                        await ctx.send("Invalid choice. Type 1, 2, 3, or `cancel`.")
 
                 except asyncio.TimeoutError:
-                    await ctx.send("❌ Editor timed out. Any changes made before this were saved.")
+                    await ctx.send("Editor timed out. Any changes made before this were saved.")
                     break
 
     @pubhelper_game.command(name="updatedll")
