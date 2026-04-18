@@ -1442,17 +1442,36 @@ class SabPubHelper(commands.Cog):
 
     @pubhelper_saveinst.command(name="list")
     async def pubhelper_saveinst_list(self, ctx: commands.Context) -> None:
-        """List all custom games configured for /saveinst."""
+        """List all custom and base games configured for /saveinst."""
         custom_games = await self.config.custom_saveinst()
-        if not custom_games:
-            return await ctx.send(
-                "No custom games configured. Use `[p]pubhelper saveinst setup` to add one."
-            )
-
-        msg = "**Custom `/saveinst` Games:**\n"
-        for keyword, data in custom_games.items():
-            msg += f"• **{data['name']}** (Keyword: `{keyword}`)\n  Type: `{data['type']}`\n"
-        await ctx.send(msg)
+        
+        msg = ""
+        if custom_games:
+            msg += "**Custom `/saveinst` Games:**\n"
+            for keyword, data in custom_games.items():
+                msg += f"• **{data['name']}** (Keyword: `{keyword}`)\n  Type: `{data['type']}`\n"
+        else:
+            msg += "**Custom `/saveinst` Games:**\n*None configured. Use `[p]pubhelper saveinst setup` to add one.*\n"
+        
+        msg += "\n**Base ColdClient Games:**\n"
+        from .savesigner import SAVE_PROFILES
+        for key, profile in SAVE_PROFILES.items():
+            msg += f"• **{profile['name']}** (Keyword: `{key.lower()}`)\n"
+            
+        # If msg gets too long, split it, but usually discord limit is 2000
+        if len(msg) > 1900:
+            lines = msg.split('\n')
+            chunk = ""
+            for line in lines:
+                if len(chunk) + len(line) > 1900:
+                    await ctx.send(chunk)
+                    chunk = line + "\n"
+                else:
+                    chunk += line + "\n"
+            if chunk:
+                await ctx.send(chunk)
+        else:
+            await ctx.send(msg)
 
     @pubhelper_saveinst.command(name="remove")
     async def pubhelper_saveinst_remove(
@@ -1470,38 +1489,63 @@ class SabPubHelper(commands.Cog):
 
     @pubhelper_saveinst.command(name="test")
     async def pubhelper_saveinst_test(self, ctx: commands.Context, keyword: str) -> None:
-        """Test the /saveinst output for a custom game."""
+        """Test the /saveinst output for a custom or base game."""
         custom_games = await self.config.custom_saveinst()
         keyword = keyword.lower()
 
-        if keyword not in custom_games:
-            await ctx.send(f"❌ No custom game found with keyword `{keyword}`.")
+        # Check custom games first
+        if keyword in custom_games:
+            data = custom_games[keyword]
+            message = (
+                data["custom_text"]
+                if data["type"] == "custom"
+                else SAVE_INSTRUCTIONS.format(
+                    steam_id=data["steam_id"], config_folder=data["config_folder"]
+                )
+            )
+
+            if data.get("attach_image", False):
+                custom_image_url = data.get("custom_image_url", "")
+                if custom_image_url:
+                    embed = discord.Embed(description=message, color=discord.Color.blue())
+                    embed.set_image(url=custom_image_url)
+                    await ctx.send(embed=embed)
+                else:
+                    img_path = Path(__file__).parent / "save_instruction.png"
+                    if img_path.exists():
+                        file = discord.File(str(img_path), filename="save_instruction.png")
+                        await ctx.send(message, file=file)
+                    else:
+                        await ctx.send(f"{message}\n\n*(Default image `save_instruction.png` not found!)*")
+            else:
+                await ctx.send(message)
             return
 
-        data = custom_games[keyword]
-        message = (
-            data["custom_text"]
-            if data["type"] == "custom"
-            else SAVE_INSTRUCTIONS.format(
-                steam_id=data["steam_id"], config_folder=data["config_folder"]
-            )
-        )
+        # Fallback to base games
+        from .savesigner import SAVE_PROFILES
+        matched_key = None
+        for key, profile in SAVE_PROFILES.items():
+            if keyword == profile["name"].lower() or keyword == key.lower():
+                matched_key = key
+                break
+            # Fuzzy match fallback
+            if key.lower() in keyword or keyword in key.lower():
+                matched_key = key
+                break
 
-        if data.get("attach_image", False):
-            custom_image_url = data.get("custom_image_url", "")
-            if custom_image_url:
-                embed = discord.Embed(description=message, color=discord.Color.blue())
-                embed.set_image(url=custom_image_url)
-                await ctx.send(embed=embed)
+        if matched_key:
+            profile = SAVE_PROFILES[matched_key]
+            message = SAVE_INSTRUCTIONS.format(
+                steam_id=profile["steam_id"], config_folder=profile["config_folder"]
+            )
+            img_path = Path(__file__).parent / "save_instruction.png"
+            if img_path.exists():
+                file = discord.File(str(img_path), filename="save_instruction.png")
+                await ctx.send(message, file=file)
             else:
-                img_path = Path(__file__).parent / "save_instruction.png"
-                if img_path.exists():
-                    file = discord.File(str(img_path), filename="save_instruction.png")
-                    await ctx.send(message, file=file)
-                else:
-                    await ctx.send(f"{message}\n\n*(Default image `save_instruction.png` not found!)*")
+                await ctx.send(f"{message}\n\n*(Default image `save_instruction.png` not found!)*")
         else:
-            await ctx.send(message)
+            await ctx.send(f"❌ No game found (custom or base) matching keyword `{keyword}`.")
 
     @pubhelper_saveinst.command(name="edit")
     async def pubhelper_saveinst_edit(self, ctx: commands.Context, keyword: str) -> None:
