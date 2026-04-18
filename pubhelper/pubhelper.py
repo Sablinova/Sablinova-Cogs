@@ -1474,9 +1474,7 @@ class SabPubHelper(commands.Cog):
             await ctx.send(msg)
 
     @pubhelper_saveinst.command(name="remove")
-    async def pubhelper_saveinst_remove(
-        self, ctx: commands.Context, keyword: str
-    ) -> None:
+    async def pubhelper_saveinst_remove(self, ctx: commands.Context, *, keyword: str) -> None:
         """Remove a custom game from /saveinst by its keyword."""
         async with self.config.custom_saveinst() as custom_games:
             keyword = keyword.lower()
@@ -1488,7 +1486,7 @@ class SabPubHelper(commands.Cog):
                 await ctx.send(f"❌ No custom game found with keyword `{keyword}`.")
 
     @pubhelper_saveinst.command(name="test")
-    async def pubhelper_saveinst_test(self, ctx: commands.Context, keyword: str) -> None:
+    async def pubhelper_saveinst_test(self, ctx: commands.Context, *, keyword: str) -> None:
         """Test the /saveinst output for a custom or base game."""
         custom_games = await self.config.custom_saveinst()
         keyword = keyword.lower()
@@ -1548,7 +1546,7 @@ class SabPubHelper(commands.Cog):
             await ctx.send(f"❌ No game found (custom or base) matching keyword `{keyword}`.")
 
     @pubhelper_saveinst.command(name="edit")
-    async def pubhelper_saveinst_edit(self, ctx: commands.Context, keyword: str) -> None:
+    async def pubhelper_saveinst_edit(self, ctx: commands.Context, *, keyword: str) -> None:
         """Interactive wizard to edit an existing custom or base game for /saveinst."""
         
         async with self.config.custom_saveinst() as custom_games:
