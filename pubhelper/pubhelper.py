@@ -453,7 +453,7 @@ class SaveInstListView(discord.ui.View):
         embed.title = f"Preview: {data['name']}"
         embed.description = f"{config_info}\n**--- Preview ---**\n\n{message}"
         
-        kwargs = {"embed": embed, "ephemeral": True}
+        kwargs = {"embed": embed, "ephemeral": False}
         
         if image_url:
             embed.set_image(url=image_url)
