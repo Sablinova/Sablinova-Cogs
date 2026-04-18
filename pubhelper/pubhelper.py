@@ -1573,9 +1573,7 @@ class SabPubHelper(commands.Cog):
         cc_count = sum(1 for kw in SAVE_PROFILES if kw not in custom_games)
         sega_count = sum(1 for kw in SEGA_PROFILES if kw not in custom_games)
         
-        embed.add_field(name="Stats", value=f"**Custom Games:** {len(custom_games)}
-**Base ColdClient:** {cc_count}
-**Base SEGA:** {sega_count}", inline=False)
+        embed.add_field(name="Stats", value=f"**Custom Games:** {len(custom_games)}\n**Base ColdClient:** {cc_count}\n**Base SEGA:** {sega_count}", inline=False)
         
         await ctx.send(embed=embed, view=view)
 
