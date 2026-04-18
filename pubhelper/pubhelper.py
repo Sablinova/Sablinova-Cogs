@@ -516,9 +516,9 @@ class SabPubHelper(commands.Cog):
         Use these commands to install, check the status of, or cancel operations for the external BruteForcer and SaveSigner tools.
 
         **Quick Commands:**
-          setup       Interactive menu to quickly upload ColdClient basefiles for a game.
-          status      Check which ColdClient games have basefiles uploaded and view their config paths.
-          syncslash   Force sync all slash commands to Discord immediately.
+        `setup` - Interactive menu to quickly upload ColdClient basefiles for a game.
+        `status` - Check which ColdClient games have basefiles uploaded and view their config paths.
+        `syncslash` - Force sync all slash commands to Discord immediately.
         """
         pass
 
