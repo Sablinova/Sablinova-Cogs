@@ -96,6 +96,22 @@ SEGA_PROFILES = {
         "name": "P3R",
         "game_folder": "P3R",
     },
+    "persona 3 portable": {
+        "name": "P3P",
+        "game_folder": "P3P",
+    },
+    "persona 5 strikers": {
+        "name": "P5S",
+        "game_folder": "Persona 5 Strikers",
+    },
+    "persona 5 tactica": {
+        "name": "P5T",
+        "game_folder": "P5T",
+    },
+    "persona 4 arena ultimax": {
+        "name": "P4AU",
+        "game_folder": "P4AU",
+    },
     "like a dragon: infinite wealth": {
         "name": "IW",
         "game_folder": "YakuzaLikeADragon8",
