@@ -1656,7 +1656,7 @@ class SabPubHelper(commands.Cog):
                     choice = msg.content.strip().lower()
 
                     if choice == "cancel":
-                        await ctx.send(f"Exited editor for `{keyword}`.")
+                        await ctx.send(f"Exited editor for **{display_name}**.")
                         break
 
 
