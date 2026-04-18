@@ -369,6 +369,7 @@ class SabPubHelper(commands.Cog):
             log_channel=None,  # Channel ID for logging command usage
             cli_log_channel=None,  # Channel ID for live CLI progress logs
             known_save_ids=[],
+            custom_saveinst={},  # Custom games for /saveinst command
         )
         self.data_path = cog_data_path(self)
         self.save_signer = SaveSigner(self.data_path)
@@ -1267,6 +1268,169 @@ class SabPubHelper(commands.Cog):
 
         except asyncio.TimeoutError:
             await ctx.send("Confirmation timed out. Deletion cancelled.")
+
+    @pubhelper.group(name="saveinst")
+    async def pubhelper_saveinst(self, ctx: commands.Context) -> None:
+        """Manage custom game instructions for the /saveinst command."""
+        pass
+
+    @pubhelper_saveinst.command(name="setup")
+    async def pubhelper_saveinst_setup(self, ctx: commands.Context) -> None:
+        """Interactive wizard to add a new game to /saveinst."""
+
+        def check(m):
+            return m.author == ctx.author and m.channel == ctx.channel
+
+        await ctx.send(
+            "Let's add a new game for the `/saveinst` command.\n\n**1. What is the Display Name of the game?** (e.g., `Pragmata`)\n*(Type `cancel` at any time to exit)*"
+        )
+        try:
+            msg = await self.bot.wait_for("message", timeout=120.0, check=check)
+            if msg.content.lower() == "cancel":
+                return await ctx.send("Setup cancelled.")
+            display_name = msg.content.strip()
+
+            await ctx.send(
+                "**2. What keyword should I look for in the ticket channel name?**\n(e.g., type `pragmata` if the ticket will be named `username-pragmata`)"
+            )
+            msg = await self.bot.wait_for("message", timeout=120.0, check=check)
+            if msg.content.lower() == "cancel":
+                return await ctx.send("Setup cancelled.")
+            keyword = msg.content.strip().lower()
+
+            await ctx.send(
+                "**3. What type of setup is this?**\nType `coldclient` to use the standard template (Steam ID + Folder)\nType `custom` to write your own completely custom instructions."
+            )
+            msg = await self.bot.wait_for("message", timeout=120.0, check=check)
+            if msg.content.lower() == "cancel":
+                return await ctx.send("Setup cancelled.")
+            setup_type = msg.content.strip().lower()
+
+            if setup_type not in ["coldclient", "custom"]:
+                return await ctx.send(
+                    "❌ Invalid setup type. Must be `coldclient` or `custom`. Setup cancelled."
+                )
+
+            steam_id = ""
+            config_folder = ""
+            custom_text = ""
+            attach_image = False
+            custom_image_url = ""
+
+            if setup_type == "coldclient":
+                await ctx.send("**4. What is the Steam App ID?** (e.g., `3357650`)")
+                msg = await self.bot.wait_for("message", timeout=120.0, check=check)
+                if msg.content.lower() == "cancel":
+                    return await ctx.send("Setup cancelled.")
+                steam_id = msg.content.strip()
+
+                await ctx.send(
+                    "**5. What is the config folder name?** (e.g., `pub_pragmata`)"
+                )
+                msg = await self.bot.wait_for("message", timeout=120.0, check=check)
+                if msg.content.lower() == "cancel":
+                    return await ctx.send("Setup cancelled.")
+                config_folder = msg.content.strip()
+                attach_image = True  # Default true for coldclient
+
+                await ctx.send(
+                    "**6. (Optional) Provide a custom image URL or upload an image.**\n"
+                    "Type `skip` to use the default visual guide (`save_instruction.png`), or send an image/URL to use a custom one."
+                )
+                msg = await self.bot.wait_for("message", timeout=120.0, check=check)
+                if msg.content.lower() == "cancel":
+                    return await ctx.send("Setup cancelled.")
+                elif msg.content.lower() != "skip":
+                    if msg.attachments:
+                        custom_image_url = msg.attachments[0].url
+                    elif msg.content.startswith("http"):
+                        custom_image_url = msg.content.strip()
+                    else:
+                        await ctx.send(
+                            "No valid image/URL detected. Using default image."
+                        )
+
+            else:
+                await ctx.send(
+                    "**4. Please type out the exact, complete custom instruction text** you want the bot to send for this game."
+                )
+                msg = await self.bot.wait_for("message", timeout=300.0, check=check)
+                if msg.content.lower() == "cancel":
+                    return await ctx.send("Setup cancelled.")
+                custom_text = msg.content.strip()
+
+                await ctx.send(
+                    "**5. Do you want to attach an image to this custom message?**\n"
+                    "Type `default` for the standard visual guide.\n"
+                    "Type `skip` or `no` to not attach any image.\n"
+                    "Or **upload an image / paste an image URL** to attach a custom one."
+                )
+                msg = await self.bot.wait_for("message", timeout=120.0, check=check)
+                resp = msg.content.lower()
+
+                if resp == "cancel":
+                    return await ctx.send("Setup cancelled.")
+                elif resp == "default":
+                    attach_image = True
+                elif resp in ["skip", "no", "n", "false"]:
+                    attach_image = False
+                else:
+                    attach_image = True
+                    if msg.attachments:
+                        custom_image_url = msg.attachments[0].url
+                    elif msg.content.startswith("http"):
+                        custom_image_url = msg.content.strip()
+                    else:
+                        await ctx.send(
+                            "No valid image/URL detected. Using default image instead."
+                        )
+
+            # Save to DB
+            async with self.config.custom_saveinst() as custom_games:
+                custom_games[keyword] = {
+                    "name": display_name,
+                    "type": setup_type,
+                    "steam_id": steam_id,
+                    "config_folder": config_folder,
+                    "custom_text": custom_text,
+                    "attach_image": attach_image,
+                    "custom_image_url": custom_image_url,
+                }
+
+            await ctx.send(
+                f"✅ Successfully added **{display_name}** to `/saveinst`.\n"
+                f"You can test it in a channel containing `{keyword}` in its name."
+            )
+        except asyncio.TimeoutError:
+            await ctx.send("❌ Setup timed out.")
+
+    @pubhelper_saveinst.command(name="list")
+    async def pubhelper_saveinst_list(self, ctx: commands.Context) -> None:
+        """List all custom games configured for /saveinst."""
+        custom_games = await self.config.custom_saveinst()
+        if not custom_games:
+            return await ctx.send(
+                "No custom games configured. Use `[p]pubhelper saveinst setup` to add one."
+            )
+
+        msg = "**Custom `/saveinst` Games:**\n"
+        for keyword, data in custom_games.items():
+            msg += f"• **{data['name']}** (Keyword: `{keyword}`)\n  Type: `{data['type']}`\n"
+        await ctx.send(msg)
+
+    @pubhelper_saveinst.command(name="remove")
+    async def pubhelper_saveinst_remove(
+        self, ctx: commands.Context, keyword: str
+    ) -> None:
+        """Remove a custom game from /saveinst by its keyword."""
+        async with self.config.custom_saveinst() as custom_games:
+            keyword = keyword.lower()
+            if keyword in custom_games:
+                name = custom_games[keyword]["name"]
+                del custom_games[keyword]
+                await ctx.send(f"✅ Removed **{name}** from custom `/saveinst` games.")
+            else:
+                await ctx.send(f"❌ No custom game found with keyword `{keyword}`.")
 
     @pubhelper.command(name="updatedll")
     async def update_dll(self, ctx: commands.Context) -> None:
@@ -2524,7 +2688,43 @@ class SabPubHelper(commands.Cog):
         if "requiem" in game_name and "9" not in game_name:
             game_name = game_name.replace("resident evil", "resident evil 9")
 
-        # Look up game data in SAVE_PROFILES (case-insensitive fuzzy match)
+        # Look up game data in custom config first
+        custom_games = await self.config.custom_saveinst()
+        for keyword, data in custom_games.items():
+            if keyword in game_name:
+                message = (
+                    data["custom_text"]
+                    if data["type"] == "custom"
+                    else SAVE_INSTRUCTIONS.format(
+                        steam_id=data["steam_id"], config_folder=data["config_folder"]
+                    )
+                )
+
+                if data.get("attach_image", False):
+                    custom_image_url = data.get("custom_image_url", "")
+
+                    if custom_image_url:
+                        # Send with custom image URL (as an embed so it embeds natively)
+                        embed = discord.Embed(
+                            description=message, color=discord.Color.blue()
+                        )
+                        embed.set_image(url=custom_image_url)
+                        return await interaction.response.send_message(embed=embed)
+                    else:
+                        # Send with default local image
+                        img_path = Path(__file__).parent / "save_instruction.png"
+                        if img_path.exists():
+                            file = discord.File(
+                                str(img_path), filename="save_instruction.png"
+                            )
+                            return await interaction.response.send_message(
+                                message, file=file
+                            )
+
+                # Send without image
+                return await interaction.response.send_message(message)
+
+        # Fallback: Look up game data in SAVE_PROFILES (case-insensitive fuzzy match)
         matched_key = None
         for key, profile in SAVE_PROFILES.items():
             profile_name = profile["name"].lower()
