@@ -498,10 +498,46 @@ class SabPubHelper(commands.Cog):
     @commands.group(name="pubhelper")
     @commands.admin_or_permissions(manage_guild=True)
     async def pubhelper(self, ctx: commands.Context) -> None:
-        """PubHelper configuration commands."""
+        """Welcome to PubHelper!
+        This bot automatically combines user token configurations with game basefiles to create ready-to-use packages, and manages save signing tools.
+
+        Below are the command categories. Type `[p]help pubhelper <category>` to see all commands inside it.
+
+        **Config (`[p]pubhelper config`)**
+        Use these commands to set up the bot's internal paths, default `configs.user.ini` file, and logging channels.
+
+        **Game (`[p]pubhelper game`)**
+        Use these commands to add/remove supported ColdClient games, upload their basefiles, and update their executable or DLL files.
+
+        **SaveInst (`[p]pubhelper saveinst`)**
+        Use these commands to create and edit custom text and visual guides for the `/saveinst` slash command.
+
+        **Tool (`[p]pubhelper tool`)**
+        Use these commands to install, check the status of, or cancel operations for the external BruteForcer and SaveSigner tools.
+
+        **Quick Commands:**
+          setup       Interactive menu to quickly upload ColdClient basefiles for a game.
+          status      Check which ColdClient games have basefiles uploaded and view their config paths.
+          syncslash   Force sync all slash commands to Discord immediately.
+        """
         pass
 
-    @pubhelper.command(name="setclilog")
+    @pubhelper.group(name="config")
+    async def pubhelper_config(self, ctx: commands.Context) -> None:
+        """Configure paths, logs, and settings."""
+        pass
+
+    @pubhelper.group(name="game")
+    async def pubhelper_game(self, ctx: commands.Context) -> None:
+        """Manage game basefiles and binaries."""
+        pass
+
+    @pubhelper.group(name="tool")
+    async def pubhelper_tool(self, ctx: commands.Context) -> None:
+        """Manage the external BruteForcer and SaveSigner tools."""
+        pass
+
+    @pubhelper_config.command(name="clilog")
     async def set_cli_log_channel(
         self, ctx: commands.Context, channel: discord.TextChannel = None
     ) -> None:
@@ -532,7 +568,7 @@ class SabPubHelper(commands.Cog):
         await view.update_dropdown()
         view.message = await ctx.send(embed=embed, view=view)
 
-    @pubhelper.command(name="setpath")
+    @pubhelper_config.command(name="path_interactive")
     async def set_config_path_interactive(self, ctx: commands.Context) -> None:
         """Interactive command to change config.user.ini target path.
 
@@ -547,7 +583,7 @@ class SabPubHelper(commands.Cog):
         await view.update_dropdown()
         view.message = await ctx.send(embed=embed, view=view)
 
-    @pubhelper.command(name="addgame")
+    @pubhelper_game.command(name="add")
     async def add_game_interactive(self, ctx: commands.Context) -> None:
         """Interactive wizard to add a new game profile.
 
@@ -728,8 +764,8 @@ class SabPubHelper(commands.Cog):
                     f"3. Sync slash: `[p]slash sync ~`\n"
                     f"4. Upload basefiles: `[p]pubhelper setup` and select {display_name}\n"
                     f"5. **📝 Set custom instructions (recommended):**\n"
-                    f"   • `[p]pubhelper setinstructions {game_id} <text>`\n"
-                    f"   • `[p]pubhelper setinstructionsimage {game_id} <url>`\n\n"
+                    f"   • `[p]pubhelper config instructions {game_id} <text>`\n"
+                    f"   • `[p]pubhelper config instructionsimage {game_id} <url>`\n\n"
                     f"ℹ️ Until you set custom instructions, the game will use base/default instructions.\n\n"
                     f"After sync, `/{game_id}cc` will be available."
                 ),
@@ -738,7 +774,7 @@ class SabPubHelper(commands.Cog):
             await ctx.send(embed=embed)
 
         except asyncio.TimeoutError:
-            await ctx.send("Setup timed out. Run `[p]pubhelper addgame` to try again.")
+            await ctx.send("Setup timed out. Run `[p]pubhelper game add` to try again.")
 
     @pubhelper.command(name="syncslash")
     async def sync_slash(self, ctx: commands.Context) -> None:
@@ -755,17 +791,17 @@ class SabPubHelper(commands.Cog):
                 log.exception("Failed to sync slash commands")
                 await ctx.send(f"Failed to sync: {e}")
 
-    @pubhelper.command(name="setinstructions")
+    @pubhelper_config.command(name="instructions")
     async def set_instructions(
         self, ctx: commands.Context, game: str = None, *, text: str = None
     ) -> None:
         """Update installation instructions for a specific game or the base default.
 
         **Usage:**
-        `[p]pubhelper setinstructions <game_id> <text>` - Set game-specific instructions
-        `[p]pubhelper setinstructions base <text>` - Set base/default instructions
-        `[p]pubhelper setinstructions <game_id>` - View game's current instructions
-        `[p]pubhelper setinstructions` - View base instructions
+        `[p]pubhelper config instructions <game_id> <text>` - Set game-specific instructions
+        `[p]pubhelper config instructions base <text>` - Set base/default instructions
+        `[p]pubhelper config instructions <game_id>` - View game's current instructions
+        `[p]pubhelper config instructions` - View base instructions
 
         **Placeholders:**
         - `{game_name}` - Will be replaced with the game's display name
@@ -773,13 +809,13 @@ class SabPubHelper(commands.Cog):
 
         **Examples:**
         ```
-        [p]pubhelper setinstructions re9 1. Extract to {install_path}
+        [p]pubhelper config instructions re9 1. Extract to {install_path}
         2. Run the game
         3. Enjoy!
         ```
 
         ```
-        [p]pubhelper setinstructions base 1. Extract files to {install_path}
+        [p]pubhelper config instructions base 1. Extract files to {install_path}
         2. Run START_GAME.exe
         ```
         """
@@ -812,12 +848,12 @@ class SabPubHelper(commands.Cog):
                 name="📄 Set Instructions Text",
                 value=(
                     "**Set for specific game:**\n"
-                    "`[p]pubhelper setinstructions <game> <text>`\n"
-                    "Example: `[p]pubhelper setinstructions re9 1. Extract...`\n\n"
+                    "`[p]pubhelper config instructions <game> <text>`\n"
+                    "Example: `[p]pubhelper config instructions re9 1. Extract...`\n\n"
                     "**Set base/default:**\n"
-                    "`[p]pubhelper setinstructions base <text>`\n\n"
+                    "`[p]pubhelper config instructions base <text>`\n\n"
                     "**View game's current:**\n"
-                    "`[p]pubhelper setinstructions <game>`"
+                    "`[p]pubhelper config instructions <game>`"
                 ),
                 inline=False,
             )
@@ -827,12 +863,12 @@ class SabPubHelper(commands.Cog):
                 name="🖼️ Set Instructions Image",
                 value=(
                     "**Set for specific game:**\n"
-                    "`[p]pubhelper setinstructionsimage <game> <url>`\n"
-                    "Example: `[p]pubhelper setinstructionsimage cd https://i.imgur.com/...`\n\n"
+                    "`[p]pubhelper config instructionsimage <game> <url>`\n"
+                    "Example: `[p]pubhelper config instructionsimage cd https://i.imgur.com/...`\n\n"
                     "**Set base/default:**\n"
-                    "`[p]pubhelper setinstructionsimage base <url>`\n\n"
+                    "`[p]pubhelper config instructionsimage base <url>`\n\n"
                     "**Clear custom image:**\n"
-                    "`[p]pubhelper setinstructionsimage <game> clear`"
+                    "`[p]pubhelper config instructionsimage <game> clear`"
                 ),
                 inline=False,
             )
@@ -948,29 +984,29 @@ class SabPubHelper(commands.Cog):
             )
         )
 
-    @pubhelper.command(name="setinstructionsimage")
+    @pubhelper_config.command(name="instructionsimage")
     async def set_instructions_image(
         self, ctx: commands.Context, game: str = None, url: str = None
     ) -> None:
         """Update installation instructions image for a specific game or the base default.
 
         **Usage:**
-        `[p]pubhelper setinstructionsimage <game_id> <url>` - Set game-specific image from URL
-        `[p]pubhelper setinstructionsimage <game_id>` - Set from attached image
-        `[p]pubhelper setinstructionsimage <game_id> clear` - Remove game's custom image
-        `[p]pubhelper setinstructionsimage base <url>` - Set base/default image
-        `[p]pubhelper setinstructionsimage` - Show guide
+        `[p]pubhelper config instructionsimage <game_id> <url>` - Set game-specific image from URL
+        `[p]pubhelper config instructionsimage <game_id>` - Set from attached image
+        `[p]pubhelper config instructionsimage <game_id> clear` - Remove game's custom image
+        `[p]pubhelper config instructionsimage base <url>` - Set base/default image
+        `[p]pubhelper config instructionsimage` - Show guide
 
         **Examples:**
         ```
-        [p]pubhelper setinstructionsimage re9 https://i.imgur.com/abc123.png
-        [p]pubhelper setinstructionsimage cd clear
-        [p]pubhelper setinstructionsimage base https://i.imgur.com/default.png
+        [p]pubhelper config instructionsimage re9 https://i.imgur.com/abc123.png
+        [p]pubhelper config instructionsimage cd clear
+        [p]pubhelper config instructionsimage base https://i.imgur.com/default.png
         ```
 
         **Or attach an image to your message:**
         ```
-        [p]pubhelper setinstructionsimage re9
+        [p]pubhelper config instructionsimage re9
         [attach image]
         ```
         """
@@ -1013,15 +1049,15 @@ class SabPubHelper(commands.Cog):
                 name="🖼️ Set Instructions Image",
                 value=(
                     "**Set from URL:**\n"
-                    "`[p]pubhelper setinstructionsimage <game> <url>`\n\n"
+                    "`[p]pubhelper config instructionsimage <game> <url>`\n\n"
                     "**Set from attachment:**\n"
-                    "`[p]pubhelper setinstructionsimage <game>` + attach image\n\n"
+                    "`[p]pubhelper config instructionsimage <game>` + attach image\n\n"
                     "**Set base/default:**\n"
-                    "`[p]pubhelper setinstructionsimage base <url>`\n\n"
+                    "`[p]pubhelper config instructionsimage base <url>`\n\n"
                     "**View game's current:**\n"
-                    "`[p]pubhelper setinstructionsimage <game>`\n\n"
+                    "`[p]pubhelper config instructionsimage <game>`\n\n"
                     "**Clear custom image:**\n"
-                    "`[p]pubhelper setinstructionsimage <game> clear`"
+                    "`[p]pubhelper config instructionsimage <game> clear`"
                 ),
                 inline=False,
             )
@@ -1031,10 +1067,10 @@ class SabPubHelper(commands.Cog):
                 name="📄 Set Instructions Text",
                 value=(
                     "**Set for specific game:**\n"
-                    "`[p]pubhelper setinstructions <game> <text>`\n\n"
+                    "`[p]pubhelper config instructions <game> <text>`\n\n"
                     "**Set base/default:**\n"
-                    "`[p]pubhelper setinstructions base <text>`\n\n"
-                    "Use `[p]pubhelper setinstructions` for full guide."
+                    "`[p]pubhelper config instructions base <text>`\n\n"
+                    "Use `[p]pubhelper config instructions` for full guide."
                 ),
                 inline=False,
             )
@@ -1150,16 +1186,16 @@ class SabPubHelper(commands.Cog):
         embed.set_image(url=url)
         await ctx.send(embed=embed)
 
-    @pubhelper.command(name="logchannel")
+    @pubhelper_config.command(name="logchannel")
     async def set_log_channel(
         self, ctx: commands.Context, channel: discord.TextChannel = None
     ) -> None:
         """Set the channel for logging slash command usage.
 
         **Usage:**
-        `[p]pubhelper logchannel #channel` - Set log channel
-        `[p]pubhelper logchannel` - Show current log channel
-        `[p]pubhelper logchannel clear` - Disable logging
+        `[p]pubhelper config logchannel #channel` - Set log channel
+        `[p]pubhelper config logchannel` - Show current log channel
+        `[p]pubhelper config logchannel clear` - Disable logging
 
         **What gets logged:**
         - User who ran the command
@@ -1170,7 +1206,7 @@ class SabPubHelper(commands.Cog):
 
         **Example:**
         ```
-        [p]pubhelper logchannel #bot-logs
+        [p]pubhelper config logchannel #bot-logs
         ```
         """
         if channel is None and ctx.message.content.strip().endswith("clear"):
@@ -1200,12 +1236,12 @@ class SabPubHelper(commands.Cog):
             f"✅ Command logging enabled. Logs will be sent to {channel.mention}"
         )
 
-    @pubhelper.command(name="removegame")
+    @pubhelper_game.command(name="remove")
     async def remove_game(self, ctx: commands.Context, game: str) -> None:
         """Remove a game profile.
 
         **Usage:**
-        `[p]pubhelper removegame <game_id>`
+        `[p]pubhelper game remove <game_id>`
 
         This will remove the game profile and delete its basefiles.
         Built-in games (re9, cd) cannot be removed.
@@ -1602,7 +1638,7 @@ class SabPubHelper(commands.Cog):
                     await ctx.send("❌ Editor timed out. Any changes made before this were saved.")
                     break
 
-    @pubhelper.command(name="updatedll")
+    @pubhelper_game.command(name="updatedll")
     async def update_dll(self, ctx: commands.Context) -> None:
         """Update steamclient64.dll across all game basefiles.
 
@@ -1747,7 +1783,7 @@ class SabPubHelper(commands.Cog):
                 )
 
         except asyncio.TimeoutError:
-            await ctx.send("Timed out. Run `[p]pubhelper updatedll` to try again.")
+            await ctx.send("Timed out. Run `[p]pubhelper game updatedll` to try again.")
 
     def _update_dll_in_archive(self, archive_path: Path, dll_content: bytes) -> int:
         """Update steamclient64.dll in an archive. Returns count of updated files."""
@@ -1801,15 +1837,15 @@ class SabPubHelper(commands.Cog):
 
         return updated_count
 
-    @pubhelper.command(name="configpath")
+    @pubhelper_config.command(name="path")
     async def set_config_path(
         self, ctx: commands.Context, game: str, *, path: str
     ) -> None:
         """Set the config.user.ini target path for a game.
 
         **Usage:**
-        `[p]pubhelper configpath re9 pub_re9/steam_settings/configs.user.ini`
-        `[p]pubhelper configpath cd steam_settings/configs.user.ini`
+        `[p]pubhelper config path re9 pub_re9/steam_settings/configs.user.ini`
+        `[p]pubhelper config path cd steam_settings/configs.user.ini`
         """
         game = game.lower()
         profiles = await self.config.profiles()
@@ -1835,7 +1871,7 @@ class SabPubHelper(commands.Cog):
             f"New: `{path}`"
         )
 
-    @pubhelper.command(name="setbasefiles")
+    @pubhelper_game.command(name="basefiles")
     async def set_basefiles(self, ctx: commands.Context, game: str, url: str) -> None:
         """Set the basefiles archive for a game.
 
@@ -1844,8 +1880,8 @@ class SabPubHelper(commands.Cog):
         **Games:** re9, cd
 
         **Usage:**
-        `[p]pubhelper setbasefiles re9 <url>`
-        `[p]pubhelper setbasefiles cd <url>`
+        `[p]pubhelper game basefiles re9 <url>`
+        `[p]pubhelper game basefiles cd <url>`
         """
         game = game.lower()
         profiles = await self.config.profiles()
@@ -1902,7 +1938,7 @@ class SabPubHelper(commands.Cog):
                                 await ctx.send(
                                     f"Warning: basefiles may not have the expected structure. "
                                     f"Expected path containing `{target_dir}`.\n"
-                                    f"Use `[p]pubhelper setpath {game}` to change the config path."
+                                    f"Use `[p]pubhelper config path_interactive {game}` to change the config path."
                                 )
                         except Exception as e:
                             await ctx.send(
@@ -2070,17 +2106,17 @@ class SabPubHelper(commands.Cog):
         except Exception as e:
             return f"Error: {e}"
 
-    @pubhelper.command(name="pullbasefiles")
+    @pubhelper_game.command(name="pull")
     async def pull_basefiles(self, ctx: commands.Context, game: str) -> None:
         """Export a game's basefiles archive via Discord.
 
         **Usage:**
-        `[p]pubhelper pullbasefiles <game_id>`
+        `[p]pubhelper game pull <game_id>`
 
         **Examples:**
-        `[p]pubhelper pullbasefiles re9`
-        `[p]pubhelper pullbasefiles cd`
-        `[p]pubhelper pullbasefiles mhw`
+        `[p]pubhelper game pull re9`
+        `[p]pubhelper game pull cd`
+        `[p]pubhelper game pull mhw`
 
         This uploads the basefiles archive as a Discord attachment for download.
         """
@@ -2157,17 +2193,17 @@ class SabPubHelper(commands.Cog):
                 log.exception("Error exporting basefiles")
                 await ctx.send(f"Error exporting basefiles: {e}")
 
-    @pubhelper.command(name="ccini")
+    @pubhelper_config.command(name="ccini")
     async def show_ccini(self, ctx: commands.Context, game: str) -> None:
         """Show ColdClientLoader.ini from a game's basefiles.
 
         **Usage:**
-        `[p]pubhelper ccini <game_id>`
+        `[p]pubhelper config ccini <game_id>`
 
         **Examples:**
-        `[p]pubhelper ccini re9`
-        `[p]pubhelper ccini cd`
-        `[p]pubhelper ccini mhw`
+        `[p]pubhelper config ccini re9`
+        `[p]pubhelper config ccini cd`
+        `[p]pubhelper config ccini mhw`
 
         This extracts and displays the ColdClientLoader.ini file from the basefiles.
         """
@@ -2263,90 +2299,8 @@ class SabPubHelper(commands.Cog):
         except Exception as e:
             return f"Error: {e}"
 
-    @pubhelper.command(name="help")
-    async def help_command(self, ctx: commands.Context) -> None:
-        """Show detailed setup and usage guide."""
-        embed = discord.Embed(
-            title="PubHelper Setup Guide",
-            color=discord.Color.blurple(),
-        )
 
-        embed.add_field(
-            name="What is PubHelper?",
-            value=(
-                "PubHelper combines user token configs with game basefiles. "
-                "Users provide their token zip, and the bot creates a ready-to-use package."
-            ),
-            inline=False,
-        )
-
-        embed.add_field(
-            name="Step 1: Set Basefiles",
-            value=(
-                "**Interactive:**\n"
-                "```\n[p]pubhelper setup\n```\n"
-                "**Direct:**\n"
-                "```\n[p]pubhelper setbasefiles re9 <url>\n"
-                "[p]pubhelper setbasefiles cd <url>\n```"
-            ),
-            inline=False,
-        )
-
-        embed.add_field(
-            name="Step 2: Configure Path (Optional)",
-            value=(
-                "Change where `configs.user.ini` is placed:\n"
-                "**Interactive:**\n"
-                "```\n[p]pubhelper setpath\n```\n"
-                "**Direct:**\n"
-                "```\n[p]pubhelper configpath re9 pub_re9/steam_settings/\n```"
-            ),
-            inline=False,
-        )
-
-        embed.add_field(
-            name="Step 3: Sync Slash Commands",
-            value=(
-                "```\n[p]pubhelper syncslash\n```\n"
-                "Or use Red's built-in:\n"
-                "```\n[p]slash sync\n```"
-            ),
-            inline=False,
-        )
-
-        embed.add_field(
-            name="Step 4: Users Can Now Use",
-            value=(
-                "`/re9cc url:<token zip link>` - RE9 package\n"
-                "`/cdcc url:<token zip link>` - CD package"
-            ),
-            inline=False,
-        )
-
-        embed.add_field(
-            name="Other Commands",
-            value=(
-                "`[p]pubhelper status` - Check all games status & paths\n"
-                "`[p]pubhelper structure <game>` - Show basefiles file structure\n"
-                "`[p]pubhelper ccini <game>` - Show ColdClientLoader.ini\n"
-                "`[p]pubhelper pullbasefiles <game>` - Export basefiles via Discord\n"
-                "`[p]pubhelper logchannel #channel` - Set command usage log channel\n"
-                "`[p]pubhelper setup` - Interactive basefiles setup\n"
-                "`[p]pubhelper setpath` - Interactive path change\n"
-                "`[p]pubhelper addgame` - Add a new game profile\n"
-                "`[p]pubhelper removegame <id>` - Remove a game profile\n"
-                "`[p]pubhelper updatedll` - Update steamclient64.dll in all basefiles\n"
-                "`[p]pubhelper syncslash` - Sync slash commands to Discord\n"
-                "`[p]pubhelper setinstructions <game|base>` - Set game or base instructions\n"
-                "`[p]pubhelper setinstructionsimage <game|base>` - Set game or base image\n"
-                "`[p]pubhelper help` - This guide"
-            ),
-            inline=False,
-        )
-
-        await ctx.send(embed=embed)
-
-    @pubhelper.command(name="setuptool")
+    @pubhelper_tool.command(name="setup")
     @commands.is_owner()
     async def setuptool(self, ctx: commands.Context) -> None:
         """Download and install MandarinJuice CLI and game profiles."""
@@ -2437,7 +2391,7 @@ class SabPubHelper(commands.Cog):
             log.error(f"setuptool error: {e}", exc_info=True)
             await ctx.send(f"❌ Installation failed: {str(e)}")
 
-    @pubhelper.command(name="toolstatus")
+    @pubhelper_tool.command(name="status")
     async def toolstatus(self, ctx: commands.Context) -> None:
         """Check MandarinJuice CLI installation status."""
         tool_path = self.save_signer.get_tool_path()
@@ -2446,7 +2400,7 @@ class SabPubHelper(commands.Cog):
         if not tool_path:
             await ctx.send(
                 "❌ **MandarinJuice CLI not installed**\n\n"
-                "Run `[p]pubhelper setuptool` to install."
+                "Run `[p]pubhelper tool setup` to install."
             )
             return
 
@@ -2463,14 +2417,14 @@ class SabPubHelper(commands.Cog):
             f"**Game Profiles:**\n" + "\n".join(profile_list)
         )
 
-    @pubhelper.command(name="cancelbrute")
+    @pubhelper_tool.command(name="cancel")
     async def admin_cancelbrute(
         self, ctx: commands.Context, user: discord.Member
     ) -> None:
         """Cancel a specific user's active savebrute task.
 
         **Usage:**
-        `[p]pubhelper cancelbrute <user>`
+        `[p]pubhelper tool cancel <user>`
         """
         task = getattr(self, "active_brutes", {}).get(user.id)
         if task and not task.done():
@@ -2484,7 +2438,7 @@ class SabPubHelper(commands.Cog):
                 f"❌ **{user.display_name}** doesn't have any active savebrute tasks running."
             )
 
-    @pubhelper.command(name="updateexe")
+    @pubhelper_game.command(name="updateexe")
     async def update_exe(self, ctx: commands.Context, exe_link: str) -> None:
         """Update start_game.exe in all basefiles.
 
@@ -2627,7 +2581,7 @@ class SabPubHelper(commands.Cog):
         if not is_set or not basefiles_path or not basefiles_path.exists():
             await interaction.response.send_message(
                 f"{profile['name']} basefiles not configured. Ask the bot owner to run "
-                f"`[p]pubhelper setbasefiles {game} <url>` first.",
+                f"`[p]pubhelper game basefiles {game} <url>` first.",
                 ephemeral=True,
             )
             return
@@ -2963,7 +2917,7 @@ class SabPubHelper(commands.Cog):
         # Check if tool is installed
         if not self.save_signer.is_tool_installed():
             await interaction.followup.send(
-                "❌ MandarinJuice CLI is not installed. Please ask an admin to run `[p]pubhelper setuptool`",
+                "❌ MandarinJuice CLI is not installed. Please ask an admin to run `[p]pubhelper tool setup`",
                 ephemeral=True,
             )
             return
@@ -3400,7 +3354,7 @@ class SabPubHelper(commands.Cog):
         # Check if tool is installed
         if not self.save_signer.is_tool_installed():
             await interaction.followup.send(
-                "❌ MandarinJuice CLI is not installed. Please ask an admin to run `[p]pubhelper setuptool`",
+                "❌ MandarinJuice CLI is not installed. Please ask an admin to run `[p]pubhelper tool setup`",
                 ephemeral=True,
             )
             return
