@@ -23,7 +23,13 @@ from redbot.core import Config, commands
 from redbot.core.bot import Red
 from redbot.core.data_manager import cog_data_path
 
-from .savesigner import SAVE_PROFILES, SaveSigner, SAVE_INSTRUCTIONS, SAVE_INSTRUCTIONS_SEGA, SEGA_PROFILES
+from .savesigner import (
+    SAVE_PROFILES,
+    SaveSigner,
+    SAVE_INSTRUCTIONS,
+    SAVE_INSTRUCTIONS_SEGA,
+    SEGA_PROFILES,
+)
 
 log = logging.getLogger("red.sablinova.pubhelper")
 
@@ -349,9 +355,14 @@ def _patch_user_install(cmd) -> None:
     cmd.to_dict = to_dict
 
 
-
 class SaveInstListView(discord.ui.View):
-    def __init__(self, author: discord.User, custom_games: dict, save_profiles: dict, sega_profiles: dict):
+    def __init__(
+        self,
+        author: discord.User,
+        custom_games: dict,
+        save_profiles: dict,
+        sega_profiles: dict,
+    ):
         super().__init__(timeout=180)
         self.author = author
         self.custom_games = custom_games
@@ -361,48 +372,58 @@ class SaveInstListView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author.id:
-            await interaction.response.send_message("This menu is not for you.", ephemeral=True)
+            await interaction.response.send_message(
+                "This menu is not for you.", ephemeral=True
+            )
             return False
         return True
 
     def build_selects(self):
         options = []
-        
+
         # 1. Custom Games
         for kw, data in sorted(self.custom_games.items()):
-            options.append(discord.SelectOption(
-                label=data['name'][:100], 
-                description=f"Custom ({data.get('type', 'Unknown')}) - kw: {kw}"[:100],
-                value=f"custom:{kw}"
-            ))
-            
+            options.append(
+                discord.SelectOption(
+                    label=data["name"][:100],
+                    description=f"Custom ({data.get('type', 'Unknown')}) - kw: {kw}"[
+                        :100
+                    ],
+                    value=f"custom:{kw}",
+                )
+            )
+
         # 2. ColdClient Games
         for kw, profile in sorted(self.save_profiles.items()):
             if kw not in self.custom_games:  # Don't show base if overridden
-                options.append(discord.SelectOption(
-                    label=profile['name'][:100],
-                    description=f"ColdClient - kw: {kw}"[:100],
-                    value=f"base:{kw}"
-                ))
-                
+                options.append(
+                    discord.SelectOption(
+                        label=profile["name"][:100],
+                        description=f"ColdClient - kw: {kw}"[:100],
+                        value=f"base:{kw}",
+                    )
+                )
+
         # 3. SEGA Games
         for kw, profile in sorted(self.sega_profiles.items()):
             if kw not in self.custom_games:
-                options.append(discord.SelectOption(
-                    label=profile['name'][:100],
-                    description=f"SEGA - kw: {kw}"[:100],
-                    value=f"sega:{kw}"
-                ))
-        
+                options.append(
+                    discord.SelectOption(
+                        label=profile["name"][:100],
+                        description=f"SEGA - kw: {kw}"[:100],
+                        value=f"sega:{kw}",
+                    )
+                )
+
         # Batch options into selects of 25 (Discord UI limit)
         for i in range(0, len(options), 25):
-            batch = options[i:i+25]
+            batch = options[i : i + 25]
             select = discord.ui.Select(
-                placeholder=f"Select a game to preview (Page {i//25 + 1})...",
+                placeholder=f"Select a game to preview (Page {i // 25 + 1})...",
                 min_values=1,
                 max_values=1,
                 options=batch,
-                custom_id=f"select_game_{i}"
+                custom_id=f"select_game_{i}",
             )
             select.callback = self.select_callback
             self.add_item(select)
@@ -410,59 +431,76 @@ class SaveInstListView(discord.ui.View):
     async def select_callback(self, interaction: discord.Interaction):
         value = interaction.data["values"][0]
         cat, kw = value.split(":", 1)
-        
+
         embed = discord.Embed(color=discord.Color.blue())
         from .savesigner import SAVE_INSTRUCTIONS, SAVE_INSTRUCTIONS_SEGA
         from pathlib import Path
-        
+
         message = ""
         config_info = ""
         image_url = ""
         img_path = None
-        
+
         if cat == "custom":
             data = self.custom_games[kw]
             config_info = f"**Type:** Custom `{data.get('type', 'custom')}`\n**Keyword:** `{kw}`\n**Name:** {data['name']}\n"
-            
+
             if data.get("type") == "custom":
-                message = data.get("custom_text", "").format(name=data["name"], keyword=kw)
+                message = data.get("custom_text", "").format(
+                    name=data["name"], keyword=kw
+                )
             elif data.get("type") == "sega":
-                message = SAVE_INSTRUCTIONS_SEGA.format(game_name=data["name"], game_folder=data.get("config_folder", ""))
+                message = SAVE_INSTRUCTIONS_SEGA.format(
+                    game_name=data["name"], game_folder=data.get("config_folder", "")
+                )
                 config_info += f"**Game Folder:** `{data.get('config_folder', '')}`\n"
             else:
-                message = SAVE_INSTRUCTIONS.format(steam_id=data.get("steam_id", ""), config_folder=data.get("config_folder", ""))
+                message = SAVE_INSTRUCTIONS.format(
+                    steam_id=data.get("steam_id", ""),
+                    config_folder=data.get("config_folder", ""),
+                )
                 config_info += f"**Steam ID:** `{data.get('steam_id', '')}`\n**Config Folder:** `{data.get('config_folder', '')}`\n"
-                
+
             if data.get("attach_image", False):
                 image_url = data.get("custom_image_url", "")
                 if not image_url:
                     img_path = Path(__file__).parent / "save_instruction.png"
-                    
+
         elif cat == "base":
             data = self.save_profiles[kw]
             config_info = f"**Type:** Base `ColdClient`\n**Keyword:** `{kw}`\n**Name:** {data['name']}\n**Steam ID:** `{data.get('steam_id', '')}`\n**Config Folder:** `{data.get('config_folder', '')}`\n"
-            message = SAVE_INSTRUCTIONS.format(steam_id=data.get("steam_id", ""), config_folder=data.get("config_folder", ""))
+            message = SAVE_INSTRUCTIONS.format(
+                steam_id=data.get("steam_id", ""),
+                config_folder=data.get("config_folder", ""),
+            )
             img_path = Path(__file__).parent / "save_instruction.png"
-            
+
         elif cat == "sega":
             data = self.sega_profiles[kw]
             config_info = f"**Type:** Base `SEGA`\n**Keyword:** `{kw}`\n**Name:** {data['name']}\n**Game Folder:** `{data.get('game_folder', '')}`\n"
-            message = SAVE_INSTRUCTIONS_SEGA.format(game_name=data["name"], game_folder=data.get("game_folder", ""))
+            message = SAVE_INSTRUCTIONS_SEGA.format(
+                game_name=data["name"], game_folder=data.get("game_folder", "")
+            )
             img_path = None
-            
+
         embed.title = f"Preview: {data['name']}"
         embed.description = f"{config_info}\n**--- Preview ---**\n\n{message}"
-        
+
         kwargs = {"embed": embed, "ephemeral": False}
-        
+
         if image_url:
             embed.set_image(url=image_url)
-        elif img_path and img_path.exists() and not (cat == "custom" and data.get("type") == "sega"):
+        elif (
+            img_path
+            and img_path.exists()
+            and not (cat == "custom" and data.get("type") == "sega")
+        ):
             file = discord.File(str(img_path), filename="save_instruction.png")
             embed.set_image(url="attachment://save_instruction.png")
             kwargs["file"] = file
-            
+
         await interaction.response.send_message(**kwargs)
+
 
 class SabPubHelper(commands.Cog):
     """Config combiner - extracts configs.user.ini and combines with basefiles."""
@@ -1560,25 +1598,31 @@ class SabPubHelper(commands.Cog):
         """List all custom and base games configured for /saveinst."""
         custom_games = await self.config.custom_saveinst()
         from .savesigner import SAVE_PROFILES, SEGA_PROFILES
-        
+
         view = SaveInstListView(ctx.author, custom_games, SAVE_PROFILES, SEGA_PROFILES)
-        
+
         embed = discord.Embed(
             title="/saveinst Game Profiles",
             description="Select a game from the dropdown below to view its configuration and test its /saveinst output preview.",
-            color=discord.Color.blue()
+            color=discord.Color.blue(),
         )
-        
+
         # Count stats
         cc_count = sum(1 for kw in SAVE_PROFILES if kw not in custom_games)
         sega_count = sum(1 for kw in SEGA_PROFILES if kw not in custom_games)
-        
-        embed.add_field(name="Stats", value=f"**Custom Games:** {len(custom_games)}\n**Base ColdClient:** {cc_count}\n**Base SEGA:** {sega_count}", inline=False)
-        
+
+        embed.add_field(
+            name="Stats",
+            value=f"**Custom Games:** {len(custom_games)}\n**Base ColdClient:** {cc_count}\n**Base SEGA:** {sega_count}",
+            inline=False,
+        )
+
         await ctx.send(embed=embed, view=view)
 
     @pubhelper_saveinst.command(name="remove")
-    async def pubhelper_saveinst_remove(self, ctx: commands.Context, *, keyword: str) -> None:
+    async def pubhelper_saveinst_remove(
+        self, ctx: commands.Context, *, keyword: str
+    ) -> None:
         """Remove a custom game from /saveinst by its keyword or name."""
         async with self.config.custom_saveinst() as custom_games:
             keyword = keyword.lower()
@@ -1590,7 +1634,7 @@ class SabPubHelper(commands.Cog):
                     if keyword == data["name"].lower():
                         matched_key = k
                         break
-            
+
             if matched_key:
                 name = custom_games[matched_key]["name"]
                 del custom_games[matched_key]
@@ -1599,7 +1643,9 @@ class SabPubHelper(commands.Cog):
                 await ctx.send(f"❌ No custom game found matching `{keyword}`.")
 
     @pubhelper_saveinst.command(name="test")
-    async def pubhelper_saveinst_test(self, ctx: commands.Context, *, keyword: str) -> None:
+    async def pubhelper_saveinst_test(
+        self, ctx: commands.Context, *, keyword: str
+    ) -> None:
         """Test the /saveinst output for a custom or base game."""
         custom_games = await self.config.custom_saveinst()
         keyword = keyword.lower()
@@ -1622,34 +1668,48 @@ class SabPubHelper(commands.Cog):
         if matched_custom_key:
             data = custom_games[matched_custom_key]
             if data["type"] == "custom":
-                message = data["custom_text"].format(name=data["name"], keyword=matched_custom_key)
+                message = data["custom_text"].format(
+                    name=data["name"], keyword=matched_custom_key
+                )
             elif data["type"] == "sega":
-                message = SAVE_INSTRUCTIONS_SEGA.format(game_name=data["name"], game_folder=data["config_folder"])
+                message = SAVE_INSTRUCTIONS_SEGA.format(
+                    game_name=data["name"], game_folder=data["config_folder"]
+                )
             else:
-                message = SAVE_INSTRUCTIONS.format(steam_id=data.get("steam_id", ""), config_folder=data.get("config_folder", ""))
+                message = SAVE_INSTRUCTIONS.format(
+                    steam_id=data.get("steam_id", ""),
+                    config_folder=data.get("config_folder", ""),
+                )
 
             if data.get("attach_image", False):
                 custom_image_url = data.get("custom_image_url", "")
                 if custom_image_url:
-                    embed = discord.Embed(description=message, color=discord.Color.blue())
+                    embed = discord.Embed(
+                        description=message, color=discord.Color.blue()
+                    )
                     embed.set_image(url=custom_image_url)
                     await ctx.send(embed=embed)
                 else:
                     img_path = Path(__file__).parent / "save_instruction.png"
                     if img_path.exists():
-                        file = discord.File(str(img_path), filename="save_instruction.png")
+                        file = discord.File(
+                            str(img_path), filename="save_instruction.png"
+                        )
                         await ctx.send(message, file=file)
                     else:
-                        await ctx.send(f"{message}\n\n*(Default image `save_instruction.png` not found!)*")
+                        await ctx.send(
+                            f"{message}\n\n*(Default image `save_instruction.png` not found!)*"
+                        )
             else:
                 await ctx.send(message)
             return
 
         # Fallback to base games
         from .savesigner import SAVE_PROFILES, SEGA_PROFILES
+
         matched_key = None
         is_sega = False
-        
+
         for key, profile in SAVE_PROFILES.items():
             if keyword == profile["name"].lower() or keyword == key.lower():
                 matched_key = key
@@ -1657,7 +1717,7 @@ class SabPubHelper(commands.Cog):
             if key.lower() in keyword or keyword in key.lower():
                 matched_key = key
                 break
-                
+
         if not matched_key:
             for key, profile in SEGA_PROFILES.items():
                 if keyword == profile["name"].lower() or keyword == key.lower():
@@ -1686,17 +1746,23 @@ class SabPubHelper(commands.Cog):
                     file = discord.File(str(img_path), filename="save_instruction.png")
                     await ctx.send(message, file=file)
                 else:
-                    await ctx.send(f"{message}\n\n*(Default image `save_instruction.png` not found!)*")
+                    await ctx.send(
+                        f"{message}\n\n*(Default image `save_instruction.png` not found!)*"
+                    )
         else:
-            await ctx.send(f"❌ No game found (custom or base) matching keyword `{keyword}`.")
+            await ctx.send(
+                f"❌ No game found (custom or base) matching keyword `{keyword}`."
+            )
 
     @pubhelper_saveinst.command(name="edit")
-    async def pubhelper_saveinst_edit(self, ctx: commands.Context, *, keyword: str) -> None:
+    async def pubhelper_saveinst_edit(
+        self, ctx: commands.Context, *, keyword: str
+    ) -> None:
         """Interactive wizard to edit an existing custom or base game for /saveinst."""
-        
+
         async with self.config.custom_saveinst() as custom_games:
             keyword = keyword.lower()
-            
+
             matched_key = None
             if keyword in custom_games:
                 matched_key = keyword
@@ -1709,6 +1775,7 @@ class SabPubHelper(commands.Cog):
             if not matched_key:
                 # Check if it's a base game to override
                 from .savesigner import SAVE_PROFILES, SEGA_PROFILES
+
                 is_sega = False
                 for key, profile in SAVE_PROFILES.items():
                     if keyword == profile["name"].lower() or keyword == key.lower():
@@ -1719,7 +1786,7 @@ class SabPubHelper(commands.Cog):
                         if key.lower() in keyword or keyword in key.lower():
                             matched_key = key
                             break
-                            
+
                 if not matched_key:
                     for key, profile in SEGA_PROFILES.items():
                         if keyword == profile["name"].lower() or keyword == key.lower():
@@ -1755,9 +1822,13 @@ class SabPubHelper(commands.Cog):
                             "attach_image": True,
                             "custom_image_url": "",
                         }
-                    await ctx.send(f"Created a custom override for base game **{profile['name']}**.")
+                    await ctx.send(
+                        f"Created a custom override for base game **{profile['name']}**."
+                    )
                 else:
-                    await ctx.send(f"No custom or base game found matching `{keyword}`.")
+                    await ctx.send(
+                        f"No custom or base game found matching `{keyword}`."
+                    )
                     return
 
             data = custom_games[matched_key]
@@ -1769,16 +1840,20 @@ class SabPubHelper(commands.Cog):
             while True:
                 display_name = data.get("name", "Unknown")
                 setup_type = data.get("type", "unknown")
-                
+
                 if setup_type == "coldclient":
                     text_preview = f"**Type:** `ColdClient`\n**Steam ID:** `{data.get('steam_id', '')}`\n**Config Folder:** `{data.get('config_folder', '')}`"
                 elif setup_type == "sega":
                     text_preview = f"**Type:** `SEGA`\n**Game Folder:** `{data.get('config_folder', '')}`"
                 else:
-                    raw_text = data.get('custom_text', '')
-                    clean_text = raw_text.replace('`', '').strip()
-                    preview_snippet = clean_text[:40] + "..." if len(clean_text) > 40 else clean_text
-                    text_preview = f"**Type:** `Custom Text`\n**Preview:** *{preview_snippet}*"
+                    raw_text = data.get("custom_text", "")
+                    clean_text = raw_text.replace("`", "").strip()
+                    preview_snippet = (
+                        clean_text[:40] + "..." if len(clean_text) > 40 else clean_text
+                    )
+                    text_preview = (
+                        f"**Type:** `Custom Text`\n**Preview:** *{preview_snippet}*"
+                    )
 
                 image_preview = "None"
                 if data.get("attach_image", False):
@@ -1790,11 +1865,15 @@ class SabPubHelper(commands.Cog):
                 embed = discord.Embed(
                     title=f"Editing SaveInst: {display_name}",
                     description="Type the **number** of the field you want to edit, or type `cancel` to exit and save.",
-                    color=discord.Color.blurple()
+                    color=discord.Color.blurple(),
                 )
                 embed.add_field(name="Keyword", value=f"`{keyword}`", inline=False)
-                embed.add_field(name="1. Display Name", value=f"**{display_name}**", inline=False)
-                embed.add_field(name="2. Setup Type & Text", value=text_preview, inline=False)
+                embed.add_field(
+                    name="1. Display Name", value=f"**{display_name}**", inline=False
+                )
+                embed.add_field(
+                    name="2. Setup Type & Text", value=text_preview, inline=False
+                )
                 embed.add_field(name="3. Image", value=image_preview, inline=False)
 
                 await ctx.send(embed=embed)
@@ -1807,10 +1886,11 @@ class SabPubHelper(commands.Cog):
                         await ctx.send(f"Exited editor for **{display_name}**.")
                         break
 
-
                     elif choice == "1":
                         await ctx.send("Enter the new **Display Name**:")
-                        name_msg = await ctx.bot.wait_for("message", check=check, timeout=120)
+                        name_msg = await ctx.bot.wait_for(
+                            "message", check=check, timeout=120
+                        )
                         if name_msg.content.lower() == "cancel":
                             continue
                         data["name"] = name_msg.content.strip()
@@ -1823,7 +1903,9 @@ class SabPubHelper(commands.Cog):
                             "`sega` - SEGA %AppData% variable template\n"
                             "`custom` - Write fully custom instruction text"
                         )
-                        type_msg = await ctx.bot.wait_for("message", check=check, timeout=120)
+                        type_msg = await ctx.bot.wait_for(
+                            "message", check=check, timeout=120
+                        )
                         new_type = type_msg.content.lower().strip()
                         if new_type == "cancel":
                             continue
@@ -1831,19 +1913,27 @@ class SabPubHelper(commands.Cog):
                         if new_type == "coldclient":
                             data["type"] = "coldclient"
                             await ctx.send("Enter the **Steam App ID/Folder Name**:")
-                            steam_msg = await ctx.bot.wait_for("message", check=check, timeout=120)
+                            steam_msg = await ctx.bot.wait_for(
+                                "message", check=check, timeout=120
+                            )
                             data["steam_id"] = steam_msg.content.strip()
 
                             await ctx.send("Enter the **Config Folder Path** on PC:")
-                            folder_msg = await ctx.bot.wait_for("message", check=check, timeout=120)
+                            folder_msg = await ctx.bot.wait_for(
+                                "message", check=check, timeout=120
+                            )
                             data["config_folder"] = folder_msg.content.strip()
                             data["custom_text"] = ""
                             await ctx.send("Setup Type updated to **ColdClient**.")
-                            
+
                         elif new_type == "sega":
                             data["type"] = "sega"
-                            await ctx.send("Enter the **SEGA Game Folder Name** (e.g., `P3R` or `YakuzaLikeADragon8`):")
-                            folder_msg = await ctx.bot.wait_for("message", check=check, timeout=120)
+                            await ctx.send(
+                                "Enter the **SEGA Game Folder Name** (e.g., `P3R` or `YakuzaLikeADragon8`):"
+                            )
+                            folder_msg = await ctx.bot.wait_for(
+                                "message", check=check, timeout=120
+                            )
                             data["config_folder"] = folder_msg.content.strip()
                             data["steam_id"] = ""
                             data["custom_text"] = ""
@@ -1851,8 +1941,12 @@ class SabPubHelper(commands.Cog):
 
                         elif new_type == "custom":
                             data["type"] = "custom"
-                            await ctx.send("Enter the **full custom instructions text**:\n*(You can use `{name}` for the Display Name and `{keyword}` for the Keyword)*")
-                            custom_msg = await ctx.bot.wait_for("message", check=check, timeout=300)
+                            await ctx.send(
+                                "Enter the **full custom instructions text**:\n*(You can use `{name}` for the Display Name and `{keyword}` for the Keyword)*"
+                            )
+                            custom_msg = await ctx.bot.wait_for(
+                                "message", check=check, timeout=300
+                            )
                             data["custom_text"] = custom_msg.content.strip()
                             data["steam_id"] = ""
                             data["config_folder"] = ""
@@ -1867,14 +1961,20 @@ class SabPubHelper(commands.Cog):
                             "`2` - Use default image (`save_instruction.png`)\n"
                             "`3` - No image (Text only)"
                         )
-                        img_msg = await ctx.bot.wait_for("message", check=check, timeout=120)
+                        img_msg = await ctx.bot.wait_for(
+                            "message", check=check, timeout=120
+                        )
                         img_choice = img_msg.content.strip().lower()
                         if img_choice == "cancel":
                             continue
 
                         if img_choice == "1":
-                            await ctx.send("Please **upload the image now**, or **paste the image URL**:")
-                            upload_msg = await ctx.bot.wait_for("message", check=check, timeout=120)
+                            await ctx.send(
+                                "Please **upload the image now**, or **paste the image URL**:"
+                            )
+                            upload_msg = await ctx.bot.wait_for(
+                                "message", check=check, timeout=120
+                            )
                             if upload_msg.attachments:
                                 data["custom_image_url"] = upload_msg.attachments[0].url
                                 data["attach_image"] = True
@@ -1900,7 +2000,9 @@ class SabPubHelper(commands.Cog):
                         await ctx.send("Invalid choice. Type 1, 2, 3, or `cancel`.")
 
                 except asyncio.TimeoutError:
-                    await ctx.send("Editor timed out. Any changes made before this were saved.")
+                    await ctx.send(
+                        "Editor timed out. Any changes made before this were saved."
+                    )
                     break
 
     @pubhelper_game.command(name="updatedll")
@@ -2564,7 +2666,6 @@ class SabPubHelper(commands.Cog):
         except Exception as e:
             return f"Error: {e}"
 
-
     @pubhelper_tool.command(name="setup")
     @commands.is_owner()
     async def setuptool(self, ctx: commands.Context) -> None:
@@ -2615,7 +2716,6 @@ class SabPubHelper(commands.Cog):
                     if file.is_file():
                         cli_binary = file
                         break
-
 
                 if not cli_binary:
                     await ctx.send("❌ Could not find CLI binary in archive")
@@ -3075,16 +3175,40 @@ class SabPubHelper(commands.Cog):
 
         # Unified Game Matching System
         custom_games = await self.config.custom_saveinst()
-        
+
         targets = []
         for k, data in custom_games.items():
-            targets.append({"key": k, "name": data["name"].lower(), "type": "custom", "data": data, "original_key": k})
+            targets.append(
+                {
+                    "key": k,
+                    "name": data["name"].lower(),
+                    "type": "custom",
+                    "data": data,
+                    "original_key": k,
+                }
+            )
         for k, profile in SAVE_PROFILES.items():
             if k not in custom_games:
-                targets.append({"key": k, "name": profile["name"].lower(), "type": "base", "data": profile, "original_key": k})
+                targets.append(
+                    {
+                        "key": k,
+                        "name": profile["name"].lower(),
+                        "type": "base",
+                        "data": profile,
+                        "original_key": k,
+                    }
+                )
         for k, profile in SEGA_PROFILES.items():
             if k not in custom_games:
-                targets.append({"key": k, "name": profile["name"].lower(), "type": "sega", "data": profile, "original_key": k})
+                targets.append(
+                    {
+                        "key": k,
+                        "name": profile["name"].lower(),
+                        "type": "sega",
+                        "data": profile,
+                        "original_key": k,
+                    }
+                )
 
         best_match = None
 
@@ -3093,33 +3217,48 @@ class SabPubHelper(commands.Cog):
             if game_name == t["key"] or game_name == t["name"]:
                 best_match = t
                 break
-        
+
         # Phase 2: Substring Match (Longest targets first to avoid hijacking e.g. "Like a Dragon" stealing "Like a Dragon Gaiden")
         if not best_match:
-            targets_sorted_by_len = sorted(targets, key=lambda x: max(len(x["key"]), len(x["name"])), reverse=True)
+            targets_sorted_by_len = sorted(
+                targets, key=lambda x: max(len(x["key"]), len(x["name"])), reverse=True
+            )
             for t in targets_sorted_by_len:
                 if t["key"] in game_name or t["name"] in game_name:
                     best_match = t
                     break
-                if len(game_name) > 4 and (game_name in t["key"] or game_name in t["name"]):
+                if len(game_name) > 4 and (
+                    game_name in t["key"] or game_name in t["name"]
+                ):
                     best_match = t
                     break
 
         # Phase 3: Aggressive Word Scoring (Finds highest overlap of >=3 char words)
         if not best_match:
-            game_words = set(w for w in game_name.replace(":", " ").replace("-", " ").split() if len(w) >= 3)
+            game_words = set(
+                w
+                for w in game_name.replace(":", " ").replace("-", " ").split()
+                if len(w) >= 3
+            )
             best_score = 0
             for t in targets:
-                t_words = set(w for w in t["key"].replace(":", " ").replace("-", " ").split() if len(w) >= 3) | set(w for w in t["name"].replace(":", " ").replace("-", " ").split() if len(w) >= 3)
+                t_words = set(
+                    w
+                    for w in t["key"].replace(":", " ").replace("-", " ").split()
+                    if len(w) >= 3
+                ) | set(
+                    w
+                    for w in t["name"].replace(":", " ").replace("-", " ").split()
+                    if len(w) >= 3
+                )
                 overlap = len(game_words & t_words)
                 if overlap > best_score:
                     best_score = overlap
                     best_match = t
 
         if not best_match:
-            all_profiles = list(SAVE_PROFILES.values()) + list(SEGA_PROFILES.values())
             await interaction.response.send_message(
-                f"❌ No save path data found matching: **{game_name}**.\nAvailable profiles: {str(', '.join([p['name'] for p in all_profiles]))}",
+                f"❌ No save path data found matching: **{game_name}**.",
                 ephemeral=True,
             )
             return
@@ -3131,31 +3270,46 @@ class SabPubHelper(commands.Cog):
             if data["type"] == "custom":
                 message = data["custom_text"].format(name=data["name"], keyword=kw)
             elif data["type"] == "sega":
-                message = SAVE_INSTRUCTIONS_SEGA.format(game_name=data["name"], game_folder=data.get("config_folder", ""))
+                message = SAVE_INSTRUCTIONS_SEGA.format(
+                    game_name=data["name"], game_folder=data.get("config_folder", "")
+                )
             else:
-                message = SAVE_INSTRUCTIONS.format(steam_id=data.get("steam_id", ""), config_folder=data.get("config_folder", ""))
+                message = SAVE_INSTRUCTIONS.format(
+                    steam_id=data.get("steam_id", ""),
+                    config_folder=data.get("config_folder", ""),
+                )
 
             if data.get("attach_image", False):
                 custom_image_url = data.get("custom_image_url", "")
                 if custom_image_url:
-                    embed = discord.Embed(description=message, color=discord.Color.blue())
+                    embed = discord.Embed(
+                        description=message, color=discord.Color.blue()
+                    )
                     embed.set_image(url=custom_image_url)
                     return await interaction.response.send_message(embed=embed)
                 else:
                     img_path = Path(__file__).parent / "save_instruction.png"
                     if img_path.exists():
-                        file = discord.File(str(img_path), filename="save_instruction.png")
-                        return await interaction.response.send_message(message, file=file)
+                        file = discord.File(
+                            str(img_path), filename="save_instruction.png"
+                        )
+                        return await interaction.response.send_message(
+                            message, file=file
+                        )
             return await interaction.response.send_message(message)
 
         elif best_match["type"] == "sega":
             profile = best_match["data"]
-            message = SAVE_INSTRUCTIONS_SEGA.format(game_name=profile["name"], game_folder=profile["game_folder"])
+            message = SAVE_INSTRUCTIONS_SEGA.format(
+                game_name=profile["name"], game_folder=profile["game_folder"]
+            )
             await interaction.response.send_message(message)
 
         else:
             profile = best_match["data"]
-            message = SAVE_INSTRUCTIONS.format(steam_id=profile["steam_id"], config_folder=profile["config_folder"])
+            message = SAVE_INSTRUCTIONS.format(
+                steam_id=profile["steam_id"], config_folder=profile["config_folder"]
+            )
             img_path = Path(__file__).parent / "save_instruction.png"
             if img_path.exists():
                 file = discord.File(str(img_path), filename="save_instruction.png")
@@ -3402,7 +3556,6 @@ class SabPubHelper(commands.Cog):
                     pass
                 except asyncio.CancelledError:
                     break
-
 
                 if log_buffer:
                     display_lines = []
@@ -3778,7 +3931,6 @@ class SabPubHelper(commands.Cog):
                         if name.endswith("configs.user.ini"):
                             config_path = name
                             break
-
 
                     if not config_path:
                         return "Could not find `configs.user.ini` in your zip file."
