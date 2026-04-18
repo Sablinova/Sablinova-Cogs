@@ -123,8 +123,8 @@ SEGA_PROFILES = {
         "name": "Sonic x Shadow Generations",
         "game_folder": "SonicXShadowGenerations",
     },
-    "metaphor": {
-        "name": "Metaphor: ReFantazio",
+    "metaphor: refantazio": {
+        "name": "Metaphor",
         "game_folder": "Metaphor"
     },
 }
