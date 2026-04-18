@@ -2922,39 +2922,97 @@ class SabPubHelper(commands.Cog):
 
         # Look up game data in custom config first
         custom_games = await self.config.custom_saveinst()
-        for keyword, data in custom_games.items():
-            if keyword in game_name:
-                message = (
-                    data["custom_text"]
-                    if data["type"] == "custom"
-                    else SAVE_INSTRUCTIONS.format(
-                        steam_id=data["steam_id"], config_folder=data["config_folder"]
-                    )
+        matched_custom_key = None
+        
+        # 1. Exact custom keyword match
+        if game_name in custom_games:
+            matched_custom_key = game_name
+        else:
+            # 2. Exact custom Display Name match
+            for k, data in custom_games.items():
+                if game_name == data["name"].lower():
+                    matched_custom_key = k
+                    break
+            
+            # 3. Fuzzy custom match
+            if not matched_custom_key:
+                for k, data in custom_games.items():
+                    name_lower = data["name"].lower()
+                    if k in game_name or (len(game_name) >= 3 and game_name in k):
+                        matched_custom_key = k
+                        break
+                    elif name_lower in game_name or (len(game_name) >= 3 and game_name in name_lower):
+                        matched_custom_key = k
+                        break
+
+        if matched_custom_key:
+            data = custom_games[matched_custom_key]
+            message = (
+                data["custom_text"]
+                if data["type"] == "custom"
+                else SAVE_INSTRUCTIONS.format(
+                    steam_id=data["steam_id"], config_folder=data["config_folder"]
                 )
+            )
 
-                if data.get("attach_image", False):
-                    custom_image_url = data.get("custom_image_url", "")
+            if data.get("attach_image", False):
+                custom_image_url = data.get("custom_image_url", "")
 
-                    if custom_image_url:
-                        # Send with custom image URL (as an embed so it embeds natively)
-                        embed = discord.Embed(
-                            description=message, color=discord.Color.blue()
+                if custom_image_url:
+                    # Send with custom image URL (as an embed so it embeds natively)
+                    embed = discord.Embed(
+                        description=message, color=discord.Color.blue()
+                    )
+                    embed.set_image(url=custom_image_url)
+                    return await interaction.response.send_message(embed=embed)
+                else:
+                    # Send with default local image
+                    img_path = Path(__file__).parent / "save_instruction.png"
+                    if img_path.exists():
+                        file = discord.File(
+                            str(img_path), filename="save_instruction.png"
                         )
-                        embed.set_image(url=custom_image_url)
-                        return await interaction.response.send_message(embed=embed)
-                    else:
-                        # Send with default local image
-                        img_path = Path(__file__).parent / "save_instruction.png"
-                        if img_path.exists():
-                            file = discord.File(
-                                str(img_path), filename="save_instruction.png"
-                            )
-                            return await interaction.response.send_message(
-                                message, file=file
-                            )
+                        return await interaction.response.send_message(
+                            message, file=file
+                        )
 
-                # Send without image
-                return await interaction.response.send_message(message)
+            # Send without image
+            return await interaction.response.send_message(message)
+
+        # Fallback: Look up game data in SAVE_PROFILES (case-insensitive fuzzy match)
+        matched_key = None
+        for key, profile in SAVE_PROFILES.items():
+            profile_name = profile["name"].lower()
+            if game_name == profile_name or game_name == key.lower():
+                matched_key = key
+                break
+
+            # Fuzzy fallback (e.g. if channel says 'resident evil 9' but profile is 'Resident Evil 9 Requiem')
+            if len(game_name) >= 3 and (
+                game_name in profile_name or profile_name in game_name or game_name in key.lower() or key.lower() in game_name
+            ):
+                matched_key = key
+                break
+
+        if not matched_key:
+            await interaction.response.send_message(
+                f"❌ No save path data found matching: **{game_name}**.
+Available profiles: {', '.join([p['name'] for p in SAVE_PROFILES.values()])}",
+                ephemeral=True,
+            )
+            return
+
+        profile = SAVE_PROFILES[matched_key]
+        message = SAVE_INSTRUCTIONS.format(
+            steam_id=profile["steam_id"], config_folder=profile["config_folder"]
+        )
+
+        img_path = Path(__file__).parent / "save_instruction.png"
+        if img_path.exists():
+            file = discord.File(str(img_path), filename="save_instruction.png")
+            await interaction.response.send_message(message, file=file)
+        else:
+            await interaction.response.send_message(message)
 
         # Fallback: Look up game data in SAVE_PROFILES (case-insensitive fuzzy match)
         matched_key = None
