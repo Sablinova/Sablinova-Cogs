@@ -1549,13 +1549,40 @@ class SabPubHelper(commands.Cog):
 
     @pubhelper_saveinst.command(name="edit")
     async def pubhelper_saveinst_edit(self, ctx: commands.Context, keyword: str) -> None:
-        """Interactive wizard to edit an existing custom game for /saveinst."""
+        """Interactive wizard to edit an existing custom or base game for /saveinst."""
         
         async with self.config.custom_saveinst() as custom_games:
             keyword = keyword.lower()
             if keyword not in custom_games:
-                await ctx.send(f"❌ No custom game found with keyword `{keyword}`.")
-                return
+                # Check if it's a base game to override
+                from .savesigner import SAVE_PROFILES
+                matched_key = None
+                for key, profile in SAVE_PROFILES.items():
+                    if keyword == profile["name"].lower() or keyword == key.lower():
+                        matched_key = key
+                        break
+                    # Fuzzy match fallback
+                    if key.lower() in keyword or keyword in key.lower():
+                        matched_key = key
+                        break
+
+                if matched_key:
+                    profile = SAVE_PROFILES[matched_key]
+                    # Create a custom override
+                    custom_games[matched_key] = {
+                        "name": profile["name"],
+                        "type": "coldclient",
+                        "steam_id": profile["steam_id"],
+                        "config_folder": profile["config_folder"],
+                        "custom_text": "",
+                        "attach_image": True,
+                        "custom_image_url": "",
+                    }
+                    keyword = matched_key
+                    await ctx.send(f"⚠️ Created a custom override for base game **{profile['name']}**.")
+                else:
+                    await ctx.send(f"❌ No custom or base game found with keyword `{keyword}`.")
+                    return
 
             data = custom_games[keyword]
 
