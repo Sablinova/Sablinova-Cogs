@@ -1432,6 +1432,176 @@ class SabPubHelper(commands.Cog):
             else:
                 await ctx.send(f"❌ No custom game found with keyword `{keyword}`.")
 
+    @pubhelper_saveinst.command(name="test")
+    async def pubhelper_saveinst_test(self, ctx: commands.Context, keyword: str) -> None:
+        """Test the /saveinst output for a custom game."""
+        custom_games = await self.config.custom_saveinst()
+        keyword = keyword.lower()
+
+        if keyword not in custom_games:
+            await ctx.send(f"❌ No custom game found with keyword `{keyword}`.")
+            return
+
+        data = custom_games[keyword]
+        message = (
+            data["custom_text"]
+            if data["type"] == "custom"
+            else SAVE_INSTRUCTIONS.format(
+                steam_id=data["steam_id"], config_folder=data["config_folder"]
+            )
+        )
+
+        if data.get("attach_image", False):
+            custom_image_url = data.get("custom_image_url", "")
+            if custom_image_url:
+                embed = discord.Embed(description=message, color=discord.Color.blue())
+                embed.set_image(url=custom_image_url)
+                await ctx.send(embed=embed)
+            else:
+                img_path = Path(__file__).parent / "save_instruction.png"
+                if img_path.exists():
+                    file = discord.File(str(img_path), filename="save_instruction.png")
+                    await ctx.send(message, file=file)
+                else:
+                    await ctx.send(f"{message}\n\n*(Default image `save_instruction.png` not found!)*")
+        else:
+            await ctx.send(message)
+
+    @pubhelper_saveinst.command(name="edit")
+    async def pubhelper_saveinst_edit(self, ctx: commands.Context, keyword: str) -> None:
+        """Interactive wizard to edit an existing custom game for /saveinst."""
+        
+        async with self.config.custom_saveinst() as custom_games:
+            keyword = keyword.lower()
+            if keyword not in custom_games:
+                await ctx.send(f"❌ No custom game found with keyword `{keyword}`.")
+                return
+
+            data = custom_games[keyword]
+
+            def check(m):
+                return m.author == ctx.author and m.channel == ctx.channel
+
+            while True:
+                display_name = data.get("name", "Unknown")
+                setup_type = data.get("type", "unknown")
+                
+                if setup_type == "coldclient":
+                    text_preview = f"ColdClient (`{data.get('steam_id', '')}`, `{data.get('config_folder', '')}`)"
+                else:
+                    text_preview = f"Custom Text (`{data.get('custom_text', '')[:20]}...`)"
+
+                image_preview = "None"
+                if data.get("attach_image", False):
+                    if data.get("custom_image_url"):
+                        image_preview = "Custom URL/Upload"
+                    else:
+                        image_preview = "Default local image"
+
+                menu = (
+                    f"**Editing custom saveinst for:** `{keyword}`\n\n"
+                    f"1️⃣ **Display Name:** {display_name}\n"
+                    f"2️⃣ **Setup Type & Text:** {text_preview}\n"
+                    f"3️⃣ **Image:** {image_preview}\n\n"
+                    "Type the number of the field you want to edit, or type `cancel` to exit and save."
+                )
+
+                await ctx.send(menu)
+
+                try:
+                    msg = await ctx.bot.wait_for("message", check=check, timeout=120)
+                    choice = msg.content.strip().lower()
+
+                    if choice == "cancel":
+                        await ctx.send(f"✅ Exited editor for `{keyword}`.")
+                        break
+
+
+                    elif choice == "1":
+                        await ctx.send("Enter the new **Display Name**:")
+                        name_msg = await ctx.bot.wait_for("message", check=check, timeout=120)
+                        if name_msg.content.lower() == "cancel":
+                            continue
+                        data["name"] = name_msg.content.strip()
+                        await ctx.send(f"✅ Display Name updated to **{data['name']}**.")
+
+                    elif choice == "2":
+                        await ctx.send(
+                            "**What type of setup is this?**\n"
+                            "`coldclient` - Use standard variable template\n"
+                            "`custom` - Write fully custom instruction text"
+                        )
+                        type_msg = await ctx.bot.wait_for("message", check=check, timeout=120)
+                        new_type = type_msg.content.lower().strip()
+                        if new_type == "cancel":
+                            continue
+
+                        if new_type == "coldclient":
+                            data["type"] = "coldclient"
+                            await ctx.send("Enter the **Steam App ID/Folder Name**:")
+                            steam_msg = await ctx.bot.wait_for("message", check=check, timeout=120)
+                            data["steam_id"] = steam_msg.content.strip()
+
+                            await ctx.send("Enter the **Config Folder Path** on PC:")
+                            folder_msg = await ctx.bot.wait_for("message", check=check, timeout=120)
+                            data["config_folder"] = folder_msg.content.strip()
+                            data["custom_text"] = ""
+                            await ctx.send("✅ Setup Type updated to **ColdClient**.")
+
+                        elif new_type == "custom":
+                            data["type"] = "custom"
+                            await ctx.send("Enter the **full custom instructions text**:")
+                            custom_msg = await ctx.bot.wait_for("message", check=check, timeout=300)
+                            data["custom_text"] = custom_msg.content.strip()
+                            data["steam_id"] = ""
+                            data["config_folder"] = ""
+                            await ctx.send("✅ Setup Type updated to **Custom**.")
+                        else:
+                            await ctx.send("❌ Invalid type. Try again.")
+
+                    elif choice == "3":
+                        await ctx.send(
+                            "**How do you want to handle the visual guide image?**\n"
+                            "`1` - Upload a new image (or paste URL)\n"
+                            "`2` - Use default image (`save_instruction.png`)\n"
+                            "`3` - No image (Text only)"
+                        )
+                        img_msg = await ctx.bot.wait_for("message", check=check, timeout=120)
+                        img_choice = img_msg.content.strip().lower()
+                        if img_choice == "cancel":
+                            continue
+
+                        if img_choice == "1":
+                            await ctx.send("Please **upload the image now**, or **paste the image URL**:")
+                            upload_msg = await ctx.bot.wait_for("message", check=check, timeout=120)
+                            if upload_msg.attachments:
+                                data["custom_image_url"] = upload_msg.attachments[0].url
+                                data["attach_image"] = True
+                                await ctx.send("✅ Image updated via attachment.")
+                            elif upload_msg.content.startswith("http"):
+                                data["custom_image_url"] = upload_msg.content.strip()
+                                data["attach_image"] = True
+                                await ctx.send("✅ Image updated via URL.")
+                            else:
+                                await ctx.send("❌ No valid image or URL found.")
+                        elif img_choice == "2":
+                            data["attach_image"] = True
+                            data["custom_image_url"] = ""
+                            await ctx.send("✅ Image set to **Default**.")
+                        elif img_choice == "3":
+                            data["attach_image"] = False
+                            data["custom_image_url"] = ""
+                            await ctx.send("✅ Image set to **None**.")
+                        else:
+                            await ctx.send("❌ Invalid choice. Try again.")
+
+                    else:
+                        await ctx.send("❌ Invalid choice. Type 1, 2, 3, or `cancel`.")
+
+                except asyncio.TimeoutError:
+                    await ctx.send("❌ Editor timed out. Any changes made before this were saved.")
+                    break
+
     @pubhelper.command(name="updatedll")
     async def update_dll(self, ctx: commands.Context) -> None:
         """Update steamclient64.dll across all game basefiles.
@@ -2227,6 +2397,7 @@ class SabPubHelper(commands.Cog):
                         cli_binary = file
                         break
 
+
                 if not cli_binary:
                     await ctx.send("❌ Could not find CLI binary in archive")
                     return
@@ -2965,6 +3136,7 @@ class SabPubHelper(commands.Cog):
                         )
                         sent = True
                         break
+
                     except Exception as e2:
                         log.error(f"Failed to send to fallback channel {ch.id}: {e2}")
                         continue
@@ -3006,6 +3178,7 @@ class SabPubHelper(commands.Cog):
                     pass
                 except asyncio.CancelledError:
                     break
+
 
                 if log_buffer:
                     display_lines = []
@@ -3381,6 +3554,7 @@ class SabPubHelper(commands.Cog):
                         if name.endswith("configs.user.ini"):
                             config_path = name
                             break
+
 
                     if not config_path:
                         return "Could not find `configs.user.ini` in your zip file."
