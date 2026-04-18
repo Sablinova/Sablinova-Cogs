@@ -1625,26 +1625,31 @@ class SabPubHelper(commands.Cog):
                 setup_type = data.get("type", "unknown")
                 
                 if setup_type == "coldclient":
-                    text_preview = f"ColdClient (`{data.get('steam_id', '')}`, `{data.get('config_folder', '')}`)"
+                    text_preview = f"**Type:** `ColdClient`\n**Steam ID:** `{data.get('steam_id', '')}`\n**Config Folder:** `{data.get('config_folder', '')}`"
                 else:
-                    text_preview = f"Custom Text (`{data.get('custom_text', '')[:20]}...`)"
+                    raw_text = data.get('custom_text', '')
+                    clean_text = raw_text.replace('`', '').strip()
+                    preview_snippet = clean_text[:40] + "..." if len(clean_text) > 40 else clean_text
+                    text_preview = f"**Type:** `Custom Text`\n**Preview:** *{preview_snippet}*"
 
-                image_preview = "None"
+                image_preview = "❌ None"
                 if data.get("attach_image", False):
                     if data.get("custom_image_url"):
-                        image_preview = "Custom URL/Upload"
+                        image_preview = "🖼️ Custom URL/Upload"
                     else:
-                        image_preview = "Default local image"
+                        image_preview = "📁 Default local image"
 
-                menu = (
-                    f"**Editing custom saveinst for:** `{keyword}`\n\n"
-                    f"1️⃣ **Display Name:** {display_name}\n"
-                    f"2️⃣ **Setup Type & Text:** {text_preview}\n"
-                    f"3️⃣ **Image:** {image_preview}\n\n"
-                    "Type the number of the field you want to edit, or type `cancel` to exit and save."
+                embed = discord.Embed(
+                    title=f"✏️ Editing SaveInst: {display_name}",
+                    description="Type the **number** of the field you want to edit, or type `cancel` to exit and save.",
+                    color=discord.Color.orange()
                 )
+                embed.add_field(name="🔑 Keyword", value=f"`{keyword}`", inline=False)
+                embed.add_field(name="1️⃣ Display Name", value=f"**{display_name}**", inline=False)
+                embed.add_field(name="2️⃣ Setup Type & Text", value=text_preview, inline=False)
+                embed.add_field(name="3️⃣ Image", value=image_preview, inline=False)
 
-                await ctx.send(menu)
+                await ctx.send(embed=embed)
 
                 try:
                     msg = await ctx.bot.wait_for("message", check=check, timeout=120)
