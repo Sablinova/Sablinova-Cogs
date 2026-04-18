@@ -1559,38 +1559,25 @@ class SabPubHelper(commands.Cog):
     async def pubhelper_saveinst_list(self, ctx: commands.Context) -> None:
         """List all custom and base games configured for /saveinst."""
         custom_games = await self.config.custom_saveinst()
-        
-        msg = ""
-        if custom_games:
-            msg += "**Custom `/saveinst` Games:**\n"
-            for keyword, data in custom_games.items():
-                msg += f"• **{data['name']}** (Keyword: `{keyword}`)\n  Type: `{data['type']}`\n"
-        else:
-            msg += "**Custom `/saveinst` Games:**\n*None configured. Use `[p]pubhelper saveinst setup` to add one.*\n"
-        
-        msg += "\n**Base ColdClient Games:**\n"
         from .savesigner import SAVE_PROFILES, SEGA_PROFILES
-        for key, profile in SAVE_PROFILES.items():
-            msg += f"• **{profile['name']}** (Keyword: `{key.lower()}`)\n"
-
-        msg += "\n**Base SEGA Games:**\n"
-        for key, profile in SEGA_PROFILES.items():
-            msg += f"• **{profile['name']}** (Keyword: `{key.lower()}`)\n"
-            
-        # If msg gets too long, split it, but usually discord limit is 2000
-        if len(msg) > 1900:
-            lines = msg.split('\n')
-            chunk = ""
-            for line in lines:
-                if len(chunk) + len(line) > 1900:
-                    await ctx.send(chunk)
-                    chunk = line + "\n"
-                else:
-                    chunk += line + "\n"
-            if chunk:
-                await ctx.send(chunk)
-        else:
-            await ctx.send(msg)
+        
+        view = SaveInstListView(ctx.author, custom_games, SAVE_PROFILES, SEGA_PROFILES)
+        
+        embed = discord.Embed(
+            title="/saveinst Game Profiles",
+            description="Select a game from the dropdown below to view its configuration and test its /saveinst output preview.",
+            color=discord.Color.blue()
+        )
+        
+        # Count stats
+        cc_count = sum(1 for kw in SAVE_PROFILES if kw not in custom_games)
+        sega_count = sum(1 for kw in SEGA_PROFILES if kw not in custom_games)
+        
+        embed.add_field(name="Stats", value=f"**Custom Games:** {len(custom_games)}
+**Base ColdClient:** {cc_count}
+**Base SEGA:** {sega_count}", inline=False)
+        
+        await ctx.send(embed=embed, view=view)
 
     @pubhelper_saveinst.command(name="remove")
     async def pubhelper_saveinst_remove(self, ctx: commands.Context, *, keyword: str) -> None:
