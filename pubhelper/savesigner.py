@@ -33,44 +33,44 @@ SAVE_INSTRUCTIONS = """**Save File Instructions**
 
 # MandarinJuice save signing profiles
 SAVE_PROFILES = {
-    "re9": {
-        "name": "Resident Evil 9 Requiem",
+    "resident evil 9 requiem": {
+        "name": "RE9",
         "profile": "Resident Evil 9 Requiem v1.bin",
         "steam_id": "3764200",
         "config_folder": "pub_re9/",
     },
-    "dd2": {
-        "name": "Dragon's Dogma 2",
+    "dragon's dogma 2": {
+        "name": "DD2",
         "profile": "Dragon's Dogma 2 v1.bin",
         "steam_id": "2054970",
         "config_folder": "",
     },
-    "mhwilds": {
-        "name": "Monster Hunter Wilds",
+    "monster hunter wilds": {
+        "name": "MHWilds",
         "profile": "Monster Hunter Wilds v1.bin",
         "steam_id": "2246340",
         "config_folder": "",
     },
-    "kunitsu": {
-        "name": "Kunitsu-Gami Path of the Goddess",
+    "kunitsu-gami path of the goddess": {
+        "name": "Kunitsu",
         "profile": "Kunitsu-Gami Path of the Goddess v1.bin",
         "steam_id": "2510720",
         "config_folder": "",
     },
-    "deadrising": {
-        "name": "Dead Rising Deluxe Remaster",
+    "dead rising deluxe remaster": {
+        "name": "DeadRising",
         "profile": "Dead Rising Deluxe Remaster v1.bin",
         "steam_id": "2531360",
         "config_folder": "",
     },
-    "mhstories3": {
-        "name": "Monster Hunter Stories 3 Twisted Reflection",
+    "monster hunter stories 3 twisted reflection": {
+        "name": "MHStories3",
         "profile": "Monster Hunter Stories 3 Twisted Reflection v1.bin",
         "steam_id": "2498260",  # Fallback value, real ID wasn't originally included
         "config_folder": "pub_mhs3/",
     },
-    "megaman": {
-        "name": "Mega Man Star Force Legacy Collection",
+    "mega man star force legacy collection": {
+        "name": "MegaMan",
         "profile": "Mega Man Star Force Legacy Collection v1.bin",
         "steam_id": "2816910",  # Fallback value, real ID wasn't originally included
         "config_folder": "",
@@ -99,28 +99,28 @@ Done – launch the game and your save should load
 """
 
 SEGA_PROFILES = {
-    "p3r": {
-        "name": "Persona 3 Reload",
+    "persona 3 reload": {
+        "name": "P3R",
         "game_folder": "P3R",
     },
-    "iw": {
-        "name": "Like a Dragon: Infinite Wealth",
+    "like a dragon: infinite wealth": {
+        "name": "IW",
         "game_folder": "YakuzaLikeADragon8",
     },
-    "gaiden": {
-        "name": "Like a Dragon Gaiden: The Man Who Erased His Name",
+    "like a dragon gaiden: the man who erased his name": {
+        "name": "Gaiden",
         "game_folder": "LikeADragonGaiden",
     },
-    "k3": {
-        "name": "Yakuza Kiwami 3 & Dark Ties",
+    "yakuza kiwami 3 & dark ties": {
+        "name": "K3",
         "game_folder": "YakuzaKiwami3",
     },
-    "pirate": {
-        "name": "Like a Dragon: Pirate Yakuza in Hawaii",
+    "like a dragon: pirate yakuza in hawaii": {
+        "name": "Pirate",
         "game_folder": "LikeADragonPirateYakuza",
     },
-    "ssg": {
-        "name": "Sonic x Shadow Generations",
+    "sonic x shadow generations": {
+        "name": "SSG",
         "game_folder": "SonicXShadowGenerations",
     },
     "metaphor: refantazio": {
