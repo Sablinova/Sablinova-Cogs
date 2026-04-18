@@ -2996,8 +2996,7 @@ class SabPubHelper(commands.Cog):
 
         if not matched_key:
             await interaction.response.send_message(
-                f"❌ No save path data found matching: **{game_name}**.
-Available profiles: {', '.join([p['name'] for p in SAVE_PROFILES.values()])}",
+                f"❌ No save path data found matching: **{game_name}**.\nAvailable profiles: {str(', '.join([p['name'] for p in SAVE_PROFILES.values()]))}",
                 ephemeral=True,
             )
             return
