@@ -3097,13 +3097,6 @@ class SabPubHelper(commands.Cog):
                     elif name_lower in game_name or (len(game_name) >= 3 and game_name in name_lower):
                         matched_custom_key = k
                         break
-                    else:
-                        # Check if any significant word (>=4 chars) from the keyword or name is in the channel name
-                        k_words = [w for w in k.replace(":", " ").split() if len(w) >= 4]
-                        name_words = [w for w in name_lower.replace(":", " ").split() if len(w) >= 4]
-                        if any(w in game_name for w in k_words) or any(w in game_name for w in name_words):
-                            matched_custom_key = k
-                            break
 
         if matched_custom_key:
             data = custom_games[matched_custom_key]
