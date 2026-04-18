@@ -2904,17 +2904,12 @@ class SabPubHelper(commands.Cog):
 
         # Try splitting by standard Discord hyphen format or fallback to pipe
         if "-" in channel_name:
-            # Often standard channels are "username-gamename", so we take everything after the first dash
-            # If there are multiple dashes (e.g. username-game-name), split only once
             game_name = channel_name.split("-", 1)[1].strip().lower().replace("-", " ")
         elif "|" in channel_name:
             game_name = channel_name.split("|", 1)[1].strip().lower()
         else:
-            await interaction.response.send_message(
-                "❌ Couldn't detect a game name from this channel. Make sure the channel is named in the format `username-gamename` or `username | Game Name`.",
-                ephemeral=True,
-            )
-            return
+            # Fallback to using the entire channel name (e.g. for threads like "[issue] wukong")
+            game_name = channel_name.strip().lower()
 
         # Handle aliases (e.g. "resident evil requiem" -> "resident evil 9 requiem")
         if "requiem" in game_name and "9" not in game_name:
@@ -2944,6 +2939,13 @@ class SabPubHelper(commands.Cog):
                     elif name_lower in game_name or (len(game_name) >= 3 and game_name in name_lower):
                         matched_custom_key = k
                         break
+                    else:
+                        # Check if any significant word (>=4 chars) from the keyword or name is in the channel name
+                        k_words = [w for w in k.replace(":", " ").split() if len(w) >= 4]
+                        name_words = [w for w in name_lower.replace(":", " ").split() if len(w) >= 4]
+                        if any(w in game_name for w in k_words) or any(w in game_name for w in name_words):
+                            matched_custom_key = k
+                            break
 
         if matched_custom_key:
             data = custom_games[matched_custom_key]
