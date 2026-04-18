@@ -1475,15 +1475,24 @@ class SabPubHelper(commands.Cog):
 
     @pubhelper_saveinst.command(name="remove")
     async def pubhelper_saveinst_remove(self, ctx: commands.Context, *, keyword: str) -> None:
-        """Remove a custom game from /saveinst by its keyword."""
+        """Remove a custom game from /saveinst by its keyword or name."""
         async with self.config.custom_saveinst() as custom_games:
             keyword = keyword.lower()
+            matched_key = None
             if keyword in custom_games:
-                name = custom_games[keyword]["name"]
-                del custom_games[keyword]
+                matched_key = keyword
+            else:
+                for k, data in custom_games.items():
+                    if keyword == data["name"].lower():
+                        matched_key = k
+                        break
+            
+            if matched_key:
+                name = custom_games[matched_key]["name"]
+                del custom_games[matched_key]
                 await ctx.send(f"✅ Removed **{name}** from custom `/saveinst` games.")
             else:
-                await ctx.send(f"❌ No custom game found with keyword `{keyword}`.")
+                await ctx.send(f"❌ No custom game found matching `{keyword}`.")
 
     @pubhelper_saveinst.command(name="test")
     async def pubhelper_saveinst_test(self, ctx: commands.Context, *, keyword: str) -> None:
@@ -1492,8 +1501,22 @@ class SabPubHelper(commands.Cog):
         keyword = keyword.lower()
 
         # Check custom games first
+        matched_custom_key = None
         if keyword in custom_games:
-            data = custom_games[keyword]
+            matched_custom_key = keyword
+        else:
+            for k, data in custom_games.items():
+                if keyword == data["name"].lower():
+                    matched_custom_key = k
+                    break
+            if not matched_custom_key:
+                for k, data in custom_games.items():
+                    if k.lower() in keyword or keyword in k.lower():
+                        matched_custom_key = k
+                        break
+
+        if matched_custom_key:
+            data = custom_games[matched_custom_key]
             message = (
                 data["custom_text"]
                 if data["type"] == "custom"
@@ -1551,18 +1574,28 @@ class SabPubHelper(commands.Cog):
         
         async with self.config.custom_saveinst() as custom_games:
             keyword = keyword.lower()
-            if keyword not in custom_games:
+            
+            matched_key = None
+            if keyword in custom_games:
+                matched_key = keyword
+            else:
+                for k, data in custom_games.items():
+                    if keyword == data["name"].lower():
+                        matched_key = k
+                        break
+
+            if not matched_key:
                 # Check if it's a base game to override
                 from .savesigner import SAVE_PROFILES
-                matched_key = None
                 for key, profile in SAVE_PROFILES.items():
                     if keyword == profile["name"].lower() or keyword == key.lower():
                         matched_key = key
                         break
                     # Fuzzy match fallback
-                    if key.lower() in keyword or keyword in key.lower():
-                        matched_key = key
-                        break
+                    if not matched_key:
+                        if key.lower() in keyword or keyword in key.lower():
+                            matched_key = key
+                            break
 
                 if matched_key:
                     profile = SAVE_PROFILES[matched_key]
@@ -1576,13 +1609,13 @@ class SabPubHelper(commands.Cog):
                         "attach_image": True,
                         "custom_image_url": "",
                     }
-                    keyword = matched_key
                     await ctx.send(f"⚠️ Created a custom override for base game **{profile['name']}**.")
                 else:
-                    await ctx.send(f"❌ No custom or base game found with keyword `{keyword}`.")
+                    await ctx.send(f"❌ No custom or base game found matching `{keyword}`.")
                     return
 
-            data = custom_games[keyword]
+            data = custom_games[matched_key]
+            keyword = matched_key  # Use the matched key for the rest of the flow
 
             def check(m):
                 return m.author == ctx.author and m.channel == ctx.channel
