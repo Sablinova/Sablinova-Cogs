@@ -23,7 +23,7 @@ from redbot.core import Config, commands
 from redbot.core.bot import Red
 from redbot.core.data_manager import cog_data_path
 
-from .savesigner import SAVE_PROFILES, SaveSigner, SAVE_INSTRUCTIONS
+from .savesigner import SAVE_PROFILES, SaveSigner, SAVE_INSTRUCTIONS, SAVE_INSTRUCTIONS_SEGA, SEGA_PROFILES
 
 log = logging.getLogger("red.sablinova.pubhelper")
 
@@ -1454,8 +1454,12 @@ class SabPubHelper(commands.Cog):
             msg += "**Custom `/saveinst` Games:**\n*None configured. Use `[p]pubhelper saveinst setup` to add one.*\n"
         
         msg += "\n**Base ColdClient Games:**\n"
-        from .savesigner import SAVE_PROFILES
+        from .savesigner import SAVE_PROFILES, SEGA_PROFILES
         for key, profile in SAVE_PROFILES.items():
+            msg += f"• **{profile['name']}** (Keyword: `{key.lower()}`)\n"
+
+        msg += "\n**Base SEGA Games:**\n"
+        for key, profile in SEGA_PROFILES.items():
             msg += f"• **{profile['name']}** (Keyword: `{key.lower()}`)\n"
             
         # If msg gets too long, split it, but usually discord limit is 2000
@@ -1517,13 +1521,12 @@ class SabPubHelper(commands.Cog):
 
         if matched_custom_key:
             data = custom_games[matched_custom_key]
-            message = (
-                data["custom_text"]
-                if data["type"] == "custom"
-                else SAVE_INSTRUCTIONS.format(
-                    steam_id=data["steam_id"], config_folder=data["config_folder"]
-                )
-            )
+            if data["type"] == "custom":
+                message = data["custom_text"].format(name=data["name"], keyword=matched_custom_key)
+            elif data["type"] == "sega":
+                message = SAVE_INSTRUCTIONS_SEGA.format(game_name=data["name"], game_folder=data["config_folder"])
+            else:
+                message = SAVE_INSTRUCTIONS.format(steam_id=data.get("steam_id", ""), config_folder=data.get("config_folder", ""))
 
             if data.get("attach_image", False):
                 custom_image_url = data.get("custom_image_url", "")
@@ -1543,22 +1546,40 @@ class SabPubHelper(commands.Cog):
             return
 
         # Fallback to base games
-        from .savesigner import SAVE_PROFILES
+        from .savesigner import SAVE_PROFILES, SEGA_PROFILES
         matched_key = None
+        is_sega = False
+        
         for key, profile in SAVE_PROFILES.items():
             if keyword == profile["name"].lower() or keyword == key.lower():
                 matched_key = key
                 break
-            # Fuzzy match fallback
             if key.lower() in keyword or keyword in key.lower():
                 matched_key = key
                 break
+                
+        if not matched_key:
+            for key, profile in SEGA_PROFILES.items():
+                if keyword == profile["name"].lower() or keyword == key.lower():
+                    matched_key = key
+                    is_sega = True
+                    break
+                if key.lower() in keyword or keyword in key.lower():
+                    matched_key = key
+                    is_sega = True
+                    break
 
         if matched_key:
-            profile = SAVE_PROFILES[matched_key]
-            message = SAVE_INSTRUCTIONS.format(
-                steam_id=profile["steam_id"], config_folder=profile["config_folder"]
-            )
+            if is_sega:
+                profile = SEGA_PROFILES[matched_key]
+                message = SAVE_INSTRUCTIONS_SEGA.format(
+                    game_name=profile["name"], game_folder=profile["game_folder"]
+                )
+            else:
+                profile = SAVE_PROFILES[matched_key]
+                message = SAVE_INSTRUCTIONS.format(
+                    steam_id=profile["steam_id"], config_folder=profile["config_folder"]
+                )
             img_path = Path(__file__).parent / "save_instruction.png"
             if img_path.exists():
                 file = discord.File(str(img_path), filename="save_instruction.png")
@@ -1586,7 +1607,8 @@ class SabPubHelper(commands.Cog):
 
             if not matched_key:
                 # Check if it's a base game to override
-                from .savesigner import SAVE_PROFILES
+                from .savesigner import SAVE_PROFILES, SEGA_PROFILES
+                is_sega = False
                 for key, profile in SAVE_PROFILES.items():
                     if keyword == profile["name"].lower() or keyword == key.lower():
                         matched_key = key
@@ -1596,19 +1618,42 @@ class SabPubHelper(commands.Cog):
                         if key.lower() in keyword or keyword in key.lower():
                             matched_key = key
                             break
+                            
+                if not matched_key:
+                    for key, profile in SEGA_PROFILES.items():
+                        if keyword == profile["name"].lower() or keyword == key.lower():
+                            matched_key = key
+                            is_sega = True
+                            break
+                        if not matched_key:
+                            if key.lower() in keyword or keyword in key.lower():
+                                matched_key = key
+                                is_sega = True
+                                break
 
                 if matched_key:
-                    profile = SAVE_PROFILES[matched_key]
-                    # Create a custom override
-                    custom_games[matched_key] = {
-                        "name": profile["name"],
-                        "type": "coldclient",
-                        "steam_id": profile["steam_id"],
-                        "config_folder": profile["config_folder"],
-                        "custom_text": "",
-                        "attach_image": True,
-                        "custom_image_url": "",
-                    }
+                    if is_sega:
+                        profile = SEGA_PROFILES[matched_key]
+                        custom_games[matched_key] = {
+                            "name": profile["name"],
+                            "type": "sega",
+                            "steam_id": "",
+                            "config_folder": profile["game_folder"],
+                            "custom_text": "",
+                            "attach_image": True,
+                            "custom_image_url": "",
+                        }
+                    else:
+                        profile = SAVE_PROFILES[matched_key]
+                        custom_games[matched_key] = {
+                            "name": profile["name"],
+                            "type": "coldclient",
+                            "steam_id": profile["steam_id"],
+                            "config_folder": profile["config_folder"],
+                            "custom_text": "",
+                            "attach_image": True,
+                            "custom_image_url": "",
+                        }
                     await ctx.send(f"Created a custom override for base game **{profile['name']}**.")
                 else:
                     await ctx.send(f"No custom or base game found matching `{keyword}`.")
@@ -1626,6 +1671,8 @@ class SabPubHelper(commands.Cog):
                 
                 if setup_type == "coldclient":
                     text_preview = f"**Type:** `ColdClient`\n**Steam ID:** `{data.get('steam_id', '')}`\n**Config Folder:** `{data.get('config_folder', '')}`"
+                elif setup_type == "sega":
+                    text_preview = f"**Type:** `SEGA`\n**Game Folder:** `{data.get('config_folder', '')}`"
                 else:
                     raw_text = data.get('custom_text', '')
                     clean_text = raw_text.replace('`', '').strip()
@@ -1672,6 +1719,7 @@ class SabPubHelper(commands.Cog):
                         await ctx.send(
                             "**What type of setup is this?**\n"
                             "`coldclient` - Use standard variable template\n"
+                            "`sega` - SEGA %AppData% variable template\n"
                             "`custom` - Write fully custom instruction text"
                         )
                         type_msg = await ctx.bot.wait_for("message", check=check, timeout=120)
@@ -1690,10 +1738,19 @@ class SabPubHelper(commands.Cog):
                             data["config_folder"] = folder_msg.content.strip()
                             data["custom_text"] = ""
                             await ctx.send("Setup Type updated to **ColdClient**.")
+                            
+                        elif new_type == "sega":
+                            data["type"] = "sega"
+                            await ctx.send("Enter the **SEGA Game Folder Name** (e.g., `P3R` or `YakuzaLikeADragon8`):")
+                            folder_msg = await ctx.bot.wait_for("message", check=check, timeout=120)
+                            data["config_folder"] = folder_msg.content.strip()
+                            data["steam_id"] = ""
+                            data["custom_text"] = ""
+                            await ctx.send("Setup Type updated to **SEGA**.")
 
                         elif new_type == "custom":
                             data["type"] = "custom"
-                            await ctx.send("Enter the **full custom instructions text**:")
+                            await ctx.send("Enter the **full custom instructions text**:\n*(You can use `{name}` for the Display Name and `{keyword}` for the Keyword)*")
                             custom_msg = await ctx.bot.wait_for("message", check=check, timeout=300)
                             data["custom_text"] = custom_msg.content.strip()
                             data["steam_id"] = ""
@@ -2949,13 +3006,12 @@ class SabPubHelper(commands.Cog):
 
         if matched_custom_key:
             data = custom_games[matched_custom_key]
-            message = (
-                data["custom_text"]
-                if data["type"] == "custom"
-                else SAVE_INSTRUCTIONS.format(
-                    steam_id=data["steam_id"], config_folder=data["config_folder"]
-                )
-            )
+            if data["type"] == "custom":
+                message = data["custom_text"].format(name=data["name"], keyword=matched_custom_key)
+            elif data["type"] == "sega":
+                message = SAVE_INSTRUCTIONS_SEGA.format(game_name=data["name"], game_folder=data["config_folder"])
+            else:
+                message = SAVE_INSTRUCTIONS.format(steam_id=data.get("steam_id", ""), config_folder=data.get("config_folder", ""))
 
             if data.get("attach_image", False):
                 custom_image_url = data.get("custom_image_url", "")
@@ -2981,32 +3037,53 @@ class SabPubHelper(commands.Cog):
             # Send without image
             return await interaction.response.send_message(message)
 
-        # Fallback: Look up game data in SAVE_PROFILES (case-insensitive fuzzy match)
+        # Fallback: Look up game data in SAVE_PROFILES and SEGA_PROFILES (case-insensitive fuzzy match)
         matched_key = None
+        is_sega = False
+        
         for key, profile in SAVE_PROFILES.items():
             profile_name = profile["name"].lower()
             if game_name == profile_name or game_name == key.lower():
                 matched_key = key
                 break
-
-            # Fuzzy fallback (e.g. if channel says 'resident evil 9' but profile is 'Resident Evil 9 Requiem')
             if len(game_name) >= 3 and (
                 game_name in profile_name or profile_name in game_name or game_name in key.lower() or key.lower() in game_name
             ):
                 matched_key = key
                 break
+                
+        if not matched_key:
+            for key, profile in SEGA_PROFILES.items():
+                profile_name = profile["name"].lower()
+                if game_name == profile_name or game_name == key.lower():
+                    matched_key = key
+                    is_sega = True
+                    break
+                if len(game_name) >= 3 and (
+                    game_name in profile_name or profile_name in game_name or game_name in key.lower() or key.lower() in game_name
+                ):
+                    matched_key = key
+                    is_sega = True
+                    break
 
         if not matched_key:
+            all_profiles = list(SAVE_PROFILES.values()) + list(SEGA_PROFILES.values())
             await interaction.response.send_message(
-                f"❌ No save path data found matching: **{game_name}**.\nAvailable profiles: {str(', '.join([p['name'] for p in SAVE_PROFILES.values()]))}",
+                f"❌ No save path data found matching: **{game_name}**.\nAvailable profiles: {str(', '.join([p['name'] for p in all_profiles]))}",
                 ephemeral=True,
             )
             return
 
-        profile = SAVE_PROFILES[matched_key]
-        message = SAVE_INSTRUCTIONS.format(
-            steam_id=profile["steam_id"], config_folder=profile["config_folder"]
-        )
+        if is_sega:
+            profile = SEGA_PROFILES[matched_key]
+            message = SAVE_INSTRUCTIONS_SEGA.format(
+                game_name=profile["name"], game_folder=profile["game_folder"]
+            )
+        else:
+            profile = SAVE_PROFILES[matched_key]
+            message = SAVE_INSTRUCTIONS.format(
+                steam_id=profile["steam_id"], config_folder=profile["config_folder"]
+            )
 
         img_path = Path(__file__).parent / "save_instruction.png"
         if img_path.exists():

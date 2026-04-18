@@ -84,6 +84,51 @@ SAVE_PROFILES = {
 }
 
 
+SAVE_INSTRUCTIONS_SEGA = """ 
+{game_name} – Save Transfer Guide
+
+Save folder:
+\%AppData%\Roaming\SEGA\{game_folder}\Steam\
+
+• Go to the folder above
+• Find your old SteamID folder (e.g., 76561198012345678)
+• Copy everything inside it
+• Paste into the new SteamID folder (created after launching and saving the game once)
+
+Done – launch the game and your save should load
+"""
+
+SEGA_PROFILES = {
+    "p3r": {
+        "name": "Persona 3 Reload",
+        "game_folder": "P3R",
+    },
+    "iw": {
+        "name": "Like a Dragon: Infinite Wealth",
+        "game_folder": "YakuzaLikeADragon8",
+    },
+    "gaiden": {
+        "name": "Like a Dragon Gaiden: The Man Who Erased His Name",
+        "game_folder": "LikeADragonGaiden",
+    },
+    "k3": {
+        "name": "Yakuza Kiwami 3 & Dark Ties",
+        "game_folder": "YakuzaKiwami3",
+    },
+    "pirate": {
+        "name": "Like a Dragon: Pirate Yakuza in Hawaii",
+        "game_folder": "LikeADragonPirateYakuza",
+    },
+    "ssg": {
+        "name": "Sonic x Shadow Generations",
+        "game_folder": "SonicXShadowGenerations",
+    },
+    "metaphor": {
+        "name": "Metaphor: ReFantazio",
+        "game_folder": "Metaphor"
+    },
+}
+
 class SaveSigner:
     """Handles MandarinJuice CLI interactions for save signing."""
 
