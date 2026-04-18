@@ -22,14 +22,7 @@ log = logging.getLogger("red.sablinova.pubhelper")
 _ANONDROP_CHUNK_SIZE = 9 * 1024 * 1024  # 9 MB
 
 # Instructions for the save
-SAVE_INSTRUCTIONS = """**Save File Instructions**
-
-1. Press `Win + R`, paste the path below and hit Enter:
-`%USERPROFILE%\\AppData\\Roaming\\GSE Saves\\{steam_id}\\remote\\win64_save\\`
-
-2. Send a `.zip` / `.7z` of the `win64_save` folder
-
-3. Send `configs.user.ini` — it can be found inside `{config_folder}steam_settings`"""
+SAVE_INSTRUCTIONS = """```\nSave File Instructions\n\n1. Press Win + R, paste the path below and hit Enter:\n%USERPROFILE%\\AppData\\Roaming\\GSE Saves\\{steam_id}\\remote\\win64_save\\\n\n2. Send a .zip / .7z of the win64_save folder\n\n3. Send configs.user.ini — it can be found inside {config_folder}steam_settings\n```"""
 
 # MandarinJuice save signing profiles
 SAVE_PROFILES = {
@@ -84,7 +77,7 @@ SAVE_PROFILES = {
 }
 
 
-SAVE_INSTRUCTIONS_SEGA = """ 
+SAVE_INSTRUCTIONS_SEGA = """```
 {game_name} – Save Transfer Guide
 
 Save folder:
@@ -96,7 +89,7 @@ Save folder:
 • Paste into the new SteamID folder (created after launching and saving the game once)
 
 Done – launch the game and your save should load
-"""
+```"""
 
 SEGA_PROFILES = {
     "persona 3 reload": {
