@@ -458,8 +458,9 @@ class SaveInstListView(discord.ui.View):
                 message = SAVE_INSTRUCTIONS.format(
                     steam_id=data.get("steam_id", ""),
                     config_folder=data.get("config_folder", ""),
+                    game_key_folder=kw.lower().replace(" ","_")
                 )
-                config_info += f"**Steam ID:** `{data.get('steam_id', '')}`\n**Config Folder:** `{data.get('config_folder', '')}`\n"
+                config_info += f"**Steam ID:** `{data.get('steam_id', '')}`\n**Config Folder:** `{data.get('config_folder', '')}`\n**Game Folder:** `{kw.lower().replace(" ", "_")}`\n"
 
             if data.get("attach_image", False):
                 image_url = data.get("custom_image_url", "")
@@ -472,6 +473,7 @@ class SaveInstListView(discord.ui.View):
             message = SAVE_INSTRUCTIONS.format(
                 steam_id=data.get("steam_id", ""),
                 config_folder=data.get("config_folder", ""),
+                game_key_folder=kw.lower().replace(" ","_"),
             )
             img_path = Path(__file__).parent / "save_instruction.png"
 
@@ -1739,7 +1741,7 @@ class SabPubHelper(commands.Cog):
             else:
                 profile = SAVE_PROFILES[matched_key]
                 message = SAVE_INSTRUCTIONS.format(
-                    steam_id=profile["steam_id"], config_folder=profile["config_folder"]
+                    steam_id=profile["steam_id"], config_folder=profile["config_folder"], game_key_folder=matched_key
                 )
                 img_path = Path(__file__).parent / "save_instruction.png"
                 if img_path.exists():
@@ -3350,7 +3352,7 @@ class SabPubHelper(commands.Cog):
     )
     @app_commands.choices(
         game=[
-            app_commands.Choice(name=game_id.title(), value=game_id)
+            app_commands.Choice(name=profile["name"], value=game_id)
             for game_id, profile in SAVE_PROFILES.items()
         ],
     )
