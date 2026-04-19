@@ -458,9 +458,10 @@ class SaveInstListView(discord.ui.View):
                 message = SAVE_INSTRUCTIONS.format(
                     steam_id=data.get("steam_id", ""),
                     config_folder=data.get("config_folder", ""),
-                    game_key_folder=kw.lower().replace(" ","_")
+                    game_key_folder=kw.lower().replace(" ", ""),
                 )
-                config_info += f"**Steam ID:** `{data.get('steam_id', '')}`\n**Config Folder:** `{data.get('config_folder', '')}`\n**Game Folder:** `{kw.lower().replace(" ", "_")}`\n"
+
+                config_info += f"**Steam ID:** `{data.get('steam_id', '')}`\n**Config Folder:** `{data.get('config_folder', '')}`\n"
 
             if data.get("attach_image", False):
                 image_url = data.get("custom_image_url", "")
@@ -473,7 +474,7 @@ class SaveInstListView(discord.ui.View):
             message = SAVE_INSTRUCTIONS.format(
                 steam_id=data.get("steam_id", ""),
                 config_folder=data.get("config_folder", ""),
-                game_key_folder=kw.lower().replace(" ","_"),
+                game_key_folder=kw.lower().replace(" ", ""),
             )
             img_path = Path(__file__).parent / "save_instruction.png"
 
@@ -1681,17 +1682,12 @@ class SabPubHelper(commands.Cog):
                 message = SAVE_INSTRUCTIONS.format(
                     steam_id=data.get("steam_id", ""),
                     config_folder=data.get("config_folder", ""),
+                    game_key_folder=matched_custom_key.lower().replace(" ", ""),
                 )
 
             if data.get("attach_image", False):
-                custom_image_url = data.get("custom_image_url", "")
-                if custom_image_url:
-                    embed = discord.Embed(
-                        description=message, color=discord.Color.blue()
-                    )
-                    embed.set_image(url=custom_image_url)
-                    await ctx.send(embed=embed)
-                else:
+                image_url = data.get("custom_image_url", "")
+                if not image_url:
                     img_path = Path(__file__).parent / "save_instruction.png"
                     if img_path.exists():
                         file = discord.File(
@@ -1741,7 +1737,9 @@ class SabPubHelper(commands.Cog):
             else:
                 profile = SAVE_PROFILES[matched_key]
                 message = SAVE_INSTRUCTIONS.format(
-                    steam_id=profile["steam_id"], config_folder=profile["config_folder"], game_key_folder=matched_key
+                    steam_id=profile["steam_id"],
+                    config_folder=profile["config_folder"],
+                    game_key_folder=matched_key.replace(" ", ""),
                 )
                 img_path = Path(__file__).parent / "save_instruction.png"
                 if img_path.exists():
@@ -3301,6 +3299,7 @@ class SabPubHelper(commands.Cog):
                 message = SAVE_INSTRUCTIONS.format(
                     steam_id=data.get("steam_id", ""),
                     config_folder=data.get("config_folder", ""),
+                    game_key_folder=kw.lower().replace(" ", ""),
                 )
 
             if data.get("attach_image", False):
@@ -3332,7 +3331,9 @@ class SabPubHelper(commands.Cog):
         else:
             profile = best_match["data"]
             message = SAVE_INSTRUCTIONS.format(
-                steam_id=profile["steam_id"], config_folder=profile["config_folder"]
+                steam_id=profile["steam_id"],
+                config_folder=profile["config_folder"],
+                game_key_folder=best_match["original_key"].replace(" ", ""),
             )
             img_path = Path(__file__).parent / "save_instruction.png"
             if img_path.exists():
@@ -3352,7 +3353,7 @@ class SabPubHelper(commands.Cog):
     )
     @app_commands.choices(
         game=[
-            app_commands.Choice(name=profile["name"], value=game_id)
+            app_commands.Choice(name=game_id.title(), value=game_id)
             for game_id, profile in SAVE_PROFILES.items()
         ],
     )
