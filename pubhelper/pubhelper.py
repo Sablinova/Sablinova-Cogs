@@ -458,9 +458,10 @@ class SaveInstListView(discord.ui.View):
                 message = SAVE_INSTRUCTIONS.format(
                     steam_id=data.get("steam_id", ""),
                     config_folder=data.get("config_folder", ""),
-                    game_key_folder=kw.lower().replace(" ", ""),
+                    linux_folder=data.get(
+                        "linux_folder", kw.lower().replace(" ", "_") + "_prefix"
+                    ),
                 )
-
                 config_info += f"**Steam ID:** `{data.get('steam_id', '')}`\n**Config Folder:** `{data.get('config_folder', '')}`\n"
 
             if data.get("attach_image", False):
@@ -474,7 +475,9 @@ class SaveInstListView(discord.ui.View):
             message = SAVE_INSTRUCTIONS.format(
                 steam_id=data.get("steam_id", ""),
                 config_folder=data.get("config_folder", ""),
-                game_key_folder=kw.lower().replace(" ", ""),
+                linux_folder=data.get(
+                    "linux_folder", kw.lower().replace(" ", "_") + "_prefix"
+                ),
             )
             img_path = Path(__file__).parent / "save_instruction.png"
 
@@ -1682,7 +1685,10 @@ class SabPubHelper(commands.Cog):
                 message = SAVE_INSTRUCTIONS.format(
                     steam_id=data.get("steam_id", ""),
                     config_folder=data.get("config_folder", ""),
-                    game_key_folder=matched_custom_key.lower().replace(" ", ""),
+                    linux_folder=data.get(
+                        "linux_folder",
+                        matched_custom_key.lower().replace(" ", "_") + "_prefix",
+                    ),
                 )
 
             if data.get("attach_image", False):
@@ -1739,7 +1745,9 @@ class SabPubHelper(commands.Cog):
                 message = SAVE_INSTRUCTIONS.format(
                     steam_id=profile["steam_id"],
                     config_folder=profile["config_folder"],
-                    game_key_folder=matched_key.replace(" ", ""),
+                    linux_folder=profile.get(
+                        "linux_folder", matched_key.replace(" ", "_") + "_prefix"
+                    ),
                 )
                 img_path = Path(__file__).parent / "save_instruction.png"
                 if img_path.exists():
@@ -3299,7 +3307,9 @@ class SabPubHelper(commands.Cog):
                 message = SAVE_INSTRUCTIONS.format(
                     steam_id=data.get("steam_id", ""),
                     config_folder=data.get("config_folder", ""),
-                    game_key_folder=kw.lower().replace(" ", ""),
+                    linux_folder=data.get(
+                        "linux_folder", kw.lower().replace(" ", "_") + "_prefix"
+                    ),
                 )
 
             if data.get("attach_image", False):
@@ -3333,7 +3343,10 @@ class SabPubHelper(commands.Cog):
             message = SAVE_INSTRUCTIONS.format(
                 steam_id=profile["steam_id"],
                 config_folder=profile["config_folder"],
-                game_key_folder=best_match["original_key"].replace(" ", ""),
+                linux_folder=profile.get(
+                    "linux_folder",
+                    best_match["original_key"].replace(" ", "_") + "_prefix",
+                ),
             )
             img_path = Path(__file__).parent / "save_instruction.png"
             if img_path.exists():
