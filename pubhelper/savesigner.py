@@ -21,10 +21,8 @@ log = logging.getLogger("red.sablinova.pubhelper")
 
 _ANONDROP_CHUNK_SIZE = 9 * 1024 * 1024  # 9 MB
 
-LIN_PATH = "/home/user/.local/share/crucible-launcher/Prefix/pragmataprefix/drive_c/users/steamuser/AppData/Roaming/GSE Saves/{steam_id}/remote/win64_save/"
-
 # Instructions for the save
-SAVE_INSTRUCTIONS = """```\nSave File Instructions\n\n1. Press Win + R, paste the path below and hit Enter:\n%USERPROFILE%\\AppData\\Roaming\\GSE Saves\\{steam_id}\\remote\\win64_save\\\n\n1.1 Linux Path: {LIN_PATH}\n\n2. Send a .zip / .7z of the win64_save folder\n\n3. Send configs.user.ini — it can be found inside {config_folder}steam_settings\n```"""
+SAVE_INSTRUCTIONS = """```\nSave File Instructions\n\n1. Press Win + R, paste the path below and hit Enter:\n%USERPROFILE%\\AppData\\Roaming\\GSE Saves\\{steam_id}\\remote\\win64_save\\\n\n1.1 Linux Path: /home/user/.local/share/crucible-launcher/Prefix/pragmataprefix/drive_c/users/steamuser/AppData/Roaming/GSE Saves/{steam_id}/remote/win64_save/\n\n2. Send a .zip / .7z of the win64_save folder\n\n3. Send configs.user.ini — it can be found inside {config_folder}steam_settings\n```"""
 
 # MandarinJuice save signing profiles
 SAVE_PROFILES = {
