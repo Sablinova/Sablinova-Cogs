@@ -2507,22 +2507,8 @@ class SabPubHelper(commands.Cog):
             )
             return
 
-        # Check file size (Discord has limits)
+        # Check file size
         file_size_mb = basefiles_path.stat().st_size / (1024 * 1024)
-
-        # Discord file size limit (8MB for non-boosted, 50MB for boosted servers)
-        # We'll use a safe limit of 45MB to account for variations
-        max_size_mb = 45
-
-        if file_size_mb > max_size_mb:
-            await ctx.send(
-                f"⚠️ **File too large for Discord upload**\n\n"
-                f"**{profile['name']}** basefiles: `{file_size_mb:.2f} MB`\n"
-                f"Discord limit: `{max_size_mb} MB`\n\n"
-                f"The basefiles are too large to upload directly via Discord. "
-                f"Consider using an external file host or splitting the archive."
-            )
-            return
 
         async with ctx.typing():
             try:
@@ -2550,12 +2536,48 @@ class SabPubHelper(commands.Cog):
                 await ctx.send(embed=embed, file=file)
 
             except discord.HTTPException as e:
-                log.exception("Failed to upload basefiles")
-                await ctx.send(
-                    f"❌ **Failed to upload basefiles**\n\n"
-                    f"Discord error: {e}\n\n"
-                    f"The file may be too large for this server's upload limit."
+                log.warning(
+                    f"Discord basefiles upload failed ({e.status}), falling back to AnonDrop"
                 )
+                status_msg = await ctx.send(
+                    f"⬆️ File too large for Discord. Uploading **{profile['name']}** basefiles to AnonDrop..."
+                )
+                try:
+                    file_data = basefiles_path.read_bytes()
+                    anon_filename = f"{game}_basefiles.{fmt}"
+
+                    async def _progress(percent: int):
+                        bar = "█" * (percent // 10) + "░" * (10 - percent // 10)
+                        try:
+                            await status_msg.edit(
+                                content=f"⬆️ Uploading to AnonDrop... `[{bar}] {percent}%`"
+                            )
+                        except Exception:
+                            pass
+
+                    anon_url = await self.save_signer.upload_to_anondrop(
+                        file_data, anon_filename, _progress
+                    )
+                    if anon_url:
+                        embed = discord.Embed(
+                            title=f"📦 {profile['name']} Basefiles",
+                            description=f"📎 {anon_url}",
+                            color=discord.Color.green(),
+                        )
+                        embed.add_field(
+                            name="Size", value=f"{file_size_mb:.2f} MB", inline=True
+                        )
+                        embed.add_field(name="Format", value=fmt.upper(), inline=True)
+                        await status_msg.edit(content=None, embed=embed)
+                    else:
+                        await status_msg.edit(
+                            content=f"❌ **Failed to upload basefiles**\n\nDiscord upload failed ({e}) and AnonDrop upload also failed."
+                        )
+                except Exception as anon_err:
+                    log.exception("AnonDrop fallback also failed")
+                    await status_msg.edit(
+                        content=f"❌ **Failed to upload basefiles**\n\nDiscord: {e}\nAnonDrop: {anon_err}"
+                    )
             except Exception as e:
                 log.exception("Error exporting basefiles")
                 await ctx.send(f"Error exporting basefiles: {e}")
