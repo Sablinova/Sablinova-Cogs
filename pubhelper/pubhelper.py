@@ -3328,7 +3328,7 @@ class SabPubHelper(commands.Cog):
     )
     @app_commands.choices(
         game=[
-            app_commands.Choice(name=profile["name"], value=game_id)
+            app_commands.Choice(name=game_id.title(), value=game_id)
             for game_id, profile in SAVE_PROFILES.items()
         ],
     )
