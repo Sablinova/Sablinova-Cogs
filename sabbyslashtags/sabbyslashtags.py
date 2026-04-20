@@ -94,12 +94,14 @@ class SabbySlashTags(commands.Cog):
             )
             return
         seed = {
-            "user": tse.MemberAdapter(interaction.user),
             "channel": tse.ChannelAdapter(interaction.channel),
             "args": tse.StringAdapter(args or ""),
         }
-        if interaction.guild:
+        if interaction.guild and isinstance(interaction.user, discord.Member):
+            seed["user"] = tse.MemberAdapter(interaction.user)
             seed["server"] = tse.GuildAdapter(interaction.guild)
+        else:
+            seed["user"] = tse.StringAdapter(str(interaction.user))
         tag = self.data["tags"][tagname]
         output = self.engine.process(tag["content"], seed)
         result = output.body or ""
