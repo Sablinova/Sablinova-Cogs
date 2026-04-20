@@ -5,6 +5,7 @@ Provides slash commands to combine user configs with basefiles for different gam
 """
 
 import asyncio
+import hashlib
 import io
 import logging
 import os
@@ -34,6 +35,26 @@ from .savesigner import (
 log = logging.getLogger("red.sablinova.pubhelper")
 
 INVALID_LINK_MSG = "Invalid or expired link. Please provide a valid token link."
+
+# Languages available in the /saveinst translate dropdown
+SAVEINST_LANGUAGES = [
+    ("🇪🇸 Spanish", "es"),
+    ("🇧🇷 Portuguese", "pt"),
+    ("🇫🇷 French", "fr"),
+    ("🇩🇪 German", "de"),
+    ("🇷🇺 Russian", "ru"),
+    ("🇸🇦 Arabic", "ar"),
+    ("🇹🇷 Turkish", "tr"),
+    ("🇯🇵 Japanese", "ja"),
+    ("🇰🇷 Korean", "ko"),
+    ("🇵🇭 Filipino", "tl"),
+    ("🇨🇳 Chinese (Simplified)", "zh-CN"),
+    ("🇹🇼 Chinese (Traditional)", "zh-TW"),
+    ("🇮🇳 Hindi", "hi"),
+    ("🇮🇩 Indonesian", "id"),
+    ("🇹🇭 Thai", "th"),
+    ("🇻🇳 Vietnamese", "vi"),
+]
 
 # Default game profiles
 DEFAULT_PROFILES = {
@@ -510,6 +531,64 @@ class SaveInstListView(discord.ui.View):
         await interaction.response.send_message(**kwargs)
 
 
+class SaveInstTranslateView(discord.ui.View):
+    """Persistent translate dropdown attached to /saveinst responses."""
+
+    def __init__(self, cog, game_key: str, source_text: str):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.game_key = game_key
+        self.source_text = source_text
+
+        select = discord.ui.Select(
+            placeholder="Translate to another language…",
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(label=label, value=code)
+                for label, code in SAVEINST_LANGUAGES
+            ],
+        )
+        select.callback = self._on_select
+        self.add_item(select)
+
+    async def _on_select(self, interaction: discord.Interaction):
+        lang_code = interaction.data["values"][0]
+        lang_label = next(
+            (label for label, code in SAVEINST_LANGUAGES if code == lang_code),
+            lang_code,
+        )
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        source_hash = self.cog._translation_hash(self.source_text)
+        cached = await self.cog._get_cached_translation(
+            self.game_key, lang_code, source_hash
+        )
+        if cached:
+            await interaction.followup.send(cached, ephemeral=True)
+            return
+
+        try:
+            from deep_translator import GoogleTranslator
+
+            translated = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: GoogleTranslator(source="en", target=lang_code).translate(
+                    self.source_text
+                ),
+            )
+        except Exception as e:
+            await interaction.followup.send(
+                f"❌ Translation failed: {e}", ephemeral=True
+            )
+            return
+
+        await self.cog._save_translation(
+            self.game_key, lang_code, source_hash, translated
+        )
+        await interaction.followup.send(translated, ephemeral=True)
+
+
 class SabPubHelper(commands.Cog):
     """Config combiner - extracts configs.user.ini and combines with basefiles."""
 
@@ -531,6 +610,8 @@ class SabPubHelper(commands.Cog):
             cli_log_channel=None,  # Channel ID for live CLI progress logs
             known_save_ids=[],
             custom_saveinst={},  # Custom games for /saveinst command
+            translation_cache={},  # Cached translations: key "game|lang|hash" -> translated text
+            translation_cache_index={},  # Index: game_key -> [cache_key, ...]
         )
         self.data_path = cog_data_path(self)
         self.save_signer = SaveSigner(self.data_path)
@@ -540,8 +621,49 @@ class SabPubHelper(commands.Cog):
         self.bruteforce_worker: asyncio.Task | None = None
         self.current_bruteforce_user_id: int | None = None
 
+    # ── Translation helpers ──────────────────────────────────────────────────
+
+    def _translation_hash(self, text: str) -> str:
+        """Return a short SHA-1 hash of text for cache keying."""
+        return hashlib.sha1(text.encode()).hexdigest()[:12]
+
+    async def _get_cached_translation(
+        self, game_key: str, lang: str, source_hash: str
+    ) -> str | None:
+        """Return cached translated text, or None if not cached."""
+        cache_key = f"{game_key}|{lang}|{source_hash}"
+        cache = await self.config.translation_cache()
+        return cache.get(cache_key)
+
+    async def _save_translation(
+        self, game_key: str, lang: str, source_hash: str, translated_text: str
+    ) -> None:
+        """Save a translation to the persistent cache and update the index."""
+        cache_key = f"{game_key}|{lang}|{source_hash}"
+        async with self.config.translation_cache() as cache:
+            cache[cache_key] = translated_text
+        async with self.config.translation_cache_index() as index:
+            if game_key not in index:
+                index[game_key] = []
+            if cache_key not in index[game_key]:
+                index[game_key].append(cache_key)
+
+    async def _purge_game_translations(self, game_key: str) -> int:
+        """Remove all cached translations for a game. Returns number purged."""
+        index = await self.config.translation_cache_index()
+        keys_to_remove = index.get(game_key, [])
+        if not keys_to_remove:
+            return 0
+        async with self.config.translation_cache() as cache:
+            for k in keys_to_remove:
+                cache.pop(k, None)
+        async with self.config.translation_cache_index() as idx:
+            idx.pop(game_key, None)
+        return len(keys_to_remove)
+
+    # ── Basefiles helpers ────────────────────────────────────────────────────
+
     def _get_basefiles_path(self, game: str, fmt: str = "7z") -> Path:
-        """Get the basefiles path for a game profile."""
         return self.data_path / f"basefiles_{game}.{fmt}"
 
     def _find_basefiles_path(self, game: str) -> Path | None:
@@ -1709,6 +1831,7 @@ class SabPubHelper(commands.Cog):
                     "custom_image_url": custom_image_url,
                 }
 
+            await self._purge_game_translations(keyword)
             await ctx.send(
                 f"✅ Successfully added **{display_name}** to `/saveinst`.\n"
                 f"You can test it in a channel containing `{keyword}` in its name."
@@ -1761,9 +1884,24 @@ class SabPubHelper(commands.Cog):
             if matched_key:
                 name = custom_games[matched_key]["name"]
                 del custom_games[matched_key]
+                await self._purge_game_translations(matched_key)
                 await ctx.send(f"✅ Removed **{name}** from custom `/saveinst` games.")
             else:
                 await ctx.send(f"❌ No custom game found matching `{keyword}`.")
+
+    @pubhelper_saveinst.command(name="cleartranslations")
+    async def pubhelper_saveinst_cleartranslations(
+        self, ctx: commands.Context, *, keyword: str
+    ) -> None:
+        """Clear cached translations for a specific game (works on base and custom games)."""
+        keyword = keyword.lower()
+        count = await self._purge_game_translations(keyword)
+        if count:
+            await ctx.send(
+                f"✅ Cleared `{count}` cached translation(s) for `{keyword}`."
+            )
+        else:
+            await ctx.send(f"ℹ️ No cached translations found for `{keyword}`.")
 
     @pubhelper_saveinst.command(name="test")
     async def pubhelper_saveinst_test(
@@ -2131,6 +2269,8 @@ class SabPubHelper(commands.Cog):
                         "Editor timed out. Any changes made before this were saved."
                     )
                     break
+
+        await self._purge_game_translations(keyword)
 
     @pubhelper_game.command(name="updatedll")
     async def update_dll(self, ctx: commands.Context) -> None:
@@ -3518,9 +3658,11 @@ class SabPubHelper(commands.Cog):
             return
 
         # Output logic
+        game_key = best_match["original_key"]
+
         if best_match["type"] == "custom":
             data = best_match["data"]
-            kw = best_match["original_key"]
+            kw = game_key
             if data["type"] == "custom":
                 message = data["custom_text"].format(name=data["name"], keyword=kw)
             elif data["type"] == "sega":
@@ -3537,6 +3679,10 @@ class SabPubHelper(commands.Cog):
                     ),
                 )
 
+            translate_view = SaveInstTranslateView(
+                cog=self, game_key=game_key, source_text=message
+            )
+
             if data.get("attach_image", False):
                 custom_image_url = data.get("custom_image_url", "")
                 if custom_image_url:
@@ -3544,7 +3690,9 @@ class SabPubHelper(commands.Cog):
                         description=message, color=discord.Color.blue()
                     )
                     embed.set_image(url=custom_image_url)
-                    return await interaction.response.send_message(embed=embed)
+                    return await interaction.response.send_message(
+                        embed=embed, view=translate_view
+                    )
                 else:
                     img_path = Path(__file__).parent / "save_instruction.png"
                     if img_path.exists():
@@ -3552,16 +3700,19 @@ class SabPubHelper(commands.Cog):
                             str(img_path), filename="save_instruction.png"
                         )
                         return await interaction.response.send_message(
-                            message, file=file
+                            message, file=file, view=translate_view
                         )
-            return await interaction.response.send_message(message)
+            return await interaction.response.send_message(message, view=translate_view)
 
         elif best_match["type"] == "sega":
             profile = best_match["data"]
             message = SAVE_INSTRUCTIONS_SEGA.format(
                 game_name=profile["name"], game_folder=profile["game_folder"]
             )
-            await interaction.response.send_message(message)
+            translate_view = SaveInstTranslateView(
+                cog=self, game_key=game_key, source_text=message
+            )
+            await interaction.response.send_message(message, view=translate_view)
 
         else:
             profile = best_match["data"]
@@ -3571,15 +3722,20 @@ class SabPubHelper(commands.Cog):
                 config_folder=profile["config_folder"],
                 linux_folder=profile.get(
                     "linux_folder",
-                    best_match["original_key"].replace(" ", "_") + "prefix",
+                    game_key.replace(" ", "_") + "prefix",
                 ),
+            )
+            translate_view = SaveInstTranslateView(
+                cog=self, game_key=game_key, source_text=message
             )
             img_path = Path(__file__).parent / "save_instruction.png"
             if img_path.exists():
                 file = discord.File(str(img_path), filename="save_instruction.png")
-                await interaction.response.send_message(message, file=file)
+                await interaction.response.send_message(
+                    message, file=file, view=translate_view
+                )
             else:
-                await interaction.response.send_message(message)
+                await interaction.response.send_message(message, view=translate_view)
 
     @app_commands.command(
         name="savebrute",

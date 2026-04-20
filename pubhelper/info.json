@@ -6,7 +6,7 @@
     "install_msg": "PubHelper installed. Bot owner must run `[p]pubhelper setbasefiles <url>` to configure the basefiles template before the `/re9cc` command can be used.",
     "author": ["Sablinova"],
     "required_cogs": {},
-    "requirements": ["py7zr", "aiohttp"],
+    "requirements": ["py7zr", "aiohttp", "deep-translator"],
     "tags": ["utility", "re9", "config", "combiner"],
     "min_bot_version": "3.5.0",
     "hidden": false,
