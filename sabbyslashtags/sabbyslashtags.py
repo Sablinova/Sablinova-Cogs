@@ -79,7 +79,7 @@ class SabbySlashTags(commands.Cog):
         output = self.engine.process(content, seed)
         return output.body or ""
 
-    @app_commands.command(name="c", description="Invoke a tag")
+    @app_commands.command(name="i", description="Invoke a tag")
     @app_commands.describe(
         tagname="The tag to invoke", args="Arguments to pass to the tag"
     )
