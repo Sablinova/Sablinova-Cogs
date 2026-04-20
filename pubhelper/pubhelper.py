@@ -73,11 +73,7 @@ def _apply_funny_transform(lang_code: str, text: str) -> str:
     # Matches: Windows paths (C:\...), Unix paths (/foo/bar), %ENV_VAR% tokens,
     # backtick-wrapped tokens, bold markdown (**text**), and arrow symbols
     _PATH_RE = re.compile(
-        r"(`{3}[\s\S]*?`{3}"  # ```code blocks``` — must come before single-backtick
-        r"|`[^`]*`"  # `backtick blocks`
-        r"|\*\*[^*]+\*\*"  # **bold**
-        r"|→[^\n]*"  # → arrow lines (often path instructions)
-        r"|%[A-Za-z_]+%\S*"  # %APPDATA%\... env vars (case-insensitive)
+        r"(%[A-Za-z_]+%\S*"  # %APPDATA%\... env vars
         r"|[A-Za-z]:\\[^\s]*"  # C:\Windows\paths
         r"|/[^\s]{2,}"  # /unix/paths (at least 2 chars after /)
         r")"
