@@ -69,22 +69,51 @@ def _apply_funny_transform(lang_code: str, text: str) -> str:
     """Apply a local text transformation for fun language codes."""
     import random
 
+    # ── Protect paths/special tokens from transformation ──────────────────
+    # Matches: Windows paths (C:\...), Unix paths (/foo/bar), %ENV_VAR% tokens,
+    # backtick-wrapped tokens, bold markdown (**text**), and arrow symbols
+    _PATH_RE = re.compile(
+        r"(`[^`]*`"  # `backtick blocks`
+        r"|`{3}[\s\S]*?`{3}"  # ```code blocks```
+        r"|\*\*[^*]+\*\*"  # **bold**
+        r"|→[^\n]*"  # → arrow lines (often path instructions)
+        r"|%[A-Z_]+%\S*"  # %APPDATA%\... env vars
+        r"|[A-Za-z]:\\[^\s]*"  # C:\Windows\paths
+        r"|/[^\s]{2,}"  # /unix/paths (at least 2 chars after /)
+        r")"
+    )
+
+    # Extract protected tokens, replace with placeholders §0§, §1§, ...
+    placeholders = {}
+
+    def _extract(m):
+        key = f"\x00PH{len(placeholders)}\x00"
+        placeholders[key] = m.group(0)
+        return key
+
+    safe_text = _PATH_RE.sub(_extract, text)
+
+    def _restore(t: str) -> str:
+        for key, val in placeholders.items():
+            t = t.replace(key, val)
+        return t
+
     if lang_code == "__cat__":
         cat_words = ["meow", "mrow", "nya", "purr", "mrrp", "prrrr"]
-        lines = text.split("\n")
+        lines = safe_text.split("\n")
         result = []
         for line in lines:
             words = line.split()
             new_words = []
             for word in words:
-                if word and random.random() < 0.12:
+                if word and random.random() < 0.12 and "\x00" not in word:
                     new_words.append(random.choice(cat_words))
                 else:
                     new_words.append(word)
             result.append(" ".join(new_words))
         out = "\n".join(result)
         out = out.replace(". ", "~ ").replace("!", " :3").replace("?", "? mrow?")
-        return out + "\n\n*nya~ 🐾*"
+        return _restore(out + "\n\n*nya~ 🐾*")
 
     elif lang_code == "__pirate__":
         subs = [
@@ -107,13 +136,13 @@ def _apply_funny_transform(lang_code: str, text: str) -> str:
             (r"\bneed\b", "must have"),
             (r"\bgo to\b", "sail to"),
         ]
-        out = text
+        out = safe_text
         for pattern, replacement in subs:
             out = re.sub(pattern, replacement, out, flags=re.IGNORECASE)
-        return out + "\n\n*Arrr, ye be set! ☠️*"
+        return _restore(out + "\n\n*Arrr, ye be set! ☠️*")
 
     elif lang_code == "__uwu__":
-        out = text
+        out = safe_text
         out = re.sub(r"(?<=[a-z])r(?=[a-z])", "w", out)
         out = re.sub(r"(?<=[a-z])l(?=[a-z])", "w", out)
         out = re.sub(r"(?<=[A-Z])R(?=[a-zA-Z])", "W", out)
@@ -121,7 +150,7 @@ def _apply_funny_transform(lang_code: str, text: str) -> str:
         out = out.replace("no", "nyo").replace("No", "Nyo").replace("NO", "NYO")
         out = out.replace("ove", "uv").replace("OVE", "UV")
         out = out.replace(". ", "~ ").replace("! ", "! OwO ").replace("? ", "? UwU ")
-        return out + "\n\n*(´꒳`)♡ uwu*"
+        return _restore(out + "\n\n*(´꒳`)♡ uwu*")
 
     elif lang_code == "__shakespeare__":
         subs = [
@@ -147,14 +176,13 @@ def _apply_funny_transform(lang_code: str, text: str) -> str:
             (r"\bstart\b", "commence"),
             (r"\bopen\b", "openeth"),
         ]
-        out = text
+        out = safe_text
         for pattern, replacement in subs:
             out = re.sub(pattern, replacement, out, flags=re.IGNORECASE)
-        return out + "\n\n*Hark! Fare thee well, good traveller. ⚔️*"
+        return _restore(out + "\n\n*Hark! Fare thee well, good traveller. ⚔️*")
 
     elif lang_code == "__yoda__":
-        # Yoda: split into sentences, reverse subject/verb/object loosely
-        sentences = re.split(r"(?<=[.!?])\s+", text)
+        sentences = re.split(r"(?<=[.!?])\s+", safe_text)
         result = []
         for sentence in sentences:
             words = sentence.split()
@@ -162,9 +190,11 @@ def _apply_funny_transform(lang_code: str, text: str) -> str:
                 mid = len(words) // 2
                 words = words[mid:] + words[:mid]
             result.append(" ".join(words))
-        return "\n".join(result) + "\n\n*Strong with the Force, this guide is. 🌿*"
+        return _restore(
+            "\n".join(result) + "\n\n*Strong with the Force, this guide is. 🌿*"
+        )
 
-    return text
+    return _restore(safe_text)
 
 
 # Default game profiles
