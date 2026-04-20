@@ -123,7 +123,7 @@ class SabbySlashTags(commands.Cog):
             if current.lower() in t.lower()
         ][:25]
 
-    @commands.group(name="sabbytags", aliases=["c"])
+    @commands.group(name="sabbytags", aliases=["ctag"])
     async def sabbytags(self, ctx):
         """Manage SabbySlashTags."""
         pass
