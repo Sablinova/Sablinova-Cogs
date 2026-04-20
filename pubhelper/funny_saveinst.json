@@ -113,6 +113,78 @@
         "source_hash": "ab9ca6d95544",
         "text": "🎮 **Metaphor: ReFantazio Save Transfer Guide (BRAINROT EDITION)**\n\n📁 **1. FIND THE SAVE DEN (DIGITAL TREASURE MODE 🕵️):**\nSave folder: `%AppData%\\Roaming\\SEGA\\Metaphor\\Steam`\n→ go there first, do not start randomly clicking like a goblin\n\n🔢 **2. HUNT THE OLD STEAMID FOLDER (YOUR ANCIENT SOUL NUMBER 💀):**\nLook for your old SteamID folder like `76561198012345678`\n→ yes, the giant number folder, that one is the sauce\n\n📦 **3. STEAL THE WHOLE LOADOUT:**\nCopy **everything** inside the old SteamID folder\n→ all the files, all the drip, leave nothing behind\n\n🆕 **4. PASTE INTO THE NEW STEAMID FOLDER:**\nOpen the new SteamID folder created **after launching and saving the game once**\nPaste everything into it\n→ if you skip the first-launch save, the destination folder might not exist and you just played yourself\n\n🚀 **5. BOOT THE GAME AND PRAY:**\nIf the save loads = you are HIM\nIf it does not = wrong SteamID folder or missing files, skill issue detected 🤡\n\n✅ **TL;DR FOR THE LOCKED-IN ONES:**\nold SteamID folder -> copy everything -> new SteamID folder -> launch `Metaphor` -> profit"
       }
+    },
+    "black myth: wukong": {
+      "__brainrot__": {
+        "source_hash": "40fb2f848908",
+        "text": "🎮 **Black Myth: Wukong Save Transfer Guide (BRAINROT EDITION)**\n\n📁 **1. FIND THE SAVE SPOT (GO TREASURE MODE 🕵️):**\nSave folder: `BlackMythWukong/B1/Saved/SaveGames/`\n→ go exactly there, no freestyling, no side quests\n\n🔢 **2. FIND YOUR OLD STEAMID FOLDER (THE CURSED NUMBER VAULT 💀):**\nLook for the old SteamID folder like `76561198012345678` or whatever giant number/ID the game made\n→ yes that sus folder, that one has the sauce\n\n📦 **3. COPY THE WHOLE LOADOUT:**\nCopy **everything** inside the old SteamID folder\n→ all files, all drip, leave nothing behind\n\n🆕 **4. PASTE INTO THE NEW STEAMID FOLDER:**\nOpen the new folder created after launching the game once\nPaste everything into it\n→ if you never made a fresh save first, bro set himself up\n\n🚀 **5. LAUNCH THE GAME AND PRAY:**\nIf the save loads = absolute W\nIf it doesn't = wrong folder or missing files, skill issue detected 🤡"
+      }
+    },
+    "crimson desert": {
+      "__brainrot__": {
+        "source_hash": "5dacf389f9e1",
+        "text": "🎮 **Crimson Desert Save Transfer Guide (BRAINROT EDITION)**\n\n📁 **1. FIND THE SAVE DEN (PEARL ABYSS ARC 🕵️):**\nWindows save folder: `%LocalAppData%\\Pearl Abyss\\CD\\save`\nLinux save folder: `/home/user/.local/share/crucible-launcher/Prefix/crimson_desertprefix/drive_c/users/steamuser/AppData/Local/Pearl Abyss/CD/save`\n→ open the right one and stop wandering into random folders like a lost NPC\n\n🔢 **2. FIND THE OLD ACCOUNTID FOLDER (THE NUMBER CAVE 💀):**\nLook for your old AccountID folder like `773557454`\n→ that weird number folder is the whole mission, don't miss it\n\n📦 **3. COPY EVERYTHING INSIDE IT:**\nTake all the files from the old AccountID folder\n→ all of it, not one file, not half, not vibes\n\n🆕 **4. PASTE INTO THE NEW ACCOUNTID FOLDER:**\nUse the new AccountID folder created after launching the game once\n→ if the new folder doesn't exist yet, go make one instead of rawdogging the process\n\n🚀 **5. START THE GAME AND SEE IF YOU COOKED:**\nIf save loads = W desert expedition\nIf not = wrong AccountID folder, skill issue detected 🤡"
+      }
+    },
+    "stellar blade": {
+      "__brainrot__": {
+        "source_hash": "dc8c51753431",
+        "text": "🎮 **Stellar Blade Save Editor - How to Use (BRAINROT EDITION)**\n\n📁 **1. FIND YOUR FILES (GO TREASURE MODE 🕵️):**\nSave: `AppData\\Local\\SB\\Saved\\SaveGames\\FOLDER-WITH-NUMBERS\\` ← find the sus number folder\nConfig: `Engine\\Binaries\\ThirdParty\\Steamworks\\Steamv153\\Win64\\steam_settings\\configs.user.ini` ← holy scroll 📜\n\n🔢 **2. COPY YOUR STEAMID (YOUR SOUL NUMBER 💀):**\nOpen `configs.user.ini` and copy:\n`account_steamid=7656119xxxxxxxxxx` ← COPY ALL 17 DIGITS OR GAME SAYS ❌\n\n🖱️ **3. USE THE PROGRAM (CLICK CLICK BOOM 💥):**\n\n1. Run `SB SteamID Editor.exe`\n2. Click \"Load Config File\" → select `configs.user.ini` (or paste SteamID if you built different)\n3. Click \"Browse\" → select `StellarBladeSave00.sav`\n4. Click \"Replace SteamID & Rename Folder\"\n5. Done (you just did digital surgery 🧠⚡)\n\n🎯 **LAUNCH YOUR GAME (PRAY 🙏):**\n→ Save loads = you HIM 😎\n→ Doesn’t load = skill issue detected 🤡\n\n🔧 **COMMON ISSUES (WHY BROKE 😭):**\n→ Save doesn't load? → folder name probably WRONG, fix it\n→ SteamID error? → must be EXACTLY 17 digits, no trolling\n\n✅ **Give feedback if it worked!** 👍👎 (or cry in silence)"
+      }
+    },
+    "the first berserker: khazan": {
+      "__brainrot__": {
+        "source_hash": "a03b5d32e8c6",
+        "text": "🎮 **The First Berserker: Khazan Save Transfer Guide (BRAINROT EDITION)**\n\n📁 **1. FIND THE SAVE SPOT (GO TREASURE MODE 🕵️):**\nSave folder: `\\AppData\\Local\\The First Berserker Khazan\\Saved\\SaveGames\\`\n→ go exactly there, no freestyling, no side quests\n\n🔢 **2. FIND YOUR OLD STEAMID FOLDER (THE CURSED NUMBER VAULT 💀):**\nLook for the old SteamID folder like `76561198012345678` or whatever giant number/ID the game made\n→ yes that sus folder, that one has the sauce\n\n📦 **3. COPY THE WHOLE LOADOUT:**\nCopy **everything** inside the old SteamID folder\n→ all files, all drip, leave nothing behind\n\n🆕 **4. PASTE INTO THE NEW STEAMID FOLDER:**\nOpen the new folder created after launching the game once\nPaste everything into it\n→ if you never made a fresh save first, bro set himself up\n\n🚀 **5. LAUNCH THE GAME AND PRAY:**\nIf the save loads = absolute W\nIf it doesn't = wrong folder or missing files, skill issue detected 🤡"
+      }
+    },
+    "demon slayer the hinokami chronicles 2": {
+      "__brainrot__": {
+        "source_hash": "c7868c6ab263",
+        "text": "🎮 **Demon Slayer Hinokami Chronicles 2 Save Transfer Guide (BRAINROT EDITION)**\n\n📁 **1. FIND THE SAVE SPOT (GO TREASURE MODE 🕵️):**\nSave folder: `\\AppData\\Roaming\\Sega\\Demon Slayer -Kimetsu no Yaiba- The Hinokami Chronicles 2\\Steam\\`\n→ go exactly there, no freestyling, no side quests\n\n🔢 **2. FIND YOUR OLD STEAMID FOLDER (THE CURSED NUMBER VAULT 💀):**\nLook for the old SteamID folder like `76561198012345678` or whatever giant number/ID the game made\n→ yes that sus folder, that one has the sauce\n\n📦 **3. COPY THE WHOLE LOADOUT:**\nCopy **everything** inside the old SteamID folder\n→ all files, all drip, leave nothing behind\n\n🆕 **4. PASTE INTO THE NEW STEAMID FOLDER:**\nOpen the new folder created after launching the game once\nPaste everything into it\n→ if you never made a fresh save first, bro set himself up\n\n🚀 **5. LAUNCH THE GAME AND PRAY:**\nIf the save loads = absolute W\nIf it doesn't = wrong folder or missing files, skill issue detected 🤡"
+      }
+    },
+    "football manager 2026": {
+      "__brainrot__": {
+        "source_hash": "2d90fb534c08",
+        "text": "🎮 **Football Manager 2026 Save Transfer Guide (BRAINROT EDITION)**\n\n📁 **1. FIND THE SAVE VAULT (BALL KNOWLEDGE MODE 🕵️):**\nSave folder: `C:\\Users\\your_username\\Documents\\Sports Interactive\\Football Manager 2026\\games`\n→ that's where the `.fm` sauce lives, don't get cooked in Documents\n\n📄 **2. COPY THE OLD `.fm` FILE (THE TACTICAL RELIC 📜):**\nGrab the `.fm` save file you actually want\n→ yes the real save, not some random temp file from Ohio\n\n🆕 **3. MAKE A FRESH SAVE FIRST:**\nLaunch the game, create a new save, then close it\n→ this creates the new target slot so you don't paste into the abyss\n\n📦 **4. PASTE THE OLD `.fm` INTO THE NEW `games` FOLDER:**\nReplace the fresh one with your old one\n→ overwrite it like a manager with aura\n\n🚀 **5. BOOT `fm26` AND PRAY TO THE MATCH ENGINE:**\nIf it loads = generational transfer window\nIf it doesn't = wrong file or wrong folder, tactical disaster 🤡"
+      }
+    },
+    "mafia: the old country": {
+      "__brainrot__": {
+        "source_hash": "1a048a8afd45",
+        "text": "🎮 **Mafia: The Old Country Save Transfer Guide (BRAINROT EDITION)**\n\n📁 **1. FIND THE SAVE SPOT (GO TREASURE MODE 🕵️):**\nSave folder: `%LocalAppData%/Hangar 13 Games/Mafia The Old Country/SaveGames/`\n→ go exactly there, no freestyling, no side quests\n\n🔢 **2. FIND YOUR OLD STEAMID FOLDER (THE CURSED NUMBER VAULT 💀):**\nLook for the old SteamID folder like `76561198012345678` or whatever giant number/ID the game made\n→ yes that sus folder, that one has the sauce\n\n📦 **3. COPY THE WHOLE LOADOUT:**\nCopy **everything** inside the old SteamID folder\n→ all files, all drip, leave nothing behind\n\n🆕 **4. PASTE INTO THE NEW STEAMID FOLDER:**\nOpen the new folder created after launching the game once\nPaste everything into it\n→ if you never made a fresh save first, bro set himself up\n\n🚀 **5. LAUNCH THE GAME AND PRAY:**\nIf the save loads = absolute W\nIf it doesn't = wrong folder or missing files, skill issue detected 🤡"
+      }
+    },
+    "like a dragon: ishin!": {
+      "__brainrot__": {
+        "source_hash": "133a3d3e5336",
+        "text": "🎮 **Like a Dragon: Ishin! Save Transfer Guide (BRAINROT EDITION)**\n\n📁 **1. FIND THE SAVE SPOT (GO TREASURE MODE 🕵️):**\nSave folder: `%LocalAppData%\\Sega\\LikeaDragonIshin\\Saved\\SaveGames\\`\n→ go exactly there, no freestyling, no side quests\n\n🔢 **2. FIND YOUR OLD STEAMID FOLDER (THE CURSED NUMBER VAULT 💀):**\nLook for the old SteamID folder like `76561198012345678` or whatever giant number/ID the game made\n→ yes that sus folder, that one has the sauce\n\n📦 **3. COPY THE WHOLE LOADOUT:**\nCopy **everything** inside the old SteamID folder\n→ all files, all drip, leave nothing behind\n\n🆕 **4. PASTE INTO THE NEW STEAMID FOLDER:**\nOpen the new folder created after launching the game once\nPaste everything into it\n→ if you never made a fresh save first, bro set himself up\n\n🚀 **5. LAUNCH THE GAME AND PRAY:**\nIf the save loads = absolute W\nIf it doesn't = wrong folder or missing files, skill issue detected 🤡"
+      }
+    },
+    "code vein ii": {
+      "__brainrot__": {
+        "source_hash": "a4de4e9be5b3",
+        "text": "🎮 **CODE VEIN II Save Transfer Guide (BRAINROT EDITION)**\n\n📁 **1. FIND THE SAVE SPOT (GO TREASURE MODE 🕵️):**\nSave folder: `%LOCALAPPDATA%\\CodeVein2\\Saved\\SaveGames`\n→ go exactly there, no freestyling, no side quests\n\n🔢 **2. FIND YOUR OLD STEAMID FOLDER (THE CURSED NUMBER VAULT 💀):**\nLook for the old SteamID folder like `76561198012345678` or whatever giant number/ID the game made\n→ yes that sus folder, that one has the sauce\n\n📦 **3. COPY THE WHOLE LOADOUT:**\nCopy **everything** inside the old SteamID folder\n→ all files, all drip, leave nothing behind\n\n🆕 **4. PASTE INTO THE NEW STEAMID FOLDER:**\nOpen the new folder created after launching the game once\nPaste everything into it\n→ if you never made a fresh save first, bro set himself up\n\n🚀 **5. LAUNCH THE GAME AND PRAY:**\nIf the save loads = absolute W\nIf it doesn't = wrong folder or missing files, skill issue detected 🤡"
+      }
+    },
+    "hogwarts legacy": {
+      "__brainrot__": {
+        "source_hash": "6f4e7e3b0716",
+        "text": "🎮 **Hogwarts Legacy Save Transfer Guide (BRAINROT EDITION)**\n\n📁 **1. FIND THE SAVE SPOT (GO TREASURE MODE 🕵️):**\nSave folder: `\\AppData\\Local\\HogwartsLegacy\\Saved\\SaveGames\\`\n→ go exactly there, no freestyling, no side quests\n\n🔢 **2. FIND YOUR OLD STEAMID FOLDER (THE CURSED NUMBER VAULT 💀):**\nLook for the old SteamID folder like `76561198012345678` or whatever giant number/ID the game made\n→ yes that sus folder, that one has the sauce\n\n📦 **3. COPY THE WHOLE LOADOUT:**\nCopy **everything** inside the old SteamID folder\n→ all files, all drip, leave nothing behind\n\n🆕 **4. PASTE INTO THE NEW STEAMID FOLDER:**\nOpen the new folder created after launching the game once\nPaste everything into it\n→ if you never made a fresh save first, bro set himself up\n\n🚀 **5. LAUNCH THE GAME AND PRAY:**\nIf the save loads = absolute W\nIf it doesn't = wrong folder or missing files, skill issue detected 🤡"
+      }
+    },
+    "football manager 2024": {
+      "__brainrot__": {
+        "source_hash": "137c801ab0a8",
+        "text": "🎮 **Football Manager 2024 Save Transfer Guide (BRAINROT EDITION)**\n\n📁 **1. FIND THE SAVE VAULT (BALL KNOWLEDGE MODE 🕵️):**\nSave folder: `C:\\Users\\your_username\\Documents\\Sports Interactive\\Football Manager 2024\\games`\n→ that's where the `.fm` sauce lives, don't get cooked in Documents\n\n📄 **2. COPY THE OLD `.fm` FILE (THE TACTICAL RELIC 📜):**\nGrab the `.fm` save file you actually want\n→ yes the real save, not some random temp file from Ohio\n\n🆕 **3. MAKE A FRESH SAVE FIRST:**\nLaunch the game, create a new save, then close it\n→ this creates the new target slot so you don't paste into the abyss\n\n📦 **4. PASTE THE OLD `.fm` INTO THE NEW `games` FOLDER:**\nReplace the fresh one with your old one\n→ overwrite it like a manager with aura\n\n🚀 **5. BOOT `fm24` AND PRAY TO THE MATCH ENGINE:**\nIf it loads = generational transfer window\nIf it doesn't = wrong file or wrong folder, tactical disaster 🤡"
+      }
+    },
+    "dragon quest vii reimagined": {
+      "__brainrot__": {
+        "source_hash": "61fb6406a6fc",
+        "text": "🎮 **Dragon Quest VII Reimagined Save Transfer Guide (BRAINROT EDITION)**\n\n📁 **1. FIND THE SAVE DEN (JRPG TREASURE ARC 🕵️):**\nWindows save folder: `%USERPROFILE%/My Documents/My Games/DRAGON QUEST VII/Steam/`\n→ go there first, no wandering into random side quest folders\n\n🔢 **2. FIND THE OLD ACCOUNTID FOLDER (ANCIENT NUMBER MAGIC 💀):**\nLook for your old AccountID folder like `773557454`\n→ that number folder is the main character\n\n📦 **3. COPY EVERYTHING INSIDE IT:**\nTake all files from the old AccountID folder\n→ not one file, not vibes, all of it\n\n🆕 **4. PASTE INTO THE NEW ACCOUNTID FOLDER:**\nUse the new folder created after launching the game once\n→ if no new folder exists, go make one and stop trolling\n\n🚀 **5. LAUNCH THE GAME AND SEE IF THE PLOT CONTINUES:**\nIf save loads = lore restored\nIf not = wrong AccountID folder, tragic anime mistake 🤡"
+      }
     }
   }
 }
