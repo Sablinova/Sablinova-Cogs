@@ -1,1 +1,9 @@
 sabdownloader/__pycache__/
+__pycache__/
+*.pyc
+pubhelper/fix_*.py
+pubhelper/refactor.py
+pubhelper/swap_keys.py
+pubhelper/list_view.py
+pubhelper/input/
+pubhelper/tools/
