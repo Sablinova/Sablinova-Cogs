@@ -3625,7 +3625,7 @@ class SabPubHelper(commands.Cog):
         if cli_log_channel:
             try:
                 log_message = await cli_log_channel.send(
-                    f"🔄 **Savebrute started for {interaction.user.name}**\nGame: {SAVE_PROFILES[game]['name']}\n```\nWaiting for logs...\n```"
+                    f"🔄 **Savebrute started for {interaction.user.name}**\nGame: {SAVE_PROFILES[game]['name']}\nChannel: {interaction.channel.mention}\n```\nWaiting for logs...\n```"
                 )
             except Exception as e:
                 log.error(f"Failed to send initial log message: {e}")
@@ -3664,7 +3664,7 @@ class SabPubHelper(commands.Cog):
                     if cli_log_channel and log_message:
                         try:
                             await log_message.edit(
-                                content=f"🔄 **Savebrute running for {interaction.user.name}**\nGame: {SAVE_PROFILES[game]['name']}\n```\n{log_text}\n```"
+                                content=f"🔄 **Savebrute running for {interaction.user.name}**\nGame: {SAVE_PROFILES[game]['name']}\nChannel: {interaction.channel.mention}\n```\n{log_text}\n```"
                             )
                         except Exception as e:
                             log.warning(f"Failed to update log message: {e}")
