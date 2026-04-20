@@ -726,13 +726,6 @@ class SabPubHelper(commands.Cog):
                 except Exception:
                     pass
 
-                await self._send_bruteforce_queue_log(
-                    item["interaction"],
-                    item["game"],
-                    f"▶️ **Savebrute started from queue for {item['interaction'].user.name}**",
-                    position=1,
-                )
-
                 try:
                     await task
                 finally:
@@ -3667,12 +3660,6 @@ class SabPubHelper(commands.Cog):
                 f"⏳ Bruteforce queued for **{SAVE_PROFILES[game]['name']}**.\n"
                 f"Queue position: `#1`\n"
                 f"_Starting now. I'll update you when done._"
-            )
-            await self._send_bruteforce_queue_log(
-                interaction,
-                game,
-                f"📥 **Savebrute queued for {interaction.user.name}**",
-                position=1,
             )
         else:
             await interaction.followup.send(
