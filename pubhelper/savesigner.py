@@ -31,7 +31,7 @@ SAVE_PROFILES = {
         "profile": "Resident Evil 9 Requiem v1.bin",
         "steam_id": "3764200",
         "config_folder": "pub_re9/",
-        "linux_folder": "resident_evil_requiem_prefix",
+        "linux_folder": "resident_evil_requiemprefix",
     },
     "dragon's dogma 2": {
         "name": "DD2",
