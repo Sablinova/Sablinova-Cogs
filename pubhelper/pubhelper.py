@@ -7,6 +7,7 @@ Provides slash commands to combine user configs with basefiles for different gam
 import asyncio
 import hashlib
 import io
+import json
 import logging
 import os
 import re
@@ -1012,14 +1013,17 @@ class SaveInstTranslateView(discord.ui.View):
 
     async def _on_select(self, interaction: discord.Interaction):
         lang_code = interaction.data["values"][0]
-        lang_label = next(
-            (label for label, code in SAVEINST_LANGUAGES if code == lang_code),
-            lang_code,
-        )
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         # Funny local transforms — no API, no cache (randomised each time)
         if lang_code.startswith("__"):
+            if lang_code == "__brainrot__":
+                manual = self.cog.get_manual_funny_override(
+                    self.game_key, lang_code, self.source_text
+                )
+                if manual:
+                    await interaction.followup.send(manual, ephemeral=True)
+                    return
             result = _apply_funny_transform(lang_code, self.source_text)
             await interaction.followup.send(result, ephemeral=True)
             return
@@ -1078,6 +1082,8 @@ class SabPubHelper(commands.Cog):
             translation_cache_index={},  # Index: game_key -> [cache_key, ...]
         )
         self.data_path = cog_data_path(self)
+        self.funny_overrides_path = Path(__file__).parent / "funny_saveinst.json"
+        self.manual_funny_overrides = self._load_manual_funny_overrides()
         self.save_signer = SaveSigner(self.data_path)
         self.active_brutes: dict[int, asyncio.Task] = {}
         self.bruteforce_queue: list[dict] = []
@@ -1090,6 +1096,38 @@ class SabPubHelper(commands.Cog):
     def _translation_hash(self, text: str) -> str:
         """Return a short SHA-1 hash of text for cache keying."""
         return hashlib.sha1(text.encode()).hexdigest()[:12]
+
+    def _load_manual_funny_overrides(self) -> dict:
+        """Load manual funny saveinst overrides from JSON file."""
+        if not self.funny_overrides_path.exists():
+            return {"entries": {}}
+        try:
+            with self.funny_overrides_path.open("r", encoding="utf-8") as fp:
+                data = json.load(fp)
+            if isinstance(data, dict) and isinstance(data.get("entries"), dict):
+                return data
+        except Exception as e:
+            log.warning("Failed to load funny_saveinst.json: %s", e)
+        return {"entries": {}}
+
+    def get_manual_funny_override(
+        self, game_key: str, lang_code: str, source_text: str
+    ) -> str | None:
+        """Return manual funny override text if game/mode/hash all match."""
+        entries = self.manual_funny_overrides.get("entries", {})
+        game_entry = entries.get(game_key.lower())
+        if not isinstance(game_entry, dict):
+            return None
+        lang_entry = game_entry.get(lang_code)
+        if not isinstance(lang_entry, dict):
+            return None
+        expected_hash = lang_entry.get("source_hash")
+        manual_text = lang_entry.get("text")
+        if not expected_hash or not manual_text:
+            return None
+        if expected_hash != self._translation_hash(source_text):
+            return None
+        return manual_text
 
     async def _get_cached_translation(
         self, game_key: str, lang: str, source_hash: str
@@ -2482,6 +2520,98 @@ class SabPubHelper(commands.Cog):
             await ctx.send(
                 f"❌ No game found (custom or base) matching keyword `{keyword}`."
             )
+
+    @pubhelper_saveinst.command(name="dumpbrainrot")
+    async def pubhelper_saveinst_dumpbrainrot(
+        self, ctx: commands.Context, *, keyword: str
+    ) -> None:
+        """Dump current source text + hash for manual brainrot authoring."""
+        custom_games = await self.config.custom_saveinst()
+        keyword = keyword.lower()
+
+        matched_key = None
+        message = None
+
+        if keyword in custom_games:
+            matched_key = keyword
+        else:
+            for k, data in custom_games.items():
+                if (
+                    keyword == data["name"].lower()
+                    or k.lower() in keyword
+                    or keyword in k.lower()
+                ):
+                    matched_key = k
+                    break
+
+        if matched_key:
+            data = custom_games[matched_key]
+            if data["type"] == "custom":
+                message = data["custom_text"].format(
+                    name=data["name"], keyword=matched_key
+                )
+            elif data["type"] == "sega":
+                message = SAVE_INSTRUCTIONS_SEGA.format(
+                    game_name=data["name"], game_folder=data["config_folder"]
+                )
+            else:
+                message = SAVE_INSTRUCTIONS.format(
+                    steam_id=data.get("steam_id", ""),
+                    name=data.get("name", ""),
+                    config_folder=data.get("config_folder", ""),
+                    linux_folder=data.get(
+                        "linux_folder",
+                        matched_key.lower().replace(" ", "_") + "prefix",
+                    ),
+                )
+        else:
+            for key, profile in SAVE_PROFILES.items():
+                if (
+                    keyword == profile["name"].lower()
+                    or keyword == key.lower()
+                    or key.lower() in keyword
+                    or keyword in key.lower()
+                ):
+                    matched_key = key
+                    message = SAVE_INSTRUCTIONS.format(
+                        steam_id=profile["steam_id"],
+                        name=profile["name"],
+                        config_folder=profile["config_folder"],
+                        linux_folder=profile.get(
+                            "linux_folder", key.replace(" ", "_") + "prefix"
+                        ),
+                    )
+                    break
+
+        if not matched_key:
+            for key, profile in SEGA_PROFILES.items():
+                if (
+                    keyword == profile["name"].lower()
+                    or keyword == key.lower()
+                    or key.lower() in keyword
+                    or keyword in key.lower()
+                ):
+                    matched_key = key
+                    message = SAVE_INSTRUCTIONS_SEGA.format(
+                        game_name=profile["name"], game_folder=profile["game_folder"]
+                    )
+                    break
+
+        if not matched_key or message is None:
+            await ctx.send(
+                f"❌ No game found (custom or base) matching keyword `{keyword}`."
+            )
+            return
+
+        payload = {
+            "game_key": matched_key,
+            "mode": "__brainrot__",
+            "source_hash": self._translation_hash(message),
+            "source_text": message,
+        }
+        await ctx.send(
+            "```json\n" + json.dumps(payload, indent=2, ensure_ascii=False) + "\n```"
+        )
 
     @pubhelper_saveinst.command(name="edit")
     async def pubhelper_saveinst_edit(
