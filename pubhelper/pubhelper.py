@@ -61,7 +61,7 @@ SAVEINST_LANGUAGES = [
     ("☠️ Pirate Speak", "__pirate__"),
     ("😳 UwU Speak", "__uwu__"),
     ("🧙 Ye Olde English", "__shakespeare__"),
-    ("🌿 Yoda Speak", "__yoda__"),
+    ("🧠 Brainrot", "__brainrot__"),
 ]
 
 
@@ -244,7 +244,7 @@ def _apply_funny_transform(lang_code: str, text: str) -> str:
         out = safe_text
         for pattern, replacement in subs:
             out = re.sub(pattern, replacement, out, flags=re.IGNORECASE)
-        # MAX: inject outburst every 2-3 words, always
+        # Inject outburst every 5-7 words, ~55% chance
         pirate_bursts = [
             "ARRR!",
             "YARR!",
@@ -253,10 +253,7 @@ def _apply_funny_transform(lang_code: str, text: str) -> str:
             "BY DAVY JONES!",
             "AVAST YE!",
             "YO HO HO!",
-            "CURSE YE!",
-            "WALK TH' PLANK!",
             "SCALLYWAG!",
-            "KRAKEN'S TEETH!",
         ]
 
         def _pirate_inject(line: str) -> str:
@@ -266,27 +263,21 @@ def _apply_funny_transform(lang_code: str, text: str) -> str:
             out_words = []
             for idx, w in enumerate(words):
                 out_words.append(w)
-                # Every 2-3 words, 85% chance to inject
                 if (
                     idx > 0
-                    and (idx + 1) % random.randint(2, 3) == 0
-                    and random.random() < 0.85
+                    and (idx + 1) % random.randint(5, 7) == 0
+                    and random.random() < 0.55
                 ):
                     out_words.append(random.choice(pirate_bursts))
             return " ".join(out_words)
 
         out = "\n".join(_pirate_inject(ln) for ln in out.split("\n"))
-        # Every sentence end gets a pirate scream
+        # Sentence ends get a pirate flavour ~60% of the time
         out = re.sub(
-            r"([.!?])\s",
-            lambda m: (
-                " "
-                + random.choice(["ARRR!!", "YARR!!", "BLIMEY!!", "YO HO HO!!"])
-                + " "
-            ),
+            r"\. ",
+            lambda m: random.choice([". ARRR! ", ". YARR! ", ". BLIMEY! ", ". ", ". "]),
             out,
         )
-        out = out.replace("!", "!! ARRR!")
         # Prefix every numbered/bulleted line with a pirate exclamation
         line_prefixes = ["⚓ ARRR! ", "☠️ YARR! ", "🏴‍☠️ BLIMEY! ", "⚔️ AVAST! "]
         prefixed = []
@@ -434,26 +425,94 @@ def _apply_funny_transform(lang_code: str, text: str) -> str:
             + "\n\n*Hark! Fare thee well, noble traveller. May thy save files be eternal. ⚔️📜*"
         )
 
-    elif lang_code == "__yoda__":
-        # Process line by line to avoid scrambling path lines
-        lines4 = safe_text.split("\n")
-        result = []
-        for line in lines4:
-            # Skip lines that are mostly placeholders / paths
+    elif lang_code == "__brainrot__":
+        # Word-level brainrot substitutions targeting save-instruction vocab
+        subs = [
+            (r"\binstall\b", "rizz up"),
+            (r"\bdownload\b", "yoink"),
+            (r"\bcopy\b", "no cap copy"),
+            (r"\bpaste\b", "slay paste"),
+            (r"\bfolder\b", "drip folder"),
+            (r"\bfile\b", "bussin file"),
+            (r"\bfiles\b", "bussin files"),
+            (r"\bsave\b", "sigma save"),
+            (r"\bgame\b", "W game"),
+            (r"\bpath\b", "Ohio path"),
+            (r"\bsend\b", "slay send"),
+            (r"\bpress\b", "lowkey press"),
+            (r"\blaunch\b", "go absolutely feral and launch"),
+            (r"\bdone\b", "ate and left no crumbs"),
+            (r"\bfind\b", "hunt down (no cap)"),
+            (r"\bopen\b", "pog open"),
+            (r"\brun\b", "speedrun"),
+            (r"\bstart\b", "W start"),
+            (r"\bstep\b", "era"),
+            (r"\bnote\b", "real talk"),
+            (r"\bwarning\b", "bestie this is a WARNING"),
+            (r"\berror\b", "L moment"),
+            (r"\binstructions\b", "lore"),
+            (r"\bguide\b", "lore dump"),
+            (r"\btransfer\b", "fanum tax"),
+            (r"\bload\b", "haul the drip"),
+            (r"\bold\b", "mid"),
+            (r"\bnew\b", "bussin fresh"),
+            (r"\beverything\b", "all the rizz"),
+            (r"\binside\b", "locked in"),
+        ]
+        out = safe_text
+        for pattern, replacement in subs:
+            out = re.sub(pattern, replacement, out, flags=re.IGNORECASE)
+        # Inject brainrot filler words every 6-8 words
+        fillers = [
+            "no cap,",
+            "fr fr,",
+            "lowkey,",
+            "ngl,",
+            "deadass,",
+            "on god,",
+            "bussin,",
+            "slay,",
+            "gyatt,",
+            "rizz check —",
+        ]
+
+        def _brainrot_inject(line: str) -> str:
             if "\x00" in line or not line.strip():
-                result.append(line)
-                continue
+                return line
             words = line.split()
-            if len(words) > 3:
-                # Move last third of words to front
-                cut = max(1, len(words) * 2 // 3)
-                words = words[cut:] + [","] + words[:cut]
-            result.append(" ".join(words))
-        out = "\n".join(result)
-        out = re.sub(r"\. ", "... hmmmm. ", out)
+            out_words = []
+            for idx, w in enumerate(words):
+                out_words.append(w)
+                if (
+                    idx > 0
+                    and (idx + 1) % random.randint(6, 8) == 0
+                    and random.random() < 0.60
+                ):
+                    out_words.append(random.choice(fillers))
+            return " ".join(out_words)
+
+        out = "\n".join(_brainrot_inject(ln) for ln in out.split("\n"))
+        # Line-end sigma reactions
+        reactions = [
+            " W",
+            " based",
+            " 🔥",
+            " 💀",
+            " fr",
+            " no cap",
+            " (real)",
+            " slaps",
+        ]
+        brainrot_lines = out.split("\n")
+        out = "\n".join(
+            line + random.choice(reactions)
+            if line.strip() and random.random() < 0.55
+            else line
+            for line in brainrot_lines
+        )
         return _restore(
             out
-            + "\n\n*Hmmmm. Follow this guide, you must. Fail you it will not, yes. Strong with the Force, thy save file is. 🌿*"
+            + "\n\n*bro really followed the sigma save lore fr fr no cap 💀🔥 absolute W rizz on this guide, not mid at all, ate and left no crumbs bestie 🗣️*"
         )
 
     return _restore(safe_text)
