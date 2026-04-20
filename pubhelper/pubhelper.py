@@ -109,110 +109,257 @@ def _apply_funny_transform(lang_code: str, text: str) -> str:
             "MROW",
             "nyaa",
             "prrr~",
+            "MEOW!!",
+            "NYA NYA",
+            "purrrr~",
+            "*hiss*",
+            "mrrrow~",
+            "PRRR",
+            "*bats paw*",
         ]
-        cat_emotes = [" :3", " =^.^=", " >:3", " owo", " uwu", "~"]
+        cat_emotes = [
+            " :3",
+            " =^.^=",
+            " >:3",
+            " owo",
+            " uwu~",
+            "~",
+            " 🐾",
+            " ≽^•⩊•^≼",
+            " *purrs*",
+        ]
+        cat_screams = [
+            "MREOOOWWW 🐾🐾🐾",
+            "NYA NYA NYA NYA NYA",
+            "=^.^= *knocks this off the table* =^.^=",
+            "PURRRR PURRRR PURRRR !!!",
+            "*rolls around on keyboard* meow meow meow",
+            "MROW MROW MROW MROW",
+        ]
         lines = safe_text.split("\n")
         result = []
-        for line in lines:
+        for i, line in enumerate(lines):
             words = line.split()
             new_words = []
             for word in words:
                 if "\x00" in word:
                     new_words.append(word)
-                elif random.random() < 0.30:
+                elif random.random() < 0.55:
                     new_words.append(random.choice(cat_words))
-                elif random.random() < 0.15:
-                    new_words.append(word + random.choice(["~", "~nya", "~purrr"]))
+                elif random.random() < 0.30:
+                    new_words.append(
+                        word + random.choice(["~", "~nya", "~purrr", "~meow"])
+                    )
                 else:
                     new_words.append(word)
             result.append(" ".join(new_words))
+            # Randomly inject a full cat scream line after content lines
+            if line.strip() and random.random() < 0.35:
+                result.append(f"*{random.choice(cat_screams)}*")
         out = "\n".join(result)
         out = re.sub(
-            r"\. ", lambda m: random.choice(["~ ", "~ nya~ ", ". meow. "]), out
+            r"\. ",
+            lambda m: random.choice(["~ meow~ ", "~ nya~ ", ". MEOW. ", "~ purrr~ "]),
+            out,
         )
-        out = out.replace("!", "! :3").replace("?", "? mrow?")
-        # sprinkle cat emotes at end of random lines
+        out = out.replace("!", "!! :3 meow").replace("?", "?? mrow??")
+        # Aggressively sprinkle cat emotes at end of lines
         lines2 = out.split("\n")
         out = "\n".join(
             line + random.choice(cat_emotes)
-            if line.strip() and random.random() < 0.4
+            if line.strip() and random.random() < 0.70
             else line
             for line in lines2
         )
-        return _restore(out + "\n\n*=^.^= MEOW~ nya nya nya 🐾*")
+        return _restore(
+            out + "\n\n*=^.^= MEOW~ NYA NYA NYA NYA 🐾🐾🐾 MREOOOWWW!! purrr~ =^.^=*"
+        )
 
     elif lang_code == "__pirate__":
         subs = [
-            (r"\byou are\b", "ye be"),
+            (r"\byou are\b", "ye scurvy self be"),
             (r"\byou're\b", "ye be"),
             (r"\byou\b", "ye"),
             (r"\bmy\b", "me"),
             (r"\bthe\b", "th'"),
-            (r"\bthis\b", "this here"),
-            (r"\bthat\b", "that there"),
+            (r"\bthis\b", "this here cursed"),
+            (r"\bthat\b", "that blasted"),
             (r"\bis\b", "be"),
             (r"\bare\b", "be"),
-            (r"\bwas\b", "were"),
-            (r"\bhello\b", "AHOY"),
+            (r"\bwas\b", "were, ARRR,"),
+            (r"\bhello\b", "AHOY THERE YE LANDLUBBER"),
             (r"\bhi\b", "AHOY"),
-            (r"\byes\b", "AYE"),
-            (r"\bno\b", "NAY"),
+            (r"\byes\b", "AYE AYE CAP'N"),
+            (r"\bno\b", "NAY NAY BLAST IT ALL"),
             (r"\bnot\b", "nay"),
-            (r"\bfriend\b", "matey"),
-            (r"\bfriends\b", "mateys"),
-            (r"\bokay\b", "aye aye, cap'n"),
+            (r"\bfriend\b", "trusty matey"),
+            (r"\bfriends\b", "fellow scallywags"),
+            (r"\bokay\b", "AYE AYE AYE CAP'N"),
             (r"\bok\b", "aye aye"),
-            (r"\bwant\b", "desire"),
-            (r"\bneed\b", "must have"),
-            (r"\bgo to\b", "sail to"),
-            (r"\bput\b", "plunder"),
-            (r"\bcopy\b", "pillage"),
-            (r"\bextract\b", "loot"),
-            (r"\binstall\b", "plunder into"),
-            (r"\bdownload\b", "haul from the seas"),
-            (r"\bcomputer\b", "ship"),
-            (r"\bwindows\b", "the poop deck"),
+            (r"\bwant\b", "be desirin' with yer whole pirate soul"),
+            (r"\bneed\b", "MUST PILLAGE"),
+            (r"\bgo to\b", "sail yer sorry ship to"),
+            (r"\bput\b", "PLUNDER"),
+            (r"\bcopy\b", "PILLAGE AN' PLUNDER"),
+            (r"\bpaste\b", "SHOVE INTO YER TREASURE HOLD"),
+            (r"\bextract\b", "loot an' plunder"),
+            (r"\binstall\b", "PLUNDER INTO YER SHIP"),
+            (r"\bdownload\b", "haul from th' seven cursed seas"),
+            (r"\bcomputer\b", "trusty vessel"),
+            (r"\bwindows\b", "th' poop deck"),
             (r"\bsteam\b", "Davy Jones' locker"),
-            (r"\blet\b", "allow"),
-            (r"\bmake sure\b", "see to it"),
+            (r"\blet\b", "allow, ARRR,"),
+            (r"\bmake sure\b", "SWEAR ON YER MOTHER'S GRAVE THAT"),
+            (r"\bfolder\b", "treasure chest"),
+            (r"\bfile\b", "sacred treasure map"),
+            (r"\bfiles\b", "treasure maps"),
+            (r"\bopen\b", "pry open with yer cutlass"),
+            (r"\brun\b", "set sail with"),
+            (r"\bclick\b", "JAB YER FILTHY FINGER AT"),
+            (r"\bstart\b", "HOIST TH' JOLLY ROGER ON"),
+            (r"\bstep\b", "SWORN PIRATE STEP"),
+            (r"\bnote\b", "HEED THIS OR WALK TH' PLANK:"),
+            (r"\bwarning\b", "BLIMEY DEADLY WARNING"),
+            (r"\berror\b", "CURSE OF TH' KRAKEN"),
+            (r"\bpress\b", "SMASH"),
+            (r"\bsend\b", "dispatch via th' crow"),
+            (r"\bhit\b", "WALLOP"),
+            (r"\benter\b", "th' gateway portal"),
+            (r"\bpath\b", "treasure trail"),
+            (r"\bbelow\b", "down in Davy Jones' depths"),
+            (r"\bfind\b", "hunt down"),
+            (r"\bold\b", "ancient cursed"),
+            (r"\bnew\b", "freshly pillaged"),
+            (r"\binside\b", "buried within"),
+            (r"\beverything\b", "ALL TH' BOOTY"),
+            (r"\bdone\b", "ARRR YER WORK HERE BE DONE"),
+            (r"\blaunch\b", "SET TH' CANNONS AN' FIRE UP"),
+            (r"\bsave\b", "sacred treasure"),
+            (r"\bgame\b", "grand plunder"),
+            (r"\bguide\b", "pirate's code"),
+            (r"\binstructions\b", "THE PIRATE'S CODE"),
+            (r"\btransfer\b", "PILLAGE AN' MOVE"),
+            (r"\bload\b", "haul up from th' depths"),
         ]
         out = safe_text
         for pattern, replacement in subs:
             out = re.sub(pattern, replacement, out, flags=re.IGNORECASE)
-        # Randomly append "ARRR!" mid-sentence
+        # MAX: inject outburst every 2-3 words, always
+        pirate_bursts = [
+            "ARRR!",
+            "YARR!",
+            "BLIMEY!",
+            "SHIVER ME TIMBERS!",
+            "BY DAVY JONES!",
+            "AVAST YE!",
+            "YO HO HO!",
+            "CURSE YE!",
+            "WALK TH' PLANK!",
+            "SCALLYWAG!",
+            "KRAKEN'S TEETH!",
+        ]
+
+        def _pirate_inject(line: str) -> str:
+            if "\x00" in line or not line.strip():
+                return line
+            words = line.split()
+            out_words = []
+            for idx, w in enumerate(words):
+                out_words.append(w)
+                # Every 2-3 words, 85% chance to inject
+                if (
+                    idx > 0
+                    and (idx + 1) % random.randint(2, 3) == 0
+                    and random.random() < 0.85
+                ):
+                    out_words.append(random.choice(pirate_bursts))
+            return " ".join(out_words)
+
+        out = "\n".join(_pirate_inject(ln) for ln in out.split("\n"))
+        # Every sentence end gets a pirate scream
         out = re.sub(
-            r"\. ", lambda m: random.choice([". ARRR! ", ". ", ". Blimey! "]), out
+            r"([.!?])\s",
+            lambda m: (
+                " "
+                + random.choice(["ARRR!!", "YARR!!", "BLIMEY!!", "YO HO HO!!"])
+                + " "
+            ),
+            out,
         )
-        return _restore(out + "\n\n*ARRR! Ye be seaworthy now, matey! Sail forth! ☠️⚓*")
+        out = out.replace("!", "!! ARRR!")
+        # Prefix every numbered/bulleted line with a pirate exclamation
+        line_prefixes = ["⚓ ARRR! ", "☠️ YARR! ", "🏴‍☠️ BLIMEY! ", "⚔️ AVAST! "]
+        prefixed = []
+        for ln in out.split("\n"):
+            stripped = ln.lstrip()
+            if stripped and (stripped[0].isdigit() or stripped[0] in ("•", "-", "*")):
+                prefixed.append(random.choice(line_prefixes) + ln)
+            else:
+                prefixed.append(ln)
+        out = "\n".join(prefixed)
+        return _restore(
+            out
+            + "\n\n*☠️ ARRR ARRR ARRR ARRR!! YE SURVIVED TH' PIRATE CODE, YE SCURVY BILGE RAT!! NOW SAIL FORTH OR BY DAVY JONES I'LL MAKE YE WALK TH' PLANK!! YO HO HO AND A BOTTLE O' RUM!! ☠️⚓🏴‍☠️🦜*"
+        )
 
     elif lang_code == "__uwu__":
         out = safe_text
-        # Aggressive r/l -> w replacement (all positions, not just middle)
+        # r/l -> w everywhere
         out = re.sub(r"[rl]", "w", out)
         out = re.sub(r"[RL]", "W", out)
         # n before vowels -> ny
         out = re.sub(r"n([aeiou])", r"ny\1", out)
         out = re.sub(r"N([aeiouAEIOU])", r"Ny\1", out)
+        # More letter mangling specific to save-instruction words
         out = out.replace("ove", "uv").replace("OVE", "UV")
         out = out.replace("the", "da").replace("The", "Da").replace("THE", "DA")
-        out = out.replace("is", "iz").replace("Is", "Iz")
-        # Add cute stutters on some words
+        out = out.replace("is", "iz").replace("Is", "Iz").replace("IS", "IZ")
+        out = out.replace("press", "pwess").replace("Press", "Pwess")
+        out = out.replace("paste", "pastewy").replace("Paste", "Pastewy")
+        out = out.replace("send", "sendy").replace("Send", "Sendy")
+        out = out.replace("copy", "copwy").replace("Copy", "Copwy")
+        out = out.replace("find", "findy").replace("Find", "Findy")
+        out = out.replace("save", "savy").replace("Save", "Savy")
+        out = out.replace("launch", "waunch~").replace("Launch", "Waunch~")
+        out = out.replace("done", "doneeeee!!").replace("Done", "Doneeeee!!")
+        out = out.replace("instructions", "intwuctions UwU").replace(
+            "Instructions", "Intwuctions UwU"
+        )
+        # Aggressive stutter on words
         words = out.split()
         stuttered = []
         for w in words:
-            if "\x00" not in w and len(w) > 2 and random.random() < 0.18:
-                stuttered.append(f"{w[0]}-{w[0]}-{w}")
+            if "\x00" not in w and len(w) > 2 and random.random() < 0.40:
+                stuttered.append(f"{w[0]}-{w[0]}-{w[0]}-{w}")
             else:
                 stuttered.append(w)
         out = " ".join(stuttered)
-        # Inject faces after punctuation
-        faces = ["OwO", "UwU", ">w<", "^-^", "(⁄ ⁄•⁄ω⁄•⁄ ⁄)", "( ˘ ³˘)♥", "✨"]
+        # Faces after punctuation
+        faces = [
+            "OwO",
+            "UwU",
+            ">w<",
+            "^-^",
+            "(⁄ ⁄•⁄ω⁄•⁄ ⁄)",
+            "( ˘ ³˘)♥",
+            "✨",
+            "(*^ω^)",
+            "≧◡≦",
+            "( ´ ▽ ` )",
+        ]
         out = re.sub(
             r"([.!?])\s", lambda m: m.group(1) + " " + random.choice(faces) + " ", out
         )
         out = out.replace(". ", "~ ")
+        # Inject a face at end of EVERY non-empty line
+        uwu_lines = out.split("\n")
+        out = "\n".join(
+            line + " " + random.choice(faces) if line.strip() else line
+            for line in uwu_lines
+        )
         return _restore(
-            out + "\n\n*UwU nyaa~!! dis gwuide is da best OwO (⁄ ⁄•⁄ω⁄•⁄ ⁄) ✨*"
+            out
+            + "\n\n*UwU UwU UwU nyaa~!!! dis gwuide iz da bestest fwing evew OwO OwO (⁄ ⁄•⁄ω⁄•⁄ ⁄) p-p-pwease fowwow it!! ✨✨✨*"
         )
 
     elif lang_code == "__shakespeare__":
