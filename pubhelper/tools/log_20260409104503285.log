@@ -1,0 +1,5 @@
+Timestamp,LogLevel,Group,Message
+04/09/2026 10:45:03,Info,,"Log created with SimpleLogger v3.0.1.0 by Mi5hmasH.
+Logged app: mandarin-juice-promax v1.1.1.0 | OS: Ubuntu 22.04.1 LTS"
+04/09/2026 10:45:03,Info,,Brute-forcing UserID...
+04/09/2026 10:46:43,Info,,Found UserID: 776533204.

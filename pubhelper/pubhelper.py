@@ -3192,9 +3192,9 @@ class SabPubHelper(commands.Cog):
         games: dict[str, str] = {}  # lowercase_key -> display_name
 
         for key, data in SAVE_PROFILES.items():
-            games[key] = data.get("name", key.title())
+            games[key] = data.get("display_name", key.title())
         for key, data in SEGA_PROFILES.items():
-            games[key] = data.get("name", key.title())
+            games[key] = data.get("display_name", key.title())
 
         try:
             custom = await self.config.custom_saveinst()

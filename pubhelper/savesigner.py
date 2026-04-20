@@ -28,6 +28,7 @@ SAVE_INSTRUCTIONS = """```\n{name} - Save File Instructions\n\n1. Press Win + R,
 SAVE_PROFILES = {
     "resident evil 9 requiem": {
         "name": "RE9",
+        "display_name": "Resident Evil 9 Requiem",
         "profile": "Resident Evil 9 Requiem v1.bin",
         "steam_id": "3764200",
         "config_folder": "pub_re9/",
@@ -35,42 +36,49 @@ SAVE_PROFILES = {
     },
     "dragon's dogma 2": {
         "name": "DD2",
+        "display_name": "Dragon's Dogma 2",
         "profile": "Dragon's Dogma 2 v1.bin",
         "steam_id": "2054970",
         "config_folder": "",
     },
     "monster hunter wilds": {
         "name": "MHWilds",
+        "display_name": "Monster Hunter Wilds",
         "profile": "Monster Hunter Wilds v1.bin",
         "steam_id": "2246340",
         "config_folder": "",
     },
     "kunitsu-gami path of the goddess": {
         "name": "Kunitsu",
+        "display_name": "Kunitsu-Gami: Path of the Goddess",
         "profile": "Kunitsu-Gami Path of the Goddess v1.bin",
         "steam_id": "2510720",
         "config_folder": "",
     },
     "dead rising deluxe remaster": {
         "name": "DeadRising",
+        "display_name": "Dead Rising Deluxe Remaster",
         "profile": "Dead Rising Deluxe Remaster v1.bin",
         "steam_id": "2531360",
         "config_folder": "",
     },
     "monster hunter stories 3 twisted reflection": {
         "name": "MHStories3",
+        "display_name": "Monster Hunter Stories 3: Twisted Reflection",
         "profile": "Monster Hunter Stories 3 Twisted Reflection v1.bin",
         "steam_id": "2498260",  # Fallback value, real ID wasn't originally included
         "config_folder": "pub_mhs3/",
     },
     "mega man star force legacy collection": {
         "name": "MegaMan",
+        "display_name": "Mega Man Star Force Legacy Collection",
         "profile": "Mega Man Star Force Legacy Collection v1.bin",
         "steam_id": "2816910",  # Fallback value, real ID wasn't originally included
         "config_folder": "",
     },
     "pragmata": {
         "name": "Pragmata",
+        "display_name": "Pragmata",
         "profile": "PRAGMATA_v1.bin",
         "steam_id": "3357650",
         "config_folder": "pub_pragmata/",
@@ -95,45 +103,59 @@ Done – launch the game and your save should load
 SEGA_PROFILES = {
     "persona 3 reload": {
         "name": "P3R",
+        "display_name": "Persona 3 Reload",
         "game_folder": "P3R",
     },
     "persona 3 portable": {
         "name": "P3P",
+        "display_name": "Persona 3 Portable",
         "game_folder": "P3P",
     },
     "persona 5 strikers": {
         "name": "P5S",
+        "display_name": "Persona 5 Strikers",
         "game_folder": "Persona 5 Strikers",
     },
     "persona 5 tactica": {
         "name": "P5T",
+        "display_name": "Persona 5 Tactica",
         "game_folder": "P5T",
     },
     "persona 4 arena ultimax": {
         "name": "P4AU",
+        "display_name": "Persona 4 Arena Ultimax",
         "game_folder": "P4AU",
     },
     "like a dragon: infinite wealth": {
         "name": "IW",
+        "display_name": "Like a Dragon: Infinite Wealth",
         "game_folder": "YakuzaLikeADragon8",
     },
     "like a dragon gaiden: the man who erased his name": {
         "name": "Gaiden",
+        "display_name": "Like a Dragon Gaiden: The Man Who Erased His Name",
         "game_folder": "LikeADragonGaiden",
     },
     "yakuza kiwami 3 & dark ties": {
         "name": "K3",
+        "display_name": "Yakuza Kiwami 3 & Dark Ties",
         "game_folder": "YakuzaKiwami3",
     },
     "like a dragon: pirate yakuza in hawaii": {
         "name": "Pirate",
+        "display_name": "Like a Dragon: Pirate Yakuza in Hawaii",
         "game_folder": "LikeADragonPirateYakuza",
     },
     "sonic x shadow generations": {
         "name": "SSG",
+        "display_name": "Sonic X Shadow Generations",
         "game_folder": "SonicXShadowGenerations",
     },
-    "metaphor: refantazio": {"name": "Metaphor", "game_folder": "Metaphor"},
+    "metaphor: refantazio": {
+        "name": "Metaphor",
+        "display_name": "Metaphor: ReFantazio",
+        "game_folder": "Metaphor",
+    },
 }
 
 
