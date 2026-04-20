@@ -1022,21 +1022,18 @@ class SaveInstTranslateView(discord.ui.View):
         )
         await interaction.response.defer(ephemeral=True, thinking=True)
 
+        # Funny local transforms — no API, no cache (randomised each time)
+        if lang_code.startswith("__"):
+            result = _apply_funny_transform(lang_code, self.source_text)
+            await interaction.followup.send(result, ephemeral=True)
+            return
+
         source_hash = self.cog._translation_hash(self.source_text)
         cached = await self.cog._get_cached_translation(
             self.game_key, lang_code, source_hash
         )
         if cached:
             await interaction.followup.send(cached, ephemeral=True)
-            return
-
-        # Funny local transforms — no API needed
-        if lang_code.startswith("__"):
-            result = _apply_funny_transform(lang_code, self.source_text)
-            await self.cog._save_translation(
-                self.game_key, lang_code, source_hash, result
-            )
-            await interaction.followup.send(result, ephemeral=True)
             return
 
         try:
