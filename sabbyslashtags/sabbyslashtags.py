@@ -216,8 +216,7 @@ class SabbySlashTags(commands.Cog):
     @commands.is_owner()
     async def sabbytags_whitelist(self, ctx):
         """Manage the tag management whitelist (bot owner only)."""
-        if ctx.invoked_subcommand is None:
-            await ctx.send_help(ctx.command)
+        pass
 
     @sabbytags_whitelist.command(name="add")
     async def whitelist_add(self, ctx, target: discord.Member | discord.Role):
