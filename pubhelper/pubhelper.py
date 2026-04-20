@@ -42,8 +42,11 @@ SAVEINST_LANGUAGES = [
     ("🇧🇷 Portuguese", "pt"),
     ("🇫🇷 French", "fr"),
     ("🇩🇪 German", "de"),
+    ("🇷🇴 Romanian", "ro"),
     ("🇷🇺 Russian", "ru"),
     ("🇸🇦 Arabic", "ar"),
+    ("🇲🇦 Darija (Moroccan Arabic)", "ary"),
+    ("🇵🇰 Urdu", "ur"),
     ("🇹🇷 Turkish", "tr"),
     ("🇯🇵 Japanese", "ja"),
     ("🇰🇷 Korean", "ko"),
@@ -54,7 +57,115 @@ SAVEINST_LANGUAGES = [
     ("🇮🇩 Indonesian", "id"),
     ("🇹🇭 Thai", "th"),
     ("🇻🇳 Vietnamese", "vi"),
+    ("🐱 Cat Speak", "__cat__"),
+    ("☠️ Pirate Speak", "__pirate__"),
+    ("😳 UwU Speak", "__uwu__"),
+    ("🧙 Ye Olde English", "__shakespeare__"),
+    ("🌿 Yoda Speak", "__yoda__"),
 ]
+
+
+def _apply_funny_transform(lang_code: str, text: str) -> str:
+    """Apply a local text transformation for fun language codes."""
+    import random
+
+    if lang_code == "__cat__":
+        cat_words = ["meow", "mrow", "nya", "purr", "mrrp", "prrrr"]
+        lines = text.split("\n")
+        result = []
+        for line in lines:
+            words = line.split()
+            new_words = []
+            for word in words:
+                if word and random.random() < 0.12:
+                    new_words.append(random.choice(cat_words))
+                else:
+                    new_words.append(word)
+            result.append(" ".join(new_words))
+        out = "\n".join(result)
+        out = out.replace(". ", "~ ").replace("!", " :3").replace("?", "? mrow?")
+        return out + "\n\n*nya~ 🐾*"
+
+    elif lang_code == "__pirate__":
+        subs = [
+            (r"\byou are\b", "ye be"),
+            (r"\byou're\b", "ye be"),
+            (r"\byou\b", "ye"),
+            (r"\bmy\b", "me"),
+            (r"\bthe\b", "th'"),
+            (r"\bis\b", "be"),
+            (r"\bare\b", "be"),
+            (r"\bhello\b", "ahoy"),
+            (r"\bhi\b", "ahoy"),
+            (r"\byes\b", "aye"),
+            (r"\bno\b", "nay"),
+            (r"\bfriend\b", "matey"),
+            (r"\bfriends\b", "mateys"),
+            (r"\bokay\b", "aye aye"),
+            (r"\bok\b", "aye aye"),
+            (r"\bwant\b", "desire"),
+            (r"\bneed\b", "must have"),
+            (r"\bgo to\b", "sail to"),
+        ]
+        out = text
+        for pattern, replacement in subs:
+            out = re.sub(pattern, replacement, out, flags=re.IGNORECASE)
+        return out + "\n\n*Arrr, ye be set! ☠️*"
+
+    elif lang_code == "__uwu__":
+        out = text
+        out = re.sub(r"(?<=[a-z])r(?=[a-z])", "w", out)
+        out = re.sub(r"(?<=[a-z])l(?=[a-z])", "w", out)
+        out = re.sub(r"(?<=[A-Z])R(?=[a-zA-Z])", "W", out)
+        out = re.sub(r"(?<=[A-Z])L(?=[a-zA-Z])", "W", out)
+        out = out.replace("no", "nyo").replace("No", "Nyo").replace("NO", "NYO")
+        out = out.replace("ove", "uv").replace("OVE", "UV")
+        out = out.replace(". ", "~ ").replace("! ", "! OwO ").replace("? ", "? UwU ")
+        return out + "\n\n*(´꒳`)♡ uwu*"
+
+    elif lang_code == "__shakespeare__":
+        subs = [
+            (r"\byou\b", "thou"),
+            (r"\byour\b", "thy"),
+            (r"\byours\b", "thine"),
+            (r"\bare\b", "art"),
+            (r"\bhave\b", "hast"),
+            (r"\bhas\b", "hath"),
+            (r"\bdo\b", "dost"),
+            (r"\bdoes\b", "doth"),
+            (r"\bwill\b", "shalt"),
+            (r"\bgo\b", "goest"),
+            (r"\byes\b", "yea, verily"),
+            (r"\bno\b", "nay"),
+            (r"\bthe\b", "ye"),
+            (r"\bi am\b", "I am"),
+            (r"\bplease\b", "prithee"),
+            (r"\bfolder\b", "chambere"),
+            (r"\bfile\b", "scroll"),
+            (r"\bgame\b", "grand endeavour"),
+            (r"\brun\b", "runneth"),
+            (r"\bstart\b", "commence"),
+            (r"\bopen\b", "openeth"),
+        ]
+        out = text
+        for pattern, replacement in subs:
+            out = re.sub(pattern, replacement, out, flags=re.IGNORECASE)
+        return out + "\n\n*Hark! Fare thee well, good traveller. ⚔️*"
+
+    elif lang_code == "__yoda__":
+        # Yoda: split into sentences, reverse subject/verb/object loosely
+        sentences = re.split(r"(?<=[.!?])\s+", text)
+        result = []
+        for sentence in sentences:
+            words = sentence.split()
+            if len(words) > 4:
+                mid = len(words) // 2
+                words = words[mid:] + words[:mid]
+            result.append(" ".join(words))
+        return "\n".join(result) + "\n\n*Strong with the Force, this guide is. 🌿*"
+
+    return text
+
 
 # Default game profiles
 DEFAULT_PROFILES = {
@@ -566,6 +677,15 @@ class SaveInstTranslateView(discord.ui.View):
         )
         if cached:
             await interaction.followup.send(cached, ephemeral=True)
+            return
+
+        # Funny local transforms — no API needed
+        if lang_code.startswith("__"):
+            result = _apply_funny_transform(lang_code, self.source_text)
+            await self.cog._save_translation(
+                self.game_key, lang_code, source_hash, result
+            )
+            await interaction.followup.send(result, ephemeral=True)
             return
 
         try:
