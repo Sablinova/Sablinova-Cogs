@@ -79,50 +79,6 @@ class SabbySlashTags(commands.Cog):
         output = self.engine.process(content, seed)
         return output.body or ""
 
-    @app_commands.command(name="c", description="Invoke a tag")
-    @app_commands.describe(
-        tagname="The tag to invoke", args="Arguments to pass to the tag"
-    )
-    async def slash_c(
-        self, interaction: discord.Interaction, tagname: str, args: Optional[str] = None
-    ):
-        """Invoke a tag via slash command."""
-        tagname = tagname.lower()
-        if tagname not in self.data["tags"]:
-            await interaction.response.send_message(
-                f"Tag `{tagname}` not found.", ephemeral=True
-            )
-            return
-        seed = {
-            "user": tse.MemberAdapter(interaction.user),
-            "channel": tse.ChannelAdapter(interaction.channel),
-            "args": tse.StringAdapter(args or ""),
-        }
-        if interaction.guild:
-            seed["server"] = tse.GuildAdapter(interaction.guild)
-        tag = self.data["tags"][tagname]
-        output = self.engine.process(tag["content"], seed)
-        result = output.body or ""
-        if not result:
-            await interaction.response.send_message(
-                "Tag produced no output.", ephemeral=True
-            )
-            return
-        await interaction.response.send_message(
-            result, allowed_mentions=discord.AllowedMentions.none()
-        )
-
-    @slash_c.autocomplete("tagname")
-    async def tagname_autocomplete(
-        self, interaction: discord.Interaction, current: str
-    ):
-        tags = list(self.data["tags"].keys())
-        return [
-            app_commands.Choice(name=t, value=t)
-            for t in tags
-            if current.lower() in t.lower()
-        ][:25]
-
     @commands.group(name="sabbytags", aliases=["ctag"])
     async def sabbytags(self, ctx):
         """Manage SabbySlashTags."""
