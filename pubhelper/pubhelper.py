@@ -2938,6 +2938,50 @@ class SabPubHelper(commands.Cog):
             f"**Game Profiles:**\n" + "\n".join(profile_list)
         )
 
+    @pubhelper_tool.command(name="queue")
+    async def toolqueue(self, ctx: commands.Context) -> None:
+        """Show the current savebrute queue."""
+        lines = []
+
+        active_user_id = self.current_bruteforce_user_id
+        active_task = (
+            self.active_brutes.get(active_user_id)
+            if active_user_id is not None
+            else None
+        )
+
+        if active_user_id is not None and active_task and not active_task.done():
+            queued_item = self.queued_brutes.get(active_user_id)
+            if queued_item:
+                user = self.bot.get_user(active_user_id)
+                user_display = user.mention if user else f"<@{active_user_id}>"
+                game_name = SAVE_PROFILES[queued_item["game"]]["name"]
+                channel = queued_item["interaction"].channel
+                channel_ref = channel.mention if channel else "Unknown channel"
+                lines.append(
+                    f"`#1` ACTIVE - {user_display} - {game_name} - {channel_ref}"
+                )
+            else:
+                lines.append(f"`#1` ACTIVE - <@{active_user_id}>")
+
+        active_offset = 1 if lines else 0
+        for index, item in enumerate(self.bruteforce_queue, start=1):
+            user_id = item["user_id"]
+            user = self.bot.get_user(user_id)
+            user_display = user.mention if user else f"<@{user_id}>"
+            game_name = SAVE_PROFILES[item["game"]]["name"]
+            channel = item["interaction"].channel
+            channel_ref = channel.mention if channel else "Unknown channel"
+            lines.append(
+                f"`#{index + active_offset}` QUEUED - {user_display} - {game_name} - {channel_ref}"
+            )
+
+        if not lines:
+            await ctx.send("✅ No active or queued savebrute jobs.")
+            return
+
+        await ctx.send("**Savebrute Queue**\n" + "\n".join(lines))
+
     @pubhelper_tool.command(name="cancel")
     async def admin_cancelbrute(
         self, ctx: commands.Context, user: discord.Member
