@@ -535,6 +535,10 @@ class SabPubHelper(commands.Cog):
         self.data_path = cog_data_path(self)
         self.save_signer = SaveSigner(self.data_path)
         self.active_brutes: dict[int, asyncio.Task] = {}
+        self.bruteforce_queue: list[dict] = []
+        self.queued_brutes: dict[int, dict] = {}
+        self.bruteforce_worker: asyncio.Task | None = None
+        self.current_bruteforce_user_id: int | None = None
 
     def _get_basefiles_path(self, game: str, fmt: str = "7z") -> Path:
         """Get the basefiles path for a game profile."""
@@ -642,6 +646,13 @@ class SabPubHelper(commands.Cog):
         profiles = await self.config.profiles()
         builtin_games = {"re9", "cd"}
 
+        if self.bruteforce_worker and not self.bruteforce_worker.done():
+            self.bruteforce_worker.cancel()
+
+        for task in list(self.active_brutes.values()):
+            if not task.done():
+                task.cancel()
+
         # Remove context menu
         self.bot.tree.remove_command(
             self._copy_links_menu.name, type=self._copy_links_menu.type
@@ -655,6 +666,117 @@ class SabPubHelper(commands.Cog):
                     log.info(f"Removed dynamic slash command /{game_id}cc")
                 except Exception:
                     pass
+
+    def _get_bruteforce_queue_position(self, user_id: int) -> int | None:
+        if self.current_bruteforce_user_id == user_id:
+            return 1
+
+        active_offset = 1 if self.current_bruteforce_user_id is not None else 0
+        for index, item in enumerate(self.bruteforce_queue, start=1):
+            if item["user_id"] == user_id:
+                return index + active_offset
+        return None
+
+    async def _update_queued_bruteforce_messages(self) -> None:
+        active_offset = 1 if self.current_bruteforce_user_id is not None else 0
+
+        for index, item in enumerate(self.bruteforce_queue, start=1):
+            interaction = item["interaction"]
+            game = item["game"]
+            position = index + active_offset
+            try:
+                await interaction.edit_original_response(
+                    content=(
+                        f"⏳ **Savebrute queued**\n"
+                        f"Game: {SAVE_PROFILES[game]['name']}\n"
+                        f"Queue position: `#{position}`\n"
+                        f"_Your bruteforce will start automatically when it reaches the front._"
+                    )
+                )
+            except Exception:
+                pass
+
+    async def _run_bruteforce_queue(self) -> None:
+        try:
+            while self.bruteforce_queue:
+                item = self.bruteforce_queue.pop(0)
+                user_id = item["user_id"]
+                self.queued_brutes.pop(user_id, None)
+                self.current_bruteforce_user_id = user_id
+                await self._update_queued_bruteforce_messages()
+
+                task = asyncio.create_task(
+                    self._savebrute_task(
+                        item["interaction"],
+                        item["game"],
+                        item["new_id"],
+                        item["save_archive"],
+                    )
+                )
+                self.active_brutes[user_id] = task
+
+                try:
+                    await item["interaction"].edit_original_response(
+                        content=(
+                            f"⏳ Bruteforcing User ID for **{SAVE_PROFILES[item['game']]['name']}**...\n"
+                            f"Queue position: `#1`\n"
+                            f"_Your job reached the front of the queue. I'll update you when done._"
+                        )
+                    )
+                except Exception:
+                    pass
+
+                await self._send_bruteforce_queue_log(
+                    item["interaction"],
+                    item["game"],
+                    f"▶️ **Savebrute started from queue for {item['interaction'].user.name}**",
+                    position=1,
+                )
+
+                try:
+                    await task
+                finally:
+                    if self.active_brutes.get(user_id) == task:
+                        self.active_brutes.pop(user_id, None)
+                    self.current_bruteforce_user_id = None
+                    await self._update_queued_bruteforce_messages()
+        finally:
+            self.bruteforce_worker = None
+
+    def _ensure_bruteforce_worker(self) -> None:
+        if self.bruteforce_worker and not self.bruteforce_worker.done():
+            return
+        self.bruteforce_worker = asyncio.create_task(self._run_bruteforce_queue())
+
+    async def _get_cli_log_channel(self) -> discord.TextChannel | None:
+        cli_log_channel_id = await self.config.cli_log_channel()
+        if not cli_log_channel_id:
+            return None
+        return self.bot.get_channel(cli_log_channel_id)
+
+    async def _send_bruteforce_queue_log(
+        self,
+        interaction: discord.Interaction,
+        game: str,
+        status: str,
+        position: int | None = None,
+    ) -> None:
+        cli_log_channel = await self._get_cli_log_channel()
+        if not cli_log_channel:
+            return
+
+        lines = [
+            status,
+            f"Game: {SAVE_PROFILES[game]['name']}",
+            f"Channel: {interaction.channel.mention}",
+        ]
+        if position is not None:
+            lines.append(f"Queue position: `#{position}`")
+
+        try:
+            await cli_log_channel.send("\n".join(lines))
+        except Exception as e:
+            log.error(f"Failed to send queue log message: {e}")
 
     @commands.group(name="pubhelper")
     @commands.admin_or_permissions(manage_guild=True)
@@ -2832,6 +2954,23 @@ class SabPubHelper(commands.Cog):
             await ctx.send(
                 f"🛑 Successfully cancelled savebrute task for **{user.display_name}**."
             )
+            return
+
+        queued_item = self.queued_brutes.pop(user.id, None)
+        if queued_item:
+            try:
+                self.bruteforce_queue.remove(queued_item)
+            except ValueError:
+                pass
+            await self._update_queued_bruteforce_messages()
+            await self._send_bruteforce_queue_log(
+                queued_item["interaction"],
+                queued_item["game"],
+                f"🛑 **Queued savebrute removed for {user.display_name}**",
+            )
+            await ctx.send(
+                f"🛑 Successfully removed **{user.display_name}** from the savebrute queue."
+            )
         else:
             await ctx.send(
                 f"❌ **{user.display_name}** doesn't have any active savebrute tasks running."
@@ -3458,17 +3597,54 @@ class SabPubHelper(commands.Cog):
                 )
                 return
 
-        # Send initial message
-        await interaction.followup.send(
-            f"⏳ Bruteforcing User ID for **{SAVE_PROFILES[game]['name']}**...\n"
-            f"_This usually takes around ~60 seconds now! I'll update you when done._"
+        existing_queue_position = self._get_bruteforce_queue_position(
+            interaction.user.id
         )
+        if existing_queue_position is not None:
+            await interaction.followup.send(
+                f"❌ You already have a savebrute queued at position `#{existing_queue_position}`. Use `/cancelbrute` to remove it.",
+                ephemeral=True,
+            )
+            return
 
-        # Create background task with timeout
-        task = asyncio.create_task(
-            self._savebrute_task(interaction, game, new_id, save_archive)
-        )
-        self.active_brutes[interaction.user.id] = task
+        queue_item = {
+            "user_id": interaction.user.id,
+            "interaction": interaction,
+            "game": game,
+            "new_id": new_id,
+            "save_archive": save_archive,
+        }
+        self.bruteforce_queue.append(queue_item)
+        self.queued_brutes[interaction.user.id] = queue_item
+
+        queue_position = self._get_bruteforce_queue_position(interaction.user.id)
+        if queue_position == 1:
+            await interaction.followup.send(
+                f"⏳ Bruteforce queued for **{SAVE_PROFILES[game]['name']}**.\n"
+                f"Queue position: `#1`\n"
+                f"_Starting now. I'll update you when done._"
+            )
+            await self._send_bruteforce_queue_log(
+                interaction,
+                game,
+                f"📥 **Savebrute queued for {interaction.user.name}**",
+                position=1,
+            )
+        else:
+            await interaction.followup.send(
+                f"⏳ **Savebrute queued**\n"
+                f"Game: {SAVE_PROFILES[game]['name']}\n"
+                f"Queue position: `#{queue_position}`\n"
+                f"_Your bruteforce will start automatically when earlier jobs finish._"
+            )
+            await self._send_bruteforce_queue_log(
+                interaction,
+                game,
+                f"📥 **Savebrute queued for {interaction.user.name}**",
+                position=queue_position,
+            )
+
+        self._ensure_bruteforce_worker()
 
     async def _savebrute_task(
         self,
@@ -3830,9 +4006,28 @@ class SabPubHelper(commands.Cog):
                 "🛑 Successfully sent cancellation signal to your savebrute task. It will stop shortly.",
                 ephemeral=True,
             )
+            return
+
+        queued_item = self.queued_brutes.pop(interaction.user.id, None)
+        if queued_item:
+            try:
+                self.bruteforce_queue.remove(queued_item)
+            except ValueError:
+                pass
+            await self._update_queued_bruteforce_messages()
+            await self._send_bruteforce_queue_log(
+                queued_item["interaction"],
+                queued_item["game"],
+                f"🛑 **Queued savebrute removed for {interaction.user.name}**",
+            )
+            await interaction.response.send_message(
+                "🛑 Successfully removed your savebrute from the queue.",
+                ephemeral=True,
+            )
         else:
             await interaction.response.send_message(
-                "❌ You don't have any active savebrute tasks running.", ephemeral=True
+                "❌ You don't have any active or queued savebrute tasks.",
+                ephemeral=True,
             )
 
     @app_commands.command(
