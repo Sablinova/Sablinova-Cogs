@@ -99,21 +99,47 @@ def _apply_funny_transform(lang_code: str, text: str) -> str:
         return t
 
     if lang_code == "__cat__":
-        cat_words = ["meow", "mrow", "nya", "purr", "mrrp", "prrrr"]
+        cat_words = [
+            "meow",
+            "mrow",
+            "nya",
+            "purr",
+            "mrrp",
+            "prrrr",
+            "MROW",
+            "nyaa",
+            "prrr~",
+        ]
+        cat_emotes = [" :3", " =^.^=", " >:3", " owo", " uwu", "~"]
         lines = safe_text.split("\n")
         result = []
         for line in lines:
             words = line.split()
             new_words = []
             for word in words:
-                if word and random.random() < 0.12 and "\x00" not in word:
+                if "\x00" in word:
+                    new_words.append(word)
+                elif random.random() < 0.30:
                     new_words.append(random.choice(cat_words))
+                elif random.random() < 0.15:
+                    new_words.append(word + random.choice(["~", "~nya", "~purrr"]))
                 else:
                     new_words.append(word)
             result.append(" ".join(new_words))
         out = "\n".join(result)
-        out = out.replace(". ", "~ ").replace("!", " :3").replace("?", "? mrow?")
-        return _restore(out + "\n\n*nya~ 🐾*")
+        out = re.sub(
+            r"\. ", lambda m: random.choice(["~ ", "~ nya~ ", ". meow. "]), out
+        )
+        out = out.replace("!", "! :3").replace("?", "? mrow?")
+        # sprinkle cat emotes at end of random lines
+        lines2 = out.split("\n")
+        out = "\n".join(
+            line + random.choice(cat_emotes)
+            if line.strip() and random.random() < 0.4
+            else line
+            for line in lines2
+        )
+        return _restore(out + "\n\n*=^.^= MEOW~ nya nya nya 🐾*")
 
     elif lang_code == "__pirate__":
         subs = [
@@ -122,76 +148,165 @@ def _apply_funny_transform(lang_code: str, text: str) -> str:
             (r"\byou\b", "ye"),
             (r"\bmy\b", "me"),
             (r"\bthe\b", "th'"),
+            (r"\bthis\b", "this here"),
+            (r"\bthat\b", "that there"),
             (r"\bis\b", "be"),
             (r"\bare\b", "be"),
-            (r"\bhello\b", "ahoy"),
-            (r"\bhi\b", "ahoy"),
-            (r"\byes\b", "aye"),
-            (r"\bno\b", "nay"),
+            (r"\bwas\b", "were"),
+            (r"\bhello\b", "AHOY"),
+            (r"\bhi\b", "AHOY"),
+            (r"\byes\b", "AYE"),
+            (r"\bno\b", "NAY"),
+            (r"\bnot\b", "nay"),
             (r"\bfriend\b", "matey"),
             (r"\bfriends\b", "mateys"),
-            (r"\bokay\b", "aye aye"),
+            (r"\bokay\b", "aye aye, cap'n"),
             (r"\bok\b", "aye aye"),
             (r"\bwant\b", "desire"),
             (r"\bneed\b", "must have"),
             (r"\bgo to\b", "sail to"),
+            (r"\bput\b", "plunder"),
+            (r"\bcopy\b", "pillage"),
+            (r"\bextract\b", "loot"),
+            (r"\binstall\b", "plunder into"),
+            (r"\bdownload\b", "haul from the seas"),
+            (r"\bcomputer\b", "ship"),
+            (r"\bwindows\b", "the poop deck"),
+            (r"\bsteam\b", "Davy Jones' locker"),
+            (r"\blet\b", "allow"),
+            (r"\bmake sure\b", "see to it"),
         ]
         out = safe_text
         for pattern, replacement in subs:
             out = re.sub(pattern, replacement, out, flags=re.IGNORECASE)
-        return _restore(out + "\n\n*Arrr, ye be set! ☠️*")
+        # Randomly append "ARRR!" mid-sentence
+        out = re.sub(
+            r"\. ", lambda m: random.choice([". ARRR! ", ". ", ". Blimey! "]), out
+        )
+        return _restore(out + "\n\n*ARRR! Ye be seaworthy now, matey! Sail forth! ☠️⚓*")
 
     elif lang_code == "__uwu__":
         out = safe_text
-        out = re.sub(r"(?<=[a-z])r(?=[a-z])", "w", out)
-        out = re.sub(r"(?<=[a-z])l(?=[a-z])", "w", out)
-        out = re.sub(r"(?<=[A-Z])R(?=[a-zA-Z])", "W", out)
-        out = re.sub(r"(?<=[A-Z])L(?=[a-zA-Z])", "W", out)
-        out = out.replace("no", "nyo").replace("No", "Nyo").replace("NO", "NYO")
+        # Aggressive r/l -> w replacement (all positions, not just middle)
+        out = re.sub(r"[rl]", "w", out)
+        out = re.sub(r"[RL]", "W", out)
+        # n before vowels -> ny
+        out = re.sub(r"n([aeiou])", r"ny\1", out)
+        out = re.sub(r"N([aeiouAEIOU])", r"Ny\1", out)
         out = out.replace("ove", "uv").replace("OVE", "UV")
-        out = out.replace(". ", "~ ").replace("! ", "! OwO ").replace("? ", "? UwU ")
-        return _restore(out + "\n\n*(´꒳`)♡ uwu*")
+        out = out.replace("the", "da").replace("The", "Da").replace("THE", "DA")
+        out = out.replace("is", "iz").replace("Is", "Iz")
+        # Add cute stutters on some words
+        words = out.split()
+        stuttered = []
+        for w in words:
+            if "\x00" not in w and len(w) > 2 and random.random() < 0.18:
+                stuttered.append(f"{w[0]}-{w[0]}-{w}")
+            else:
+                stuttered.append(w)
+        out = " ".join(stuttered)
+        # Inject faces after punctuation
+        faces = ["OwO", "UwU", ">w<", "^-^", "(⁄ ⁄•⁄ω⁄•⁄ ⁄)", "( ˘ ³˘)♥", "✨"]
+        out = re.sub(
+            r"([.!?])\s", lambda m: m.group(1) + " " + random.choice(faces) + " ", out
+        )
+        out = out.replace(". ", "~ ")
+        return _restore(
+            out + "\n\n*UwU nyaa~!! dis gwuide is da best OwO (⁄ ⁄•⁄ω⁄•⁄ ⁄) ✨*"
+        )
 
     elif lang_code == "__shakespeare__":
         subs = [
+            (r"\byou are\b", "thou art"),
+            (r"\byou're\b", "thou art"),
+            (r"\byou have\b", "thou hast"),
             (r"\byou\b", "thou"),
             (r"\byour\b", "thy"),
             (r"\byours\b", "thine"),
+            (r"\bhe is\b", "he be"),
+            (r"\bshe is\b", "she be"),
+            (r"\bit is\b", "'tis"),
             (r"\bare\b", "art"),
             (r"\bhave\b", "hast"),
             (r"\bhas\b", "hath"),
             (r"\bdo\b", "dost"),
             (r"\bdoes\b", "doth"),
+            (r"\bdid\b", "didst"),
             (r"\bwill\b", "shalt"),
+            (r"\bshould\b", "shouldst"),
+            (r"\bcould\b", "couldst"),
+            (r"\bwould\b", "wouldst"),
             (r"\bgo\b", "goest"),
             (r"\byes\b", "yea, verily"),
             (r"\bno\b", "nay"),
+            (r"\bnot\b", "not, forsooth,"),
             (r"\bthe\b", "ye"),
-            (r"\bi am\b", "I am"),
+            (r"\ba\b", "a"),
+            (r"\band\b", "and henceforth"),
+            (r"\bbut\b", "yet"),
+            (r"\bif\b", "shouldst"),
+            (r"\bwhen\b", "upon the hour that"),
             (r"\bplease\b", "prithee"),
             (r"\bfolder\b", "chambere"),
-            (r"\bfile\b", "scroll"),
+            (r"\bfile\b", "sacred scroll"),
+            (r"\bfiles\b", "sacred scrolls"),
             (r"\bgame\b", "grand endeavour"),
             (r"\brun\b", "runneth"),
-            (r"\bstart\b", "commence"),
+            (r"\bstart\b", "commenceth"),
             (r"\bopen\b", "openeth"),
+            (r"\bclick\b", "doth press upon"),
+            (r"\binstall\b", "doth installeth"),
+            (r"\bcopy\b", "doth transcribeth"),
+            (r"\bextract\b", "doth bringeth forth"),
+            (r"\bmake sure\b", "see to it, good soul, that"),
+            (r"\bmake\b", "dost fashion"),
+            (r"\bstep\b", "yonder step"),
+            (r"\bnote\b", "hark well"),
+            (r"\bcheck\b", "dost verify"),
+            (r"\bdownload\b", "dost procure from yonder"),
         ]
         out = safe_text
         for pattern, replacement in subs:
             out = re.sub(pattern, replacement, out, flags=re.IGNORECASE)
-        return _restore(out + "\n\n*Hark! Fare thee well, good traveller. ⚔️*")
+        # Add dramatic flourishes at line ends
+        flourishes = [
+            " — so it is written!",
+            " — thus spake the manual!",
+            " — heed this well!",
+            "",
+        ]
+        lines3 = out.split("\n")
+        out = "\n".join(
+            line + random.choice(flourishes)
+            if line.strip() and random.random() < 0.3
+            else line
+            for line in lines3
+        )
+        return _restore(
+            out
+            + "\n\n*Hark! Fare thee well, noble traveller. May thy save files be eternal. ⚔️📜*"
+        )
 
     elif lang_code == "__yoda__":
-        sentences = re.split(r"(?<=[.!?])\s+", safe_text)
+        # Process line by line to avoid scrambling path lines
+        lines4 = safe_text.split("\n")
         result = []
-        for sentence in sentences:
-            words = sentence.split()
-            if len(words) > 4:
-                mid = len(words) // 2
-                words = words[mid:] + words[:mid]
+        for line in lines4:
+            # Skip lines that are mostly placeholders / paths
+            if "\x00" in line or not line.strip():
+                result.append(line)
+                continue
+            words = line.split()
+            if len(words) > 3:
+                # Move last third of words to front
+                cut = max(1, len(words) * 2 // 3)
+                words = words[cut:] + [","] + words[:cut]
             result.append(" ".join(words))
+        out = "\n".join(result)
+        out = re.sub(r"\. ", "... hmmmm. ", out)
         return _restore(
-            "\n".join(result) + "\n\n*Strong with the Force, this guide is. 🌿*"
+            out
+            + "\n\n*Hmmmm. Follow this guide, you must. Fail you it will not, yes. Strong with the Force, thy save file is. 🌿*"
         )
 
     return _restore(safe_text)
