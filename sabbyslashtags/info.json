@@ -1,0 +1,10 @@
+{
+    "author": ["Sablinova"],
+    "install_msg": "SabbySlashTags installed. Use [p]sabbytags to manage tags and /c to use them.",
+    "name": "SabbySlashTags",
+    "short": "Global tag system with TagScript support via /c slash command.",
+    "description": "A lightweight global tag system using TagScript. Tags are created with [p]sabbytags and invoked with /c as a user-installed slash command.",
+    "end_user_data_statement": "This cog stores user IDs for tag authorship and whitelist purposes.",
+    "requirements": ["TagScriptEngine"],
+    "tags": ["tags", "slash", "tagscript", "utility"]
+}
