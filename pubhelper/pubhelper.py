@@ -3812,7 +3812,7 @@ class SabPubHelper(commands.Cog):
                             else "No logs produced."
                         )
                         await log_message.edit(
-                            content=f"{icon} **Savebrute {status_text} for {interaction.user.name}**\nGame: {SAVE_PROFILES[game]['name']}\n```\n{final_logs}\n```"
+                            content=f"{icon} **Savebrute {status_text} for {interaction.user.name}**\nGame: {SAVE_PROFILES[game]['name']}\nChannel: {interaction.channel.mention}\n```\n{final_logs}\n```"
                         )
                     except Exception:
                         pass
