@@ -457,7 +457,7 @@ class SaveInstListView(discord.ui.View):
             else:
                 message = SAVE_INSTRUCTIONS.format(
                     steam_id=data.get("steam_id", ""),
-                    name=data.get("name",""),
+                    name=data.get("name", ""),
                     config_folder=data.get("config_folder", ""),
                     linux_folder=data.get(
                         "linux_folder", kw.lower().replace(" ", "_") + "prefix"
@@ -475,7 +475,7 @@ class SaveInstListView(discord.ui.View):
             config_info = f"**Type:** Base `ColdClient`\n**Keyword:** `{kw}`\n**Name:** {data['name']}\n**Steam ID:** `{data.get('steam_id', '')}`\n**Config Folder:** `{data.get('config_folder', '')}`\n"
             message = SAVE_INSTRUCTIONS.format(
                 steam_id=data.get("steam_id", ""),
-                name=data.get("name",""),
+                name=data.get("name", ""),
                 config_folder=data.get("config_folder", ""),
                 linux_folder=data.get(
                     "linux_folder", kw.lower().replace(" ", "_") + "prefix"
@@ -1686,7 +1686,7 @@ class SabPubHelper(commands.Cog):
             else:
                 message = SAVE_INSTRUCTIONS.format(
                     steam_id=data.get("steam_id", ""),
-                    name=data.get("name",""),
+                    name=data.get("name", ""),
                     config_folder=data.get("config_folder", ""),
                     linux_folder=data.get(
                         "linux_folder",
@@ -3185,12 +3185,49 @@ class SabPubHelper(commands.Cog):
         """Combine user config with CD basefiles."""
         await self._process_command(interaction, url, "cd")
 
+    async def game_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        """Autocomplete for the game parameter on /saveinst."""
+        games: dict[str, str] = {}  # lowercase_key -> display_name
+
+        for key, data in SAVE_PROFILES.items():
+            games[key] = data.get("name", key.title())
+        for key, data in SEGA_PROFILES.items():
+            games[key] = data.get("name", key.title())
+
+        try:
+            custom = await self.config.custom_saveinst()
+            for key, data in custom.items():
+                games[key] = data.get("display_name", key.title())
+        except Exception:
+            pass
+
+        current_lower = current.strip().lower()
+        if current_lower:
+            filtered = [
+                (k, v)
+                for k, v in games.items()
+                if current_lower in k or current_lower in v.lower()
+            ]
+        else:
+            filtered = list(games.items())
+
+        filtered.sort(key=lambda x: x[1])
+        return [
+            app_commands.Choice(name=display, value=key)
+            for key, display in filtered[:25]
+        ]
+
     @app_commands.command(
         name="saveinst",
         description="sends save instructions for game ticket",
     )
     @app_commands.describe(game="Optional: manually specify the game name")
-    async def saveinst(self, interaction: discord.Interaction, game: str = None) -> None:
+    @app_commands.autocomplete(game=game_autocomplete)
+    async def saveinst(
+        self, interaction: discord.Interaction, game: str = None
+    ) -> None:
 
         if game:
             game_name = game.strip().lower()
@@ -3201,7 +3238,9 @@ class SabPubHelper(commands.Cog):
 
             # Try splitting by standard Discord hyphen format or fallback to pipe
             if "-" in channel_name:
-                game_name = channel_name.split("-", 1)[1].strip().lower().replace("-", " ")
+                game_name = (
+                    channel_name.split("-", 1)[1].strip().lower().replace("-", " ")
+                )
             elif "|" in channel_name:
                 game_name = channel_name.split("|", 1)[1].strip().lower()
             else:
@@ -3315,7 +3354,7 @@ class SabPubHelper(commands.Cog):
             else:
                 message = SAVE_INSTRUCTIONS.format(
                     steam_id=data.get("steam_id", ""),
-                    name=data.get("name",""),
+                    name=data.get("name", ""),
                     config_folder=data.get("config_folder", ""),
                     linux_folder=data.get(
                         "linux_folder", kw.lower().replace(" ", "_") + "prefix"
