@@ -459,7 +459,7 @@ class SaveInstListView(discord.ui.View):
                     steam_id=data.get("steam_id", ""),
                     config_folder=data.get("config_folder", ""),
                     linux_folder=data.get(
-                        "linux_folder", kw.lower().replace(" ", "_") + "_prefix"
+                        "linux_folder", kw.lower().replace(" ", "_") + "prefix"
                     ),
                 )
                 config_info += f"**Steam ID:** `{data.get('steam_id', '')}`\n**Config Folder:** `{data.get('config_folder', '')}`\n"
@@ -476,7 +476,7 @@ class SaveInstListView(discord.ui.View):
                 steam_id=data.get("steam_id", ""),
                 config_folder=data.get("config_folder", ""),
                 linux_folder=data.get(
-                    "linux_folder", kw.lower().replace(" ", "_") + "_prefix"
+                    "linux_folder", kw.lower().replace(" ", "_") + "prefix"
                 ),
             )
             img_path = Path(__file__).parent / "save_instruction.png"
@@ -1687,7 +1687,7 @@ class SabPubHelper(commands.Cog):
                     config_folder=data.get("config_folder", ""),
                     linux_folder=data.get(
                         "linux_folder",
-                        matched_custom_key.lower().replace(" ", "_") + "_prefix",
+                        matched_custom_key.lower().replace(" ", "_") + "prefix",
                     ),
                 )
 
@@ -1746,7 +1746,7 @@ class SabPubHelper(commands.Cog):
                     steam_id=profile["steam_id"],
                     config_folder=profile["config_folder"],
                     linux_folder=profile.get(
-                        "linux_folder", matched_key.replace(" ", "_") + "_prefix"
+                        "linux_folder", matched_key.replace(" ", "_") + "prefix"
                     ),
                 )
                 img_path = Path(__file__).parent / "save_instruction.png"
@@ -3308,7 +3308,7 @@ class SabPubHelper(commands.Cog):
                     steam_id=data.get("steam_id", ""),
                     config_folder=data.get("config_folder", ""),
                     linux_folder=data.get(
-                        "linux_folder", kw.lower().replace(" ", "_") + "_prefix"
+                        "linux_folder", kw.lower().replace(" ", "_") + "prefix"
                     ),
                 )
 
@@ -3345,7 +3345,7 @@ class SabPubHelper(commands.Cog):
                 config_folder=profile["config_folder"],
                 linux_folder=profile.get(
                     "linux_folder",
-                    best_match["original_key"].replace(" ", "_") + "_prefix",
+                    best_match["original_key"].replace(" ", "_") + "prefix",
                 ),
             )
             img_path = Path(__file__).parent / "save_instruction.png"
