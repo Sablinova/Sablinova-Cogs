@@ -68,51 +68,35 @@ class SabbySlashTags(commands.Cog):
                 return True
         return False
 
-    def _process_tag(self, ctx_or_interaction, content: str, args: str) -> str:
-        if isinstance(ctx_or_interaction, discord.Interaction):
-            user = ctx_or_interaction.user
-            channel = ctx_or_interaction.channel
-            guild = ctx_or_interaction.guild
-        else:
-            user = ctx_or_interaction.author
-            channel = ctx_or_interaction.channel
-            guild = ctx_or_interaction.guild
+    def _process_tag(self, ctx, content: str, args: str) -> str:
         seed = {
-            "user": tse.MemberAdapter(user),
-            "channel": tse.ChannelAdapter(channel),
+            "user": tse.MemberAdapter(ctx.author),
+            "channel": tse.ChannelAdapter(ctx.channel),
             "args": tse.StringAdapter(args or ""),
         }
-        if guild:
-            seed["server"] = tse.GuildAdapter(guild)
+        if ctx.guild:
+            seed["server"] = tse.GuildAdapter(ctx.guild)
         output = self.engine.process(content, seed)
         return output.body or ""
 
-    @app_commands.command(name="c", description="Invoke a tag")
+    @commands.hybrid_command(name="ctag", aliases=[], with_app_command=True)
     @app_commands.describe(
         tagname="The tag to invoke", args="Arguments to pass to the tag"
     )
-    async def slash_c(
-        self, interaction: discord.Interaction, tagname: str, args: Optional[str] = None
-    ):
-        """Invoke a tag via slash command."""
+    async def ctag(self, ctx, tagname: str, *, args: Optional[str] = None):
+        """Invoke a tag."""
         tagname = tagname.lower()
         if tagname not in self.data["tags"]:
-            await interaction.response.send_message(
-                f"Tag `{tagname}` not found.", ephemeral=True
-            )
+            await ctx.send(f"Tag `{tagname}` not found.", ephemeral=True)
             return
         tag = self.data["tags"][tagname]
-        result = self._process_tag(interaction, tag["content"], args or "")
+        result = self._process_tag(ctx, tag["content"], args or "")
         if not result:
-            await interaction.response.send_message(
-                "Tag produced no output.", ephemeral=True
-            )
+            await ctx.send("Tag produced no output.", ephemeral=True)
             return
-        await interaction.response.send_message(
-            result, allowed_mentions=discord.AllowedMentions.none()
-        )
+        await ctx.send(result, allowed_mentions=discord.AllowedMentions.none())
 
-    @slash_c.autocomplete("tagname")
+    @ctag.autocomplete("tagname")
     async def tagname_autocomplete(
         self, interaction: discord.Interaction, current: str
     ):
