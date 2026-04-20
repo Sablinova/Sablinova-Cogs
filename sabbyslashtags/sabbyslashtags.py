@@ -79,24 +79,40 @@ class SabbySlashTags(commands.Cog):
         output = self.engine.process(content, seed)
         return output.body or ""
 
-    @commands.hybrid_command(name="ctag", aliases=[], with_app_command=True)
+    @app_commands.command(name="c", description="Invoke a tag")
     @app_commands.describe(
         tagname="The tag to invoke", args="Arguments to pass to the tag"
     )
-    async def ctag(self, ctx, tagname: str, *, args: Optional[str] = None):
-        """Invoke a tag."""
+    async def slash_c(
+        self, interaction: discord.Interaction, tagname: str, args: Optional[str] = None
+    ):
+        """Invoke a tag via slash command."""
         tagname = tagname.lower()
         if tagname not in self.data["tags"]:
-            await ctx.send(f"Tag `{tagname}` not found.", ephemeral=True)
+            await interaction.response.send_message(
+                f"Tag `{tagname}` not found.", ephemeral=True
+            )
             return
+        seed = {
+            "user": tse.MemberAdapter(interaction.user),
+            "channel": tse.ChannelAdapter(interaction.channel),
+            "args": tse.StringAdapter(args or ""),
+        }
+        if interaction.guild:
+            seed["server"] = tse.GuildAdapter(interaction.guild)
         tag = self.data["tags"][tagname]
-        result = self._process_tag(ctx, tag["content"], args or "")
+        output = self.engine.process(tag["content"], seed)
+        result = output.body or ""
         if not result:
-            await ctx.send("Tag produced no output.", ephemeral=True)
+            await interaction.response.send_message(
+                "Tag produced no output.", ephemeral=True
+            )
             return
-        await ctx.send(result, allowed_mentions=discord.AllowedMentions.none())
+        await interaction.response.send_message(
+            result, allowed_mentions=discord.AllowedMentions.none()
+        )
 
-    @ctag.autocomplete("tagname")
+    @slash_c.autocomplete("tagname")
     async def tagname_autocomplete(
         self, interaction: discord.Interaction, current: str
     ):
