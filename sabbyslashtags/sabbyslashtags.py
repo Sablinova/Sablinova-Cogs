@@ -82,8 +82,7 @@ class SabbySlashTags(commands.Cog):
     @commands.group(name="sabbytags", aliases=["ctag"])
     async def sabbytags(self, ctx):
         """Manage SabbySlashTags."""
-        if ctx.invoked_subcommand is None:
-            await ctx.send_help(ctx.command)
+        pass
 
     @sabbytags.command(name="add")
     async def sabbytags_add(self, ctx, name: str, *, content: str):
