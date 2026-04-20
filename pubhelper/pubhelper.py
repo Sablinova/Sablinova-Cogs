@@ -3189,177 +3189,182 @@ class SabPubHelper(commands.Cog):
         name="saveinst",
         description="sends save instructions for game ticket",
     )
-    async def saveinst(self, interaction: discord.Interaction) -> None:
-        channel_name = (
-            interaction.channel.name
-        )  # e.g. "johnsmith-pragmata" or "johnsmith | Pragmata"
+    @app_commands.describe(game="Optional: manually specify the game name")
+    async def saveinst(self, interaction: discord.Interaction, game: str = None) -> None:
 
-        # Try splitting by standard Discord hyphen format or fallback to pipe
-        if "-" in channel_name:
-            game_name = channel_name.split("-", 1)[1].strip().lower().replace("-", " ")
-        elif "|" in channel_name:
-            game_name = channel_name.split("|", 1)[1].strip().lower()
+        if game:
+            game_name = game.strip().lower()
         else:
-            # Fallback to using the entire channel name (e.g. for threads like "[issue] wukong")
-            game_name = channel_name.strip().lower()
+            channel_name = (
+                interaction.channel.name
+            )  # e.g. "johnsmith-pragmata" or "johnsmith | Pragmata"
 
-        # Handle aliases (e.g. "resident evil requiem" -> "resident evil 9 requiem")
-        if "requiem" in game_name and "9" not in game_name:
-            game_name = game_name.replace("resident evil", "resident evil 9")
-
-        # Unified Game Matching System
-        custom_games = await self.config.custom_saveinst()
-
-        targets = []
-        for k, data in custom_games.items():
-            targets.append(
-                {
-                    "key": k,
-                    "name": data["name"].lower(),
-                    "type": "custom",
-                    "data": data,
-                    "original_key": k,
-                }
-            )
-        for k, profile in SAVE_PROFILES.items():
-            if k not in custom_games:
-                targets.append(
-                    {
-                        "key": k,
-                        "name": profile["name"].lower(),
-                        "type": "base",
-                        "data": profile,
-                        "original_key": k,
-                    }
-                )
-        for k, profile in SEGA_PROFILES.items():
-            if k not in custom_games:
-                targets.append(
-                    {
-                        "key": k,
-                        "name": profile["name"].lower(),
-                        "type": "sega",
-                        "data": profile,
-                        "original_key": k,
-                    }
-                )
-
-        best_match = None
-
-        # Phase 1: Exact Match
-        for t in targets:
-            if game_name == t["key"] or game_name == t["name"]:
-                best_match = t
-                break
-
-        # Phase 2: Substring Match (Longest targets first to avoid hijacking e.g. "Like a Dragon" stealing "Like a Dragon Gaiden")
-        if not best_match:
-            targets_sorted_by_len = sorted(
-                targets, key=lambda x: max(len(x["key"]), len(x["name"])), reverse=True
-            )
-            for t in targets_sorted_by_len:
-                if t["key"] in game_name or t["name"] in game_name:
-                    best_match = t
-                    break
-                if len(game_name) > 4 and (
-                    game_name in t["key"] or game_name in t["name"]
-                ):
-                    best_match = t
-                    break
-
-        # Phase 3: Aggressive Word Scoring (Finds highest overlap of >=3 char words)
-        if not best_match:
-            game_words = set(
-                w
-                for w in game_name.replace(":", " ").replace("-", " ").split()
-                if len(w) >= 3
-            )
-            best_score = 0
-            for t in targets:
-                t_words = set(
-                    w
-                    for w in t["key"].replace(":", " ").replace("-", " ").split()
-                    if len(w) >= 3
-                ) | set(
-                    w
-                    for w in t["name"].replace(":", " ").replace("-", " ").split()
-                    if len(w) >= 3
-                )
-                overlap = len(game_words & t_words)
-                if overlap > best_score:
-                    best_score = overlap
-                    best_match = t
-
-        if not best_match:
-            await interaction.response.send_message(
-                f"❌ No save path data found matching: **{game_name}**.",
-                ephemeral=True,
-            )
-            return
-
-        # Output logic
-        if best_match["type"] == "custom":
-            data = best_match["data"]
-            kw = best_match["original_key"]
-            if data["type"] == "custom":
-                message = data["custom_text"].format(name=data["name"], keyword=kw)
-            elif data["type"] == "sega":
-                message = SAVE_INSTRUCTIONS_SEGA.format(
-                    game_name=data["name"], game_folder=data.get("config_folder", "")
-                )
+            # Try splitting by standard Discord hyphen format or fallback to pipe
+            if "-" in channel_name:
+                game_name = channel_name.split("-", 1)[1].strip().lower().replace("-", " ")
+            elif "|" in channel_name:
+                game_name = channel_name.split("|", 1)[1].strip().lower()
             else:
+                # Fallback to using the entire channel name (e.g. for threads like "[issue] wukong")
+                game_name = channel_name.strip().lower()
+
+            # Handle aliases (e.g. "resident evil requiem" -> "resident evil 9 requiem")
+            if "requiem" in game_name and "9" not in game_name:
+                game_name = game_name.replace("resident evil", "resident evil 9")
+
+            # Unified Game Matching System
+            custom_games = await self.config.custom_saveinst()
+
+            targets = []
+            for k, data in custom_games.items():
+                targets.append(
+                    {
+                        "key": k,
+                        "name": data["name"].lower(),
+                        "type": "custom",
+                        "data": data,
+                        "original_key": k,
+                    }
+                )
+            for k, profile in SAVE_PROFILES.items():
+                if k not in custom_games:
+                    targets.append(
+                        {
+                            "key": k,
+                            "name": profile["name"].lower(),
+                            "type": "base",
+                            "data": profile,
+                            "original_key": k,
+                        }
+                    )
+            for k, profile in SEGA_PROFILES.items():
+                if k not in custom_games:
+                    targets.append(
+                        {
+                            "key": k,
+                            "name": profile["name"].lower(),
+                            "type": "sega",
+                            "data": profile,
+                            "original_key": k,
+                        }
+                    )
+
+            best_match = None
+
+            # Phase 1: Exact Match
+            for t in targets:
+                if game_name == t["key"] or game_name == t["name"]:
+                    best_match = t
+                    break
+
+            # Phase 2: Substring Match (Longest targets first to avoid hijacking e.g. "Like a Dragon" stealing "Like a Dragon Gaiden")
+            if not best_match:
+                targets_sorted_by_len = sorted(
+                    targets, key=lambda x: max(len(x["key"]), len(x["name"])), reverse=True
+                )
+                for t in targets_sorted_by_len:
+                    if t["key"] in game_name or t["name"] in game_name:
+                        best_match = t
+                        break
+                    if len(game_name) > 4 and (
+                        game_name in t["key"] or game_name in t["name"]
+                    ):
+                        best_match = t
+                        break
+
+            # Phase 3: Aggressive Word Scoring (Finds highest overlap of >=3 char words)
+            if not best_match:
+                game_words = set(
+                    w
+                    for w in game_name.replace(":", " ").replace("-", " ").split()
+                    if len(w) >= 3
+                )
+                best_score = 0
+                for t in targets:
+                    t_words = set(
+                        w
+                        for w in t["key"].replace(":", " ").replace("-", " ").split()
+                        if len(w) >= 3
+                    ) | set(
+                        w
+                        for w in t["name"].replace(":", " ").replace("-", " ").split()
+                        if len(w) >= 3
+                    )
+                    overlap = len(game_words & t_words)
+                    if overlap > best_score:
+                        best_score = overlap
+                        best_match = t
+
+            if not best_match:
+                await interaction.response.send_message(
+                    f"❌ No save path data found matching: **{game_name}**.",
+                    ephemeral=True,
+                )
+                return
+
+            # Output logic
+            if best_match["type"] == "custom":
+                data = best_match["data"]
+                kw = best_match["original_key"]
+                if data["type"] == "custom":
+                    message = data["custom_text"].format(name=data["name"], keyword=kw)
+                elif data["type"] == "sega":
+                    message = SAVE_INSTRUCTIONS_SEGA.format(
+                        game_name=data["name"], game_folder=data.get("config_folder", "")
+                    )
+                else:
+                    message = SAVE_INSTRUCTIONS.format(
+                        steam_id=data.get("steam_id", ""),
+                        name=data.get("name",""),
+                        config_folder=data.get("config_folder", ""),
+                        linux_folder=data.get(
+                            "linux_folder", kw.lower().replace(" ", "_") + "prefix"
+                        ),
+                    )
+
+                if data.get("attach_image", False):
+                    custom_image_url = data.get("custom_image_url", "")
+                    if custom_image_url:
+                        embed = discord.Embed(
+                            description=message, color=discord.Color.blue()
+                        )
+                        embed.set_image(url=custom_image_url)
+                        return await interaction.response.send_message(embed=embed)
+                    else:
+                        img_path = Path(__file__).parent / "save_instruction.png"
+                        if img_path.exists():
+                            file = discord.File(
+                                str(img_path), filename="save_instruction.png"
+                            )
+                            return await interaction.response.send_message(
+                                message, file=file
+                            )
+                return await interaction.response.send_message(message)
+
+            elif best_match["type"] == "sega":
+                profile = best_match["data"]
+                message = SAVE_INSTRUCTIONS_SEGA.format(
+                    game_name=profile["name"], game_folder=profile["game_folder"]
+                )
+                await interaction.response.send_message(message)
+
+            else:
+                profile = best_match["data"]
                 message = SAVE_INSTRUCTIONS.format(
-                    steam_id=data.get("steam_id", ""),
-                    name=data.get("name",""),
-                    config_folder=data.get("config_folder", ""),
-                    linux_folder=data.get(
-                        "linux_folder", kw.lower().replace(" ", "_") + "prefix"
+                    steam_id=profile["steam_id"],
+                    name=profile["name"],
+                    config_folder=profile["config_folder"],
+                    linux_folder=profile.get(
+                        "linux_folder",
+                        best_match["original_key"].replace(" ", "_") + "prefix",
                     ),
                 )
-
-            if data.get("attach_image", False):
-                custom_image_url = data.get("custom_image_url", "")
-                if custom_image_url:
-                    embed = discord.Embed(
-                        description=message, color=discord.Color.blue()
-                    )
-                    embed.set_image(url=custom_image_url)
-                    return await interaction.response.send_message(embed=embed)
+                img_path = Path(__file__).parent / "save_instruction.png"
+                if img_path.exists():
+                    file = discord.File(str(img_path), filename="save_instruction.png")
+                    await interaction.response.send_message(message, file=file)
                 else:
-                    img_path = Path(__file__).parent / "save_instruction.png"
-                    if img_path.exists():
-                        file = discord.File(
-                            str(img_path), filename="save_instruction.png"
-                        )
-                        return await interaction.response.send_message(
-                            message, file=file
-                        )
-            return await interaction.response.send_message(message)
-
-        elif best_match["type"] == "sega":
-            profile = best_match["data"]
-            message = SAVE_INSTRUCTIONS_SEGA.format(
-                game_name=profile["name"], game_folder=profile["game_folder"]
-            )
-            await interaction.response.send_message(message)
-
-        else:
-            profile = best_match["data"]
-            message = SAVE_INSTRUCTIONS.format(
-                steam_id=profile["steam_id"],
-                name=profile["name"],
-                config_folder=profile["config_folder"],
-                linux_folder=profile.get(
-                    "linux_folder",
-                    best_match["original_key"].replace(" ", "_") + "prefix",
-                ),
-            )
-            img_path = Path(__file__).parent / "save_instruction.png"
-            if img_path.exists():
-                file = discord.File(str(img_path), filename="save_instruction.png")
-                await interaction.response.send_message(message, file=file)
-            else:
-                await interaction.response.send_message(message)
+                    await interaction.response.send_message(message)
 
     @app_commands.command(
         name="savebrute",
