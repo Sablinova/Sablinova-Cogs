@@ -937,7 +937,7 @@ class SaveInstListView(discord.ui.View):
             else:
                 message = SAVE_INSTRUCTIONS.format(
                     steam_id=data.get("steam_id", ""),
-                    name=data.get("name", ""),
+                    display_name=data.get("display_name", ""),
                     config_folder=data.get("config_folder", ""),
                     linux_folder=data.get(
                         "linux_folder", kw.lower().replace(" ", "_") + "prefix"
@@ -955,7 +955,7 @@ class SaveInstListView(discord.ui.View):
             config_info = f"**Type:** Base `ColdClient`\n**Keyword:** `{kw}`\n**Name:** {data['name']}\n**Steam ID:** `{data.get('steam_id', '')}`\n**Config Folder:** `{data.get('config_folder', '')}`\n"
             message = SAVE_INSTRUCTIONS.format(
                 steam_id=data.get("steam_id", ""),
-                name=data.get("name", ""),
+                display_name=data.get("display_name", ""),
                 config_folder=data.get("config_folder", ""),
                 linux_folder=data.get(
                     "linux_folder", kw.lower().replace(" ", "_") + "prefix"
@@ -2441,7 +2441,7 @@ class SabPubHelper(commands.Cog):
             else:
                 message = SAVE_INSTRUCTIONS.format(
                     steam_id=data.get("steam_id", ""),
-                    name=data.get("name", ""),
+                    display_name=data.get("display_name", ""),
                     config_folder=data.get("config_folder", ""),
                     linux_folder=data.get(
                         "linux_folder",
@@ -2502,7 +2502,7 @@ class SabPubHelper(commands.Cog):
                 profile = SAVE_PROFILES[matched_key]
                 message = SAVE_INSTRUCTIONS.format(
                     steam_id=profile["steam_id"],
-                    name=profile["name"],
+                    display_name=profile["display_name"],
                     config_folder=profile["config_folder"],
                     linux_folder=profile.get(
                         "linux_folder", matched_key.replace(" ", "_") + "prefix"
@@ -2557,7 +2557,7 @@ class SabPubHelper(commands.Cog):
             else:
                 message = SAVE_INSTRUCTIONS.format(
                     steam_id=data.get("steam_id", ""),
-                    name=data.get("name", ""),
+                    display_name=data.get("display_name", ""),
                     config_folder=data.get("config_folder", ""),
                     linux_folder=data.get(
                         "linux_folder",
@@ -2575,7 +2575,7 @@ class SabPubHelper(commands.Cog):
                     matched_key = key
                     message = SAVE_INSTRUCTIONS.format(
                         steam_id=profile["steam_id"],
-                        name=profile["name"],
+                        display_name=profile["display_name"],
                         config_folder=profile["config_folder"],
                         linux_folder=profile.get(
                             "linux_folder", key.replace(" ", "_") + "prefix"
@@ -4266,7 +4266,7 @@ class SabPubHelper(commands.Cog):
             else:
                 message = SAVE_INSTRUCTIONS.format(
                     steam_id=data.get("steam_id", ""),
-                    name=data.get("name", ""),
+                    display_name=data.get("display_name", ""),
                     config_folder=data.get("config_folder", ""),
                     linux_folder=data.get(
                         "linux_folder", kw.lower().replace(" ", "_") + "prefix"
@@ -4312,7 +4312,7 @@ class SabPubHelper(commands.Cog):
             profile = best_match["data"]
             message = SAVE_INSTRUCTIONS.format(
                 steam_id=profile["steam_id"],
-                name=profile["name"],
+                display_name=profile["display_name"],
                 config_folder=profile["config_folder"],
                 linux_folder=profile.get(
                     "linux_folder",
