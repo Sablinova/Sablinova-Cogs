@@ -4095,6 +4095,31 @@ class SabPubHelper(commands.Cog):
         """Combine user config with CD basefiles."""
         await self._process_command(interaction, url, "cd")
 
+    async def _get_ticket_user(self, interaction: discord.Interaction) -> discord.Member | None:
+        channel_name = interaction.channel.name
+        if "|" in channel_name:
+            raw_name = channel_name.split("|", 1)[0].strip().lower()
+        elif "-" in channel_name:
+            raw_name = channel_name.split("-", 1)[0].strip().lower()
+        else:
+            return None
+
+        if not raw_name or not interaction.guild:
+            return None
+
+        # Search guild members for a match
+        for member in interaction.channel.members:
+            if member == interaction.guild.me:
+                continue
+            if (
+                member.name.lower() == raw_name
+                or member.display_name.lower() == raw_name
+                or member.global_name and member.global_name.lower() == raw_name
+            ):
+                return member
+
+        return None
+
     async def game_autocomplete(
         self, interaction: discord.Interaction, current: str
     ) -> list[app_commands.Choice[str]]:
@@ -4734,9 +4759,11 @@ class SabPubHelper(commands.Cog):
                 return
 
             zip_filename = f"{game}_resigned.zip"
+            ticket_user = await self._get_ticket_user(interaction)
+            ping = ticket_user.mention if ticket_user else interaction.user.mention
             zip_file = discord.File(io.BytesIO(resign_result), filename=zip_filename)
             await send_final_message(
-                f"{interaction.user.mention}\n✅ **Savebrute Complete!**\n\n"
+                f"{ping}\n✅ **Savebrute Complete!**\n\n"
                 f"Game: {SAVE_PROFILES[game]['name']}\n"
                 f"Original ID: `{found_id}` → New ID: `{new_id}`",
                 file=zip_file,
@@ -4902,8 +4929,10 @@ class SabPubHelper(commands.Cog):
         if updated:
             await self.config.known_save_ids.set(known_ids)
 
+        ticket_user = await self._get_ticket_user(interaction)
+        ping = ticket_user.mention if ticket_user else interaction.user.mention
         success_msg = (
-            f"{interaction.user.mention}\n✅ **Re-sign Complete!**\n\n"
+            f"{ping}\n✅ **Re-sign Complete!**\n\n"
             f"Game: {SAVE_PROFILES[game]['name']}\n"
             f"Original ID: `{old_id}` → New ID: `{new_id}`"
         )
