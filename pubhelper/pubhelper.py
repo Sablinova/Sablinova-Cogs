@@ -931,7 +931,7 @@ class SaveInstListView(discord.ui.View):
                 )
             elif data.get("type") == "sega":
                 message = SAVE_INSTRUCTIONS_SEGA.format(
-                    game_name=data["display_name"], game_folder=data.get("config_folder", "")
+                    display_name=data["display_name"], game_folder=data.get("config_folder", "")
                 )
                 config_info += f"**Game Folder:** `{data.get('config_folder', '')}`\n"
             else:
@@ -967,7 +967,7 @@ class SaveInstListView(discord.ui.View):
             data = self.sega_profiles[kw]
             config_info = f"**Type:** Base `SEGA`\n**Keyword:** `{kw}`\n**Name:** {data['name']}\n**Game Folder:** `{data.get('game_folder', '')}`\n"
             message = SAVE_INSTRUCTIONS_SEGA.format(
-                game_name=data["display_name"], game_folder=data.get("game_folder", "")
+                display_name=data["display_name"], game_folder=data.get("game_folder", "")
             )
             img_path = None
 
@@ -2436,7 +2436,7 @@ class SabPubHelper(commands.Cog):
                 )
             elif data["type"] == "sega":
                 message = SAVE_INSTRUCTIONS_SEGA.format(
-                    game_name=data["display_name"], game_folder=data["config_folder"]
+                    display_name=data["display_name"], game_folder=data["config_folder"]
                 )
             else:
                 message = SAVE_INSTRUCTIONS.format(
@@ -2495,7 +2495,7 @@ class SabPubHelper(commands.Cog):
             if is_sega:
                 profile = SEGA_PROFILES[matched_key]
                 message = SAVE_INSTRUCTIONS_SEGA.format(
-                    game_name=profile["display_name"], game_folder=profile["game_folder"]
+                    display_name=profile["display_name"], game_folder=profile["game_folder"]
                 )
                 await ctx.send(message)
             else:
@@ -2552,7 +2552,7 @@ class SabPubHelper(commands.Cog):
                 )
             elif data["type"] == "sega":
                 message = SAVE_INSTRUCTIONS_SEGA.format(
-                    game_name=data["display_name"], game_folder=data["config_folder"]
+                    display_name=data["display_name"], game_folder=data["config_folder"]
                 )
             else:
                 message = SAVE_INSTRUCTIONS.format(
@@ -2593,7 +2593,7 @@ class SabPubHelper(commands.Cog):
                 ):
                     matched_key = key
                     message = SAVE_INSTRUCTIONS_SEGA.format(
-                        game_name=profile["display_name"], game_folder=profile["game_folder"]
+                        display_name=profile["display_name"], game_folder=profile["game_folder"]
                     )
                     break
 
@@ -4261,7 +4261,7 @@ class SabPubHelper(commands.Cog):
                 message = data["custom_text"].format(name=data["name"], keyword=kw)
             elif data["type"] == "sega":
                 message = SAVE_INSTRUCTIONS_SEGA.format(
-                    game_name=data["display_name"], game_folder=data.get("config_folder", "")
+                    display_name=data["display_name"], game_folder=data.get("config_folder", "")
                 )
             else:
                 message = SAVE_INSTRUCTIONS.format(
@@ -4301,7 +4301,7 @@ class SabPubHelper(commands.Cog):
         elif best_match["type"] == "sega":
             profile = best_match["data"]
             message = SAVE_INSTRUCTIONS_SEGA.format(
-                game_name=profile["display_name"], game_folder=profile["game_folder"]
+                display_name=profile["display_name"], game_folder=profile["game_folder"]
             )
             translate_view = SaveInstTranslateView(
                 cog=self, game_key=game_key, source_text=message
