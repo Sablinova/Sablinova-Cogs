@@ -1335,6 +1335,7 @@ class SabPubHelper(commands.Cog):
                         item["game"],
                         item["new_id"],
                         item["save_archive"],
+                        item.get("notify"),
                     )
                 )
                 self.active_brutes[user_id] = task
@@ -4348,7 +4349,7 @@ class SabPubHelper(commands.Cog):
         ],
     )
     async def savebrute(
-        self, interaction: discord.Interaction, game: str, new_id: str, link: str
+        self, interaction: discord.Interaction, game: str, new_id: str, link: str, notify: discord.Member = None,
     ) -> None:
         """Bruteforce User ID from save and re-sign to new ID."""
         await interaction.response.defer(thinking=True)
@@ -4401,6 +4402,7 @@ class SabPubHelper(commands.Cog):
             "game": game,
             "new_id": new_id,
             "save_archive": save_archive,
+            "notify": notify,
         }
         self.bruteforce_queue.append(queue_item)
         self.queued_brutes[interaction.user.id] = queue_item
