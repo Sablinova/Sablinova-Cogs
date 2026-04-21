@@ -1335,6 +1335,7 @@ class SabPubHelper(commands.Cog):
                         item["game"],
                         item["new_id"],
                         item["save_archive"],
+                        item["notify"]
                     )
                 )
                 self.active_brutes[user_id] = task
@@ -4095,31 +4096,6 @@ class SabPubHelper(commands.Cog):
         """Combine user config with CD basefiles."""
         await self._process_command(interaction, url, "cd")
 
-    async def _get_ticket_user(self, interaction: discord.Interaction) -> discord.Member | None:
-        channel_name = interaction.channel.name
-        if "|" in channel_name:
-            raw_name = channel_name.split("|", 1)[0].strip().lower()
-        elif "-" in channel_name:
-            raw_name = channel_name.split("-", 1)[0].strip().lower()
-        else:
-            return None
-
-        if not raw_name or not interaction.guild:
-            return None
-
-        # Search guild members for a match
-        for member in interaction.channel.members:
-            if member == interaction.guild.me:
-                continue
-            if (
-                member.name.lower() == raw_name
-                or member.display_name.lower() == raw_name
-                or member.global_name and member.global_name.lower() == raw_name
-            ):
-                return member
-
-        return None
-
     async def game_autocomplete(
         self, interaction: discord.Interaction, current: str
     ) -> list[app_commands.Choice[str]]:
@@ -4458,6 +4434,7 @@ class SabPubHelper(commands.Cog):
         game: str,
         new_id: str,
         save_archive: bytes,
+        notify: discord.Member = None,
     ):
         """Background task for savebrute with timeout handling."""
         start_time = asyncio.get_event_loop().time()
@@ -4759,8 +4736,8 @@ class SabPubHelper(commands.Cog):
                 return
 
             zip_filename = f"{game}_resigned.zip"
-            ticket_user = await self._get_ticket_user(interaction)
-            ping = ticket_user.mention if ticket_user else interaction.user.mention
+
+            ping = notify.mention if notify else interaction.user.mention
             zip_file = discord.File(io.BytesIO(resign_result), filename=zip_filename)
             await send_final_message(
                 f"{ping}\n✅ **Savebrute Complete!**\n\n"
@@ -4847,6 +4824,7 @@ class SabPubHelper(commands.Cog):
         old_id="Original User ID",
         new_id="Your Steam ID to sign saves to",
         link="URL to save archive (zip/7z)",
+        notify="Mention the user to ping when done (optional)",
     )
     @app_commands.choices(
         game=[
@@ -4861,6 +4839,7 @@ class SabPubHelper(commands.Cog):
         old_id: str,
         new_id: str,
         link: str,
+        notify: discord.Member = None,
     ) -> None:
         """Re-sign save files to a new User ID."""
         await interaction.response.defer(thinking=True)
@@ -4912,7 +4891,7 @@ class SabPubHelper(commands.Cog):
                     f"❌ **Re-sign failed!**\n\n"
                     f"This usually means the **Original ID** (`{old_id}`) you provided is incorrect, "
                     f"or the archive does not contain valid save files for this game.\n\n"
-                    f"💡 *If you don't know the exact original Steam ID that created these saves, please use the `/savebrute` command instead!*"
+                    f"💡 *If you don't know the exact original Steam ID that created these saves, please use the `/` command instead!*"
                 )
             )
             return
@@ -4929,8 +4908,7 @@ class SabPubHelper(commands.Cog):
         if updated:
             await self.config.known_save_ids.set(known_ids)
 
-        ticket_user = await self._get_ticket_user(interaction)
-        ping = ticket_user.mention if ticket_user else interaction.user.mention
+        ping = notify.mention if notify else interaction.user.mention
         success_msg = (
             f"{ping}\n✅ **Re-sign Complete!**\n\n"
             f"Game: {SAVE_PROFILES[game]['name']}\n"
