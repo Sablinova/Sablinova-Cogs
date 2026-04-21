@@ -87,7 +87,7 @@ SAVE_PROFILES = {
 
 
 SAVE_INSTRUCTIONS_SEGA = """```
-{game_name} – Save Transfer Guide
+{display_name} – Save Transfer Guide
 
 Save folder:
 %AppData%\Roaming\SEGA\{game_folder}\Steam\
