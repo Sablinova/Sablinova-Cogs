@@ -4736,7 +4736,7 @@ class SabPubHelper(commands.Cog):
             zip_filename = f"{game}_resigned.zip"
             zip_file = discord.File(io.BytesIO(resign_result), filename=zip_filename)
             await send_final_message(
-                f"✅ **Savebrute Complete!**\n\n"
+                f"{interaction.user.mention}\n✅ **Savebrute Complete!**\n\n"
                 f"Game: {SAVE_PROFILES[game]['name']}\n"
                 f"Original ID: `{found_id}` → New ID: `{new_id}`",
                 file=zip_file,
@@ -4903,7 +4903,7 @@ class SabPubHelper(commands.Cog):
             await self.config.known_save_ids.set(known_ids)
 
         success_msg = (
-            f"✅ **Re-sign Complete!**\n\n"
+            f"{interaction.user.mention}\n✅ **Re-sign Complete!**\n\n"
             f"Game: {SAVE_PROFILES[game]['name']}\n"
             f"Original ID: `{old_id}` → New ID: `{new_id}`"
         )
