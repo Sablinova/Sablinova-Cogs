@@ -90,7 +90,7 @@ SAVE_INSTRUCTIONS_SEGA = """```
 {display_name} – Save Transfer Guide
 
 Windows Save folder:
-%AppData%\Sega\{game_folder}\Steam\ \n
+%AppData%\Sega\{game_folder}\Steam\ 
 
 Linux Save folder:
 /home/user/.local/share/crucible-launcher/Prefix/{linux_folder}/drive_c/users/steamuser/Appdata/Roaming/Sega/{game_folder}/Steam/
@@ -133,25 +133,25 @@ SEGA_PROFILES = {
         "name": "IW",
         "display_name": "Like a Dragon: Infinite Wealth",
         "game_folder": "YakuzaLikeADragon8",
-        "linux_folder": "likeadragon8",
+        "linux_folder": "like_a_dragon_8prefix",
     },
     "like a dragon gaiden: the man who erased his name": {
         "name": "Gaiden",
         "display_name": "Like a Dragon Gaiden: The Man Who Erased His Name",
         "game_folder": "LikeADragonGaiden",
-        "linux_folder": "likeadragongaiden",
+        "linux_folder": "like_a_dragon_gaidenprefix",
     },
     "yakuza kiwami 3 & dark ties": {
         "name": "K3",
         "display_name": "Yakuza Kiwami 3 & Dark Ties",
         "game_folder": "YakuzaKiwami3",
-        "linux_folder": "yakuzakiwami3",
+        "linux_folder": "yakuza_kiwami_3prefix",
     },
     "like a dragon: pirate yakuza in hawaii": {
         "name": "Pirate",
         "display_name": "Like a Dragon: Pirate Yakuza in Hawaii",
         "game_folder": "LikeADragonPirateYakuza",
-        "linux_folder": "likeadragonpirates",
+        "linux_folder": "like_a_dragon_piratesprefix",
     },
     "sonic x shadow generations": {
         "name": "SSG",
@@ -167,7 +167,7 @@ SEGA_PROFILES = {
         "name": "Metaphor",
         "display_name": "Metaphor: ReFantazio",
         "game_folder": "Metaphor",
-        "linux_folder": "metaphor",
+        "linux_folder": "metaphorprefix",
     },
 }
 
