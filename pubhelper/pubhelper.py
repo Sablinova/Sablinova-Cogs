@@ -1335,7 +1335,6 @@ class SabPubHelper(commands.Cog):
                         item["game"],
                         item["new_id"],
                         item["save_archive"],
-                        item["notify"]
                     )
                 )
                 self.active_brutes[user_id] = task
