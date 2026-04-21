@@ -4339,7 +4339,7 @@ class SabPubHelper(commands.Cog):
         game="Select game",
         new_id="Your Steam ID to sign saves to",
         link="URL to save archive (zip/7z)",
-        notify="Mention the user to ping when done (optional)"
+        notify="Mention the user to ping when done (optional)",
     )
     @app_commands.choices(
         game=[
