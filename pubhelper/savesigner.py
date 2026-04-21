@@ -34,7 +34,7 @@ SAVE_PROFILES = {
         "config_folder": "pub_re9/",
         "linux_folder": "resident_evil_requiemprefix",
     },
-    "dragon's dogma 2": {
+    "dragons dogma 2": {
         "name": "DD2",
         "display_name": "Dragon's Dogma 2",
         "profile": "Dragon's Dogma 2 v1.bin",
@@ -89,8 +89,11 @@ SAVE_PROFILES = {
 SAVE_INSTRUCTIONS_SEGA = """```
 {display_name} – Save Transfer Guide
 
-Save folder:
-%AppData%\Roaming\SEGA\{game_folder}\Steam\
+Windows Save folder:
+%AppData%\Sega\{game_folder}\Steam\
+
+Linux Save folder:
+/home/user/.local/share/crucible-launcher/Prefix/{linux_folder}/drive_c/users/steamuser/Appdata/Roaming/Sega/{game_folder}/Steam/
 
 • Go to the folder above
 • Find your old SteamID folder (e.g., 76561198012345678)
