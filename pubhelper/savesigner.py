@@ -66,7 +66,7 @@ SAVE_PROFILES = {
         "name": "MHStories3",
         "display_name": "Monster Hunter Stories 3: Twisted Reflection",
         "profile": "Monster Hunter Stories 3 Twisted Reflection v1.bin",
-        "steam_id": "2498260",  # Fallback value, real ID wasn't originally included
+        "steam_id": "2852190",  # Fallback value, real ID wasn't originally included
         "config_folder": "pub_mhs3/",
     },
     "mega man star force legacy collection": {
