@@ -73,7 +73,7 @@ SAVE_PROFILES = {
         "name": "MegaMan",
         "display_name": "Mega Man Star Force Legacy Collection",
         "profile": "Mega Man Star Force Legacy Collection v1.bin",
-        "steam_id": "2816910",  # Fallback value, real ID wasn't originally included
+        "steam_id": "3500390",  # Fallback value, real ID wasn't originally included
         "config_folder": "",
     },
     "pragmata": {
