@@ -37,6 +37,16 @@ log = logging.getLogger("red.sablinova.pubhelper")
 
 INVALID_LINK_MSG = "Invalid or expired link. Please provide a valid token link."
 
+SAVE_PLACEMENT_MSG = (
+    "**📂 Where to put the re-signed files:**\n"
+    "1. Press **Win + R**, paste the path below and hit Enter:\n"
+    "`%USERPROFILE%\\AppData\\Roaming\\GSE Saves\\{steam_id}\\remote\\win64_save\\`\n\n"
+    "**Linux path:**\n"
+    "`~/.local/share/crucible-launcher/Prefix/{linux_folder}/drive_c/users/steamuser/AppData/Roaming/GSE Saves/{steam_id}/remote/win64_save/`\n\n"
+    "2. Copy the `.bin` files from the zip into that folder, replacing the old ones.\n"
+    "3. Launch the game normally."
+)
+
 # Languages available in the /saveinst translate dropdown
 SAVEINST_LANGUAGES = [
     ("🇪🇸 Spanish", "es"),
@@ -4775,11 +4785,17 @@ class SabPubHelper(commands.Cog):
             zip_filename = f"{game}_resigned.zip"
 
             ping = f"{notify.mention}\n" if notify else ""
+            p = SAVE_PROFILES[game]
+            placement_text = SAVE_PLACEMENT_MSG.format(
+                steam_id=p["steam_id"],
+                linux_folder=p.get("linux_folder", game.replace(" ", "_") + "prefix"),
+            )
             zip_file = discord.File(io.BytesIO(resign_result), filename=zip_filename)
             await send_final_message(
                 f"{ping}\n✅ **Savebrute Complete!**\n\n"
                 f"Game: {SAVE_PROFILES[game]['name']}\n"
                 f"Original ID: `{found_id}` → New ID: `{new_id}`",
+                f"{placement_text}",
                 file=zip_file,
                 anon_data=resign_result,
                 anon_filename=zip_filename,
@@ -4946,10 +4962,16 @@ class SabPubHelper(commands.Cog):
             await self.config.known_save_ids.set(known_ids)
 
         ping = f"{notify.mention}\n" if notify else ""
+        p = SAVE_PROFILES[game]
+        placement_txt = SAVE_PLACEMENT_MSG.format(
+            steam_id = p["steam_id"],
+            linux_folder = p.get("linux_folder", game.replace(" ", "_") + "prefix"),
+        )
         success_msg = (
             f"{ping}\n✅ **Re-sign Complete!**\n\n"
             f"Game: {SAVE_PROFILES[game]['name']}\n"
             f"Original ID: `{old_id}` → New ID: `{new_id}`"
+            f"{placement_txt}"
         )
         zip_filename = f"{game}_resigned.zip"
 
