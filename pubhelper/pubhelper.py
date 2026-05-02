@@ -40,11 +40,11 @@ INVALID_LINK_MSG = "Invalid or expired link. Please provide a valid token link."
 SAVE_PLACEMENT_MSG = (
     "**📂 Where to put the re-signed files:**\n"
     "1. Press **Win + R**, paste the path below and hit Enter:\n"
-    "`%USERPROFILE%\\AppData\\Roaming\\GSE Saves\\{steam_id}\\remote\\win64_save\\`\n\n"
+    "`%Appdata%\\GSE Saves\\{steam_id}\\remote\\win64_save\\`\n\n"
     "**Linux path:**\n"
     "`~/.local/share/crucible-launcher/Prefix/{linux_folder}/drive_c/users/steamuser/AppData/Roaming/GSE Saves/{steam_id}/remote/win64_save/`\n\n"
     "2. Copy the `.bin` files from the zip into that folder, replacing the old ones.\n"
-    "3. Launch the game normally."
+    "3. Launch the game normally.\n"
 )
 
 # Languages available in the /saveinst translate dropdown
