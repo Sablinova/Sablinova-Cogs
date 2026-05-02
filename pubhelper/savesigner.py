@@ -272,7 +272,7 @@ class SaveSigner:
             data_fallback = None  # data000/001/00-1.bin
             any_fallback = None  # any other .bin
 
-            _DATA_NAMES = {"data000.bin", "data001.bin", "data00-1.bin"}
+            _DATA_NAMES = {"data000.bin", "data001.bin"}
 
             # Sort files by size (smallest first)
             bin_files = sorted(
