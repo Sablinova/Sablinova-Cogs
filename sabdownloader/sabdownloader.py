@@ -2089,6 +2089,7 @@ class SabDownloader(commands.Cog):
         )
         self.config.register_global(
             cookies_file=None,
+            youtube_cookies_file=None,
             max_concurrent=3,
             anondrop_userkey=None,
             log_channel=None,
@@ -2908,6 +2909,10 @@ class SabDownloader(commands.Cog):
         if await self.bot.is_owner(ctx.author):
             cookies = global_config["cookies_file"] or "Not set"
             embed.add_field(name="Cookies File", value=cookies, inline=True)
+            youtube_cookies = global_config["youtube_cookies_file"] or "Not set"
+            embed.add_field(
+                name="YouTube Cookies File", value=youtube_cookies, inline=True
+            )
             embed.add_field(
                 name="Max Concurrent",
                 value=str(global_config["max_concurrent"]),
@@ -3041,6 +3046,16 @@ class SabDownloader(commands.Cog):
         await self.config.cookies_file.set(path)
         await ctx.send(f"Cookies file set to `{path}`.")
 
+    @sabdownloader.command(name="youtubecookies")
+    @commands.is_owner()
+    async def sd_youtube_cookies(self, ctx: commands.Context, path: str):
+        """(Bot Owner) Set a separate Netscape cookies.txt file for YouTube downloads."""
+        if not os.path.isfile(path):
+            await ctx.send(f"File not found: `{path}`")
+            return
+        await self.config.youtube_cookies_file.set(path)
+        await ctx.send(f"YouTube cookies file set to `{path}`.")
+
     @sabdownloader.command(name="maxconcurrent")
     @commands.is_owner()
     async def sd_maxconcurrent(self, ctx: commands.Context, count: int):
@@ -3166,6 +3181,11 @@ class SabDownloader(commands.Cog):
         status_msg = await ctx.send("Fetching available resolutions...")
 
         cookies_file = await self.config.cookies_file()
+        youtube_cookies_file = await self.config.youtube_cookies_file()
+        domain = _get_domain(url)
+        active_cookies_file = cookies_file
+        if domain in ("youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"):
+            active_cookies_file = youtube_cookies_file or cookies_file
 
         try:
             formats = await self.bot.loop.run_in_executor(
@@ -3173,7 +3193,7 @@ class SabDownloader(commands.Cog):
                 partial(
                     _ytdlp_extract_formats,
                     url=url,
-                    cookies_file=cookies_file,
+                    cookies_file=active_cookies_file,
                 ),
             )
         except Exception as e:
@@ -3305,6 +3325,10 @@ class SabDownloader(commands.Cog):
         # Instagram cookies check
         domain = _get_domain(url)
         cookies_file = await self.config.cookies_file()
+        youtube_cookies_file = await self.config.youtube_cookies_file()
+        active_cookies_file = cookies_file
+        if domain in ("youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"):
+            active_cookies_file = youtube_cookies_file or cookies_file
         if domain in ("instagram.com", "www.instagram.com") and not cookies_file:
             await ctx.send(
                 "Instagram requires authentication. "
@@ -3366,7 +3390,7 @@ class SabDownloader(commands.Cog):
                     url=url,
                     temp_dir=temp_dir,
                     tracker=tracker,
-                    cookies_file=cookies_file,
+                    cookies_file=active_cookies_file,
                     max_filesize=max_filesize,
                     max_duration=max_duration,
                     audio_only=audio_only,
