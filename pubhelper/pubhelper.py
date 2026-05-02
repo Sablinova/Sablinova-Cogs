@@ -4499,9 +4499,11 @@ class SabPubHelper(commands.Cog):
         )
 
         async def send_final_message(
-            content, file=None, anon_filename=None, anon_data=None
+            content, inst=None, file=None, anon_filename=None, anon_data=None
         ):
             """Send the final result message, with Discord → AnonDrop fallback for large files."""
+            if inst:
+                content = f"{content}\n\n{inst}"
 
             async def _send_file_with_fallback(
                 send_fn, send_kwargs, file_obj, data, fname
@@ -4795,7 +4797,7 @@ class SabPubHelper(commands.Cog):
                 f"{ping}\n✅ **Savebrute Complete!**\n\n"
                 f"Game: {SAVE_PROFILES[game]['name']}\n"
                 f"Original ID: `{found_id}` → New ID: `{new_id}`",
-                f"{placement_text}",
+                inst=placement_text,
                 file=zip_file,
                 anon_data=resign_result,
                 anon_filename=zip_filename,
@@ -4970,7 +4972,7 @@ class SabPubHelper(commands.Cog):
         success_msg = (
             f"{ping}\n✅ **Re-sign Complete!**\n\n"
             f"Game: {SAVE_PROFILES[game]['name']}\n"
-            f"Original ID: `{old_id}` → New ID: `{new_id}`"
+            f"Original ID: `{old_id}` → New ID: `{new_id}` \n\n"
             f"{placement_txt}"
         )
         zip_filename = f"{game}_resigned.zip"
