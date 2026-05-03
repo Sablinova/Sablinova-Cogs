@@ -153,6 +153,11 @@ SEGA_PROFILES = {
         "game_folder": "LikeADragonPirateYakuza",
         "linux_folder": "like_a_dragon_piratesprefix",
     },
+    "lost judgment": {
+        "name": "LJ",
+        "display_name": "Lost Judgment",
+        "game_folder": "LostJudgment",
+    },
     "sonic x shadow generations": {
         "name": "SSG",
         "display_name": "Sonic X Shadow Generations",
@@ -168,6 +173,12 @@ SEGA_PROFILES = {
         "display_name": "Metaphor: ReFantazio",
         "game_folder": "Metaphor",
         "linux_folder": "metaphorprefix",
+    },
+    "demon slayer 2": {
+        "name": "DSHC2",
+        "display_name": "Demon Slayer Hinokami Chronicles 2",
+        "game_folder": "Demon Slayer -Kimetsu no Yaiba- The Hinokami Chronicles 2",
+        "linux_folder": "demon_slayer_kimetsu_no_yaiba_The_hinokami_chronicles_2prefix"
     },
 }
 
