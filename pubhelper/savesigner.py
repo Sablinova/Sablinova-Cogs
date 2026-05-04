@@ -141,7 +141,7 @@ SEGA_PROFILES = {
         "game_folder": "LikeADragonGaiden",
         "linux_folder": "like_a_dragon_gaidenprefix",
     },
-    "yakuza kiwami 3": {
+    "kiwami 3 & dark ties": {
         "name": "Kiwami3",
         "display_name": "Yakuza Kiwami 3 & Dark Ties",
         "game_folder": "YakuzaKiwami3",
