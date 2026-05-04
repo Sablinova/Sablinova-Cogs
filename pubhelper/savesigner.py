@@ -130,12 +130,12 @@ SEGA_PROFILES = {
         "game_folder": "P4AU",
     },
     "like a dragon: infinite wealth": {
-        "name": "IW",
+        "name": "Infinite Wealth",
         "display_name": "Like a Dragon: Infinite Wealth",
         "game_folder": "YakuzaLikeADragon8",
         "linux_folder": "like_a_dragon_8prefix",
     },
-    "like a dragon gaiden: the man who erased his name": {
+    "gaiden: the man who erased his name": {
         "name": "Gaiden",
         "display_name": "Like a Dragon Gaiden: The Man Who Erased His Name",
         "game_folder": "LikeADragonGaiden",
@@ -147,7 +147,7 @@ SEGA_PROFILES = {
         "game_folder": "YakuzaKiwami3",
         "linux_folder": "yakuza_kiwami_3prefix",
     },
-    "like a dragon: pirate yakuza in hawaii": {
+    "pirate yakuza in hawaii": {
         "name": "Pirate",
         "display_name": "Like a Dragon: Pirate Yakuza in Hawaii",
         "game_folder": "LikeADragonPirateYakuza",
