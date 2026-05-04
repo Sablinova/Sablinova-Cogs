@@ -4249,11 +4249,11 @@ class SabPubHelper(commands.Cog):
                 targets, key=lambda x: max(len(x["key"]), len(x["name"])), reverse=True
             )
             for t in targets_sorted_by_len:
-                if t["key"] in game_name or t["name"] in game_name:
+                if t["key"] in game_name or t["display_name"] in game_name:
                     best_match = t
                     break
                 if len(game_name) > 4 and (
-                    game_name in t["key"] or game_name in t["name"]
+                    game_name in t["key"] or game_name in t["display_name"]
                 ):
                     best_match = t
                     break
