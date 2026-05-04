@@ -141,8 +141,8 @@ SEGA_PROFILES = {
         "game_folder": "LikeADragonGaiden",
         "linux_folder": "like_a_dragon_gaidenprefix",
     },
-    "yakuza kiwami 3 & dark ties": {
-        "name": "K3",
+    "yakuza kiwami 3": {
+        "name": "Kiwami3",
         "display_name": "Yakuza Kiwami 3 & Dark Ties",
         "game_folder": "YakuzaKiwami3",
         "linux_folder": "yakuza_kiwami_3prefix",
@@ -178,7 +178,6 @@ SEGA_PROFILES = {
         "name": "DSHC2",
         "display_name": "Demon Slayer Hinokami Chronicles 2",
         "game_folder": "Demon Slayer -Kimetsu no Yaiba- The Hinokami Chronicles 2",
-        "linux_folder": "demon_slayer_kimetsu_no_yaiba_The_hinokami_chronicles_2prefix"
     },
 }
 
