@@ -259,6 +259,9 @@ class SaveSigner:
             extract_dir.mkdir()
             input_dir.mkdir()
 
+            # Resolve 7z binary path (handles environments where /usr/bin is not in PATH)
+            seven_z_path = shutil.which("7z") or shutil.which("7za") or "7z"
+
             # Extract archive
             archive_path = tmpdir_path / "archive"
             archive_path.write_bytes(save_archive)
@@ -271,7 +274,7 @@ class SaveSigner:
                 # RAR (v4/v5) — py7zr and zipfile cannot handle it
                 try:
                     subprocess.run(
-                        ["7z", "x", str(archive_path), f"-o{extract_dir}"],
+                        [seven_z_path, "x", str(archive_path), f"-o{extract_dir}"],
                         check=True, capture_output=True,
                     )
                 except Exception as exc:
@@ -288,7 +291,7 @@ class SaveSigner:
                 except Exception:
                     try:
                         subprocess.run(
-                            ["7z", "x", str(archive_path), f"-o{extract_dir}"],
+                            [seven_z_path, "x", str(archive_path), f"-o{extract_dir}"],
                             check=True, capture_output=True,
                         )
                     except Exception as exc:
@@ -305,7 +308,7 @@ class SaveSigner:
                 except Exception:
                     try:
                         subprocess.run(
-                            ["7z", "x", str(archive_path), f"-o{extract_dir}"],
+                            [seven_z_path, "x", str(archive_path), f"-o{extract_dir}"],
                             check=True, capture_output=True,
                         )
                     except Exception as exc:
@@ -477,6 +480,9 @@ class SaveSigner:
             extract_dir.mkdir()
             input_dir.mkdir()
 
+            # Resolve 7z binary path (handles environments where /usr/bin is not in PATH)
+            seven_z_path = shutil.which("7z") or shutil.which("7za") or "7z"
+
             # Extract archive
             archive_path = tmpdir_path / "archive"
             archive_path.write_bytes(save_archive)
@@ -489,7 +495,7 @@ class SaveSigner:
                 # RAR (v4/v5) — py7zr and zipfile cannot handle it
                 try:
                     subprocess.run(
-                        ["7z", "x", str(archive_path), f"-o{extract_dir}"],
+                        [seven_z_path, "x", str(archive_path), f"-o{extract_dir}"],
                         check=True, capture_output=True,
                     )
                 except Exception as exc:
@@ -506,7 +512,7 @@ class SaveSigner:
                 except Exception:
                     try:
                         subprocess.run(
-                            ["7z", "x", str(archive_path), f"-o{extract_dir}"],
+                            [seven_z_path, "x", str(archive_path), f"-o{extract_dir}"],
                             check=True, capture_output=True,
                         )
                     except Exception as exc:
@@ -523,7 +529,7 @@ class SaveSigner:
                 except Exception:
                     try:
                         subprocess.run(
-                            ["7z", "x", str(archive_path), f"-o{extract_dir}"],
+                            [seven_z_path, "x", str(archive_path), f"-o{extract_dir}"],
                             check=True, capture_output=True,
                         )
                     except Exception as exc:
