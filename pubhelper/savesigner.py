@@ -263,17 +263,22 @@ class SaveSigner:
             archive_path = tmpdir_path / "archive"
             archive_path.write_bytes(save_archive)
 
-            try:
-                # Try 7z first
-                with py7zr.SevenZipFile(archive_path, "r") as archive:
-                    archive.extractall(extract_dir)
-            except Exception:
-                # Fall back to zip
+            # Detect format from magic bytes to route to correct extractor
+            if save_archive.startswith(b"Rar!\x1a\x07"):
+                # RAR (v4/v5) — py7zr and zipfile cannot handle it
                 try:
-                    with zipfile.ZipFile(archive_path, "r") as archive:
+                    subprocess.run(
+                        ["7z", "x", str(archive_path), f"-o{extract_dir}"],
+                        check=True, capture_output=True,
+                    )
+                except Exception:
+                    raise ValueError("Unsupported format")
+            elif save_archive.startswith(b"7z\xbc\xaf\x27\x1c"):
+                # 7z — try py7zr first, fall back to 7z subprocess
+                try:
+                    with py7zr.SevenZipFile(archive_path, "r") as archive:
                         archive.extractall(extract_dir)
                 except Exception:
-                    # Fall back to 7z subprocess (handles .rar and others)
                     try:
                         subprocess.run(
                             ["7z", "x", str(archive_path), f"-o{extract_dir}"],
@@ -281,6 +286,21 @@ class SaveSigner:
                         )
                     except Exception:
                         raise ValueError("Unsupported format")
+            elif save_archive.startswith(b"PK\x03\x04") or save_archive.startswith(b"PK\x05\x06"):
+                # ZIP — try zipfile first, fall back to 7z subprocess
+                try:
+                    with zipfile.ZipFile(archive_path, "r") as archive:
+                        archive.extractall(extract_dir)
+                except Exception:
+                    try:
+                        subprocess.run(
+                            ["7z", "x", str(archive_path), f"-o{extract_dir}"],
+                            check=True, capture_output=True,
+                        )
+                    except Exception:
+                        raise ValueError("Unsupported format")
+            else:
+                raise ValueError("Unsupported format")
 
             # Find the best .bin file to bruteforce:
             # Priority 1: slot files (e.g. 001Slot.bin, SaveSlot.bin)
@@ -441,17 +461,22 @@ class SaveSigner:
             archive_path = tmpdir_path / "archive"
             archive_path.write_bytes(save_archive)
 
-            try:
-                # Try 7z first
-                with py7zr.SevenZipFile(archive_path, "r") as archive:
-                    archive.extractall(extract_dir)
-            except Exception:
-                # Fall back to zip
+            # Detect format from magic bytes to route to correct extractor
+            if save_archive.startswith(b"Rar!\x1a\x07"):
+                # RAR (v4/v5) — py7zr and zipfile cannot handle it
                 try:
-                    with zipfile.ZipFile(archive_path, "r") as archive:
+                    subprocess.run(
+                        ["7z", "x", str(archive_path), f"-o{extract_dir}"],
+                        check=True, capture_output=True,
+                    )
+                except Exception:
+                    raise ValueError("Unsupported format")
+            elif save_archive.startswith(b"7z\xbc\xaf\x27\x1c"):
+                # 7z — try py7zr first, fall back to 7z subprocess
+                try:
+                    with py7zr.SevenZipFile(archive_path, "r") as archive:
                         archive.extractall(extract_dir)
                 except Exception:
-                    # Fall back to 7z subprocess (handles .rar and others)
                     try:
                         subprocess.run(
                             ["7z", "x", str(archive_path), f"-o{extract_dir}"],
@@ -459,6 +484,21 @@ class SaveSigner:
                         )
                     except Exception:
                         raise ValueError("Unsupported format")
+            elif save_archive.startswith(b"PK\x03\x04") or save_archive.startswith(b"PK\x05\x06"):
+                # ZIP — try zipfile first, fall back to 7z subprocess
+                try:
+                    with zipfile.ZipFile(archive_path, "r") as archive:
+                        archive.extractall(extract_dir)
+                except Exception:
+                    try:
+                        subprocess.run(
+                            ["7z", "x", str(archive_path), f"-o{extract_dir}"],
+                            check=True, capture_output=True,
+                        )
+                    except Exception:
+                        raise ValueError("Unsupported format")
+            else:
+                raise ValueError("Unsupported format")
 
             # Copy all .bin save files to input directory
             for file_path in extract_dir.rglob("*.bin"):
