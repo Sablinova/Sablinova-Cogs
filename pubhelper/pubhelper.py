@@ -4807,6 +4807,15 @@ class SabPubHelper(commands.Cog):
             if updated:
                 await self.config.known_save_ids.set(known_ids)
 
+            # Stop the progress updater so it can't overwrite messages during resign
+            if progress_task and not progress_task.done():
+                progress_task.cancel()
+                try:
+                    await progress_task
+                except asyncio.CancelledError:
+                    pass
+                progress_task = None
+
             await send_final_message(
                 f"✅ **Found User ID: `{found_id}`**\n\nRe-signing to `{new_id}`..."
             )
