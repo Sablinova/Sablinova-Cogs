@@ -1,4 +1,8 @@
+import importlib
 from redbot.core.bot import Red
+
+from . import savesigner
+importlib.reload(savesigner)
 
 from .pubhelper import SabPubHelper
 
