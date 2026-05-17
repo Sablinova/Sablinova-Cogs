@@ -572,12 +572,14 @@ def _extract_filename_from_url(url: str) -> str | None:
 def _detect_archive_format(content: bytes) -> str | None:
     """Detect archive format from magic bytes.
 
-    Returns: "7z", "zip", or None if unknown.
+    Returns: "7z", "zip", "rar", or None if unknown.
     """
     if content.startswith(b"7z\xbc\xaf\x27\x1c"):
         return "7z"
     elif content.startswith(b"PK\x03\x04") or content.startswith(b"PK\x05\x06"):
         return "zip"
+    elif content.startswith(b"Rar!\x1a\x07"):
+        return "rar"
     return None
 
 
@@ -778,14 +780,14 @@ class GameSelectView(discord.ui.View):
                     if not fmt:
                         await status_msg.edit(
                             embed=discord.Embed(
-                                description="The file is not a valid archive. Supported formats: `.7z`, `.zip`",
+                                description="The file is not a valid archive. Supported formats: `.7z`, `.zip`, `.rar`",
                                 color=discord.Color.red(),
                             )
                         )
                         return
 
                     # Remove old basefiles if format changed
-                    for old_fmt in ("7z", "zip"):
+                    for old_fmt in ("7z", "zip", "rar"):
                         old_path = self.cog._get_basefiles_path(game, old_fmt)
                         if old_path.exists() and old_fmt != fmt:
                             old_path.unlink()
@@ -1187,8 +1189,8 @@ class SabPubHelper(commands.Cog):
         return self.data_path / f"basefiles_{game}.{fmt}"
 
     def _find_basefiles_path(self, game: str) -> Path | None:
-        """Find existing basefiles for a game (checks both formats)."""
-        for fmt in ("7z", "zip"):
+        """Find existing basefiles for a game (checks all formats)."""
+        for fmt in ("7z", "zip", "rar"):
             path = self._get_basefiles_path(game, fmt)
             if path.exists():
                 return path
@@ -2207,7 +2209,7 @@ class SabPubHelper(commands.Cog):
                 return
 
             # Delete basefiles
-            for fmt in ("7z", "zip"):
+            for fmt in ("7z", "zip", "rar"):
                 path = self._get_basefiles_path(game, fmt)
                 if path.exists():
                     path.unlink()
@@ -3064,6 +3066,12 @@ class SabPubHelper(commands.Cog):
             if fmt == "7z":
                 with py7zr.SevenZipFile(archive_path, "r") as z:
                     z.extractall(extract_dir)
+            elif fmt == "rar":
+                import subprocess
+                subprocess.run(
+                    ["7z", "x", str(archive_path), f"-o{extract_dir}"],
+                    check=True, capture_output=True,
+                )
             else:  # zip
                 with zipfile.ZipFile(archive_path, "r") as z:
                     z.extractall(extract_dir)
@@ -3088,6 +3096,15 @@ class SabPubHelper(commands.Cog):
                     # Remove old archive and create new
                     archive_path.unlink()
                     with py7zr.SevenZipFile(archive_path, "w") as z:
+                        for item in extract_dir.rglob("*"):
+                            if item.is_file():
+                                arcname = str(item.relative_to(extract_dir))
+                                z.write(item, arcname)
+                elif fmt == "rar":
+                    # RAR can't be repacked easily — convert to zip
+                    zip_path = archive_path.with_suffix(".zip")
+                    archive_path.unlink()
+                    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
                         for item in extract_dir.rglob("*"):
                             if item.is_file():
                                 arcname = str(item.relative_to(extract_dir))
@@ -3140,7 +3157,7 @@ class SabPubHelper(commands.Cog):
     async def set_basefiles(self, ctx: commands.Context, game: str, url: str) -> None:
         """Set the basefiles archive for a game.
 
-        Supports both `.7z` and `.zip` formats.
+        Supports `.7z`, `.zip`, and `.rar` formats.
 
         **Games:** re9, cd
 
@@ -3175,12 +3192,12 @@ class SabPubHelper(commands.Cog):
                         fmt = _detect_archive_format(content)
                         if not fmt:
                             await ctx.send(
-                                "The downloaded file is not a valid archive. Supported formats: `.7z`, `.zip`"
+                                "The downloaded file is not a valid archive. Supported formats: `.7z`, `.zip`, `.rar`"
                             )
                             return
 
                         # Remove old basefiles if format changed
-                        for old_fmt in ("7z", "zip"):
+                        for old_fmt in ("7z", "zip", "rar"):
                             old_path = self._get_basefiles_path(game, old_fmt)
                             if old_path.exists() and old_fmt != fmt:
                                 old_path.unlink()
@@ -3195,6 +3212,17 @@ class SabPubHelper(commands.Cog):
                             if fmt == "7z":
                                 with py7zr.SevenZipFile(basefiles_path, "r") as z:
                                     names = z.getnames()
+                            elif fmt == "rar":
+                                import subprocess
+                                result = subprocess.run(
+                                    ["7z", "l", "-ba", str(basefiles_path)],
+                                    check=True, capture_output=True, text=True,
+                                )
+                                names = []
+                                for line in result.stdout.splitlines():
+                                    parts = line.split()
+                                    if len(parts) >= 5:
+                                        names.append(parts[-1])
                             else:  # zip
                                 with zipfile.ZipFile(basefiles_path, "r") as z:
                                     names = z.namelist()
@@ -3334,6 +3362,18 @@ class SabPubHelper(commands.Cog):
             if fmt == "7z":
                 with py7zr.SevenZipFile(archive_path, "r") as archive:
                     files = sorted(archive.getnames())
+            elif fmt == "rar":
+                import subprocess
+                result = subprocess.run(
+                    ["7z", "l", "-ba", str(archive_path)],
+                    check=True, capture_output=True, text=True,
+                )
+                files = []
+                for line in result.stdout.splitlines():
+                    parts = line.split()
+                    if len(parts) >= 5:
+                        files.append(parts[-1])
+                files = sorted(files)
             else:  # zip
                 with zipfile.ZipFile(archive_path, "r") as archive:
                     files = sorted(archive.namelist())
@@ -3558,6 +3598,12 @@ class SabPubHelper(commands.Cog):
                 if fmt == "7z":
                     with py7zr.SevenZipFile(archive_path, "r") as z:
                         z.extractall(extract_dir)
+                elif fmt == "rar":
+                    import subprocess
+                    subprocess.run(
+                        ["7z", "x", str(archive_path), f"-o{extract_dir}"],
+                        check=True, capture_output=True,
+                    )
                 else:  # zip
                     with zipfile.ZipFile(archive_path, "r") as z:
                         z.extractall(extract_dir)
@@ -3842,6 +3888,12 @@ class SabPubHelper(commands.Cog):
                         if fmt == "7z":
                             with py7zr.SevenZipFile(basefiles_path, "r") as z:
                                 z.extractall(extract_path)
+                        elif fmt == "rar":
+                            import subprocess
+                            subprocess.run(
+                                ["7z", "x", str(basefiles_path), f"-o{extract_path}"],
+                                check=True, capture_output=True,
+                            )
                         else:
                             with zipfile.ZipFile(basefiles_path, "r") as z:
                                 z.extractall(extract_path)
@@ -3862,6 +3914,17 @@ class SabPubHelper(commands.Cog):
                         # Repackage the basefiles
                         if fmt == "7z":
                             with py7zr.SevenZipFile(basefiles_path, "w") as z:
+                                for item in extract_path.rglob("*"):
+                                    if item.is_file():
+                                        arcname = item.relative_to(extract_path)
+                                        z.write(item, arcname)
+                        elif fmt == "rar":
+                            # RAR can't be repacked easily — convert to zip
+                            zip_path = basefiles_path.with_suffix(".zip")
+                            basefiles_path.unlink()
+                            with zipfile.ZipFile(
+                                zip_path, "w", zipfile.ZIP_DEFLATED
+                            ) as z:
                                 for item in extract_path.rglob("*"):
                                     if item.is_file():
                                         arcname = item.relative_to(extract_path)
@@ -4384,7 +4447,7 @@ class SabPubHelper(commands.Cog):
     @app_commands.describe(
         game="Select game",
         new_id="Your Steam ID to sign saves to",
-        link="URL to save archive (zip/7z)",
+        link="URL to save archive (zip/7z/rar)",
         notify="Mention the user to ping when done (optional)",
     )
     @app_commands.choices(
@@ -4738,7 +4801,7 @@ class SabPubHelper(commands.Cog):
             except ValueError as e:
                 if str(e) == "Unsupported format":
                     await send_final_message(
-                        f"❌ **Unsupported Format**. Send .7z/.zip"
+                        f"❌ **Unsupported Format**. Send .7z/.zip/.rar"
                     )
                     return
                 raise e
@@ -4773,7 +4836,7 @@ class SabPubHelper(commands.Cog):
             except ValueError as e:
                 if str(e) == "Unsupported format":
                     await send_final_message(
-                        f"❌ **Unsupported format**. Send .7z/.zip"
+                        f"❌ **Unsupported format**. Send .7z/.zip/.rar"
                     )
                     return
                 raise e
@@ -4878,7 +4941,7 @@ class SabPubHelper(commands.Cog):
         game="Select game",
         old_id="Original User ID",
         new_id="Your Steam ID to sign saves to",
-        link="URL to save archive (zip/7z)",
+        link="URL to save archive (zip/7z/rar)",
         notify="Mention the user to ping when done (optional)",
     )
     @app_commands.choices(
@@ -4935,7 +4998,7 @@ class SabPubHelper(commands.Cog):
         except ValueError as e:
             if str(e) == "Unsupported format":
                 await interaction.edit_original_response(
-                    content=f"❌ **Unsupported format**. Send .7z/.zip"
+                    content=f"❌ **Unsupported format**. Send .7z/.zip/.rar"
                 )
                 return
             raise e
@@ -5079,6 +5142,12 @@ class SabPubHelper(commands.Cog):
                 if fmt == "7z":
                     with py7zr.SevenZipFile(basefiles_path, "r") as z:
                         z.extractall(extract_dir)
+                elif fmt == "rar":
+                    import subprocess
+                    subprocess.run(
+                        ["7z", "x", str(basefiles_path), f"-o{extract_dir}"],
+                        check=True, capture_output=True,
+                    )
                 else:  # zip
                     with zipfile.ZipFile(basefiles_path, "r") as z:
                         z.extractall(extract_dir)

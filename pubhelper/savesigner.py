@@ -8,6 +8,7 @@ import asyncio
 import logging
 import re
 import shutil
+import subprocess
 import tempfile
 import zipfile
 from pathlib import Path
@@ -272,7 +273,14 @@ class SaveSigner:
                     with zipfile.ZipFile(archive_path, "r") as archive:
                         archive.extractall(extract_dir)
                 except Exception:
-                    raise ValueError("Unsupported format")
+                    # Fall back to 7z subprocess (handles .rar and others)
+                    try:
+                        subprocess.run(
+                            ["7z", "x", str(archive_path), f"-o{extract_dir}"],
+                            check=True, capture_output=True,
+                        )
+                    except Exception:
+                        raise ValueError("Unsupported format")
 
             # Find the best .bin file to bruteforce:
             # Priority 1: slot files (e.g. 001Slot.bin, SaveSlot.bin)
@@ -443,7 +451,14 @@ class SaveSigner:
                     with zipfile.ZipFile(archive_path, "r") as archive:
                         archive.extractall(extract_dir)
                 except Exception:
-                    raise ValueError("Unsupported format")
+                    # Fall back to 7z subprocess (handles .rar and others)
+                    try:
+                        subprocess.run(
+                            ["7z", "x", str(archive_path), f"-o{extract_dir}"],
+                            check=True, capture_output=True,
+                        )
+                    except Exception:
+                        raise ValueError("Unsupported format")
 
             # Copy all .bin save files to input directory
             for file_path in extract_dir.rglob("*.bin"):
