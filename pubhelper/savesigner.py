@@ -7,8 +7,8 @@ Handles bruteforce and re-signing operations for RE Engine saves.
 import asyncio
 import logging
 import re
+import rarfile
 import shutil
-import subprocess
 import tempfile
 import zipfile
 from pathlib import Path
@@ -259,9 +259,6 @@ class SaveSigner:
             extract_dir.mkdir()
             input_dir.mkdir()
 
-            # Resolve 7z binary path (handles environments where /usr/bin is not in PATH)
-            seven_z_path = shutil.which("7z") or shutil.which("7za") or "7z"
-
             # Extract archive
             archive_path = tmpdir_path / "archive"
             archive_path.write_bytes(save_archive)
@@ -271,12 +268,10 @@ class SaveSigner:
             log.debug("run_bruteforce: archive magic bytes (first 10): %r", magic)
 
             if save_archive.startswith(b"Rar!\x1a\x07"):
-                # RAR (v4/v5) — py7zr and zipfile cannot handle it
+                # RAR (v4/v5) — use rarfile
                 try:
-                    subprocess.run(
-                        [seven_z_path, "x", str(archive_path), f"-o{extract_dir}"],
-                        check=True, capture_output=True,
-                    )
+                    with rarfile.RarFile(archive_path) as archive:
+                        archive.extractall(extract_dir)
                 except Exception as exc:
                     log.error(
                         "run_bruteforce: RAR extraction failed! Magic bytes: %r, error: %s",
@@ -284,39 +279,27 @@ class SaveSigner:
                     )
                     raise ValueError("Unsupported format")
             elif save_archive.startswith(b"7z\xbc\xaf\x27\x1c"):
-                # 7z — try py7zr first, fall back to 7z subprocess
+                # 7z — use py7zr
                 try:
                     with py7zr.SevenZipFile(archive_path, "r") as archive:
                         archive.extractall(extract_dir)
-                except Exception:
-                    try:
-                        subprocess.run(
-                            [seven_z_path, "x", str(archive_path), f"-o{extract_dir}"],
-                            check=True, capture_output=True,
-                        )
-                    except Exception as exc:
-                        log.error(
-                            "run_bruteforce: 7z extraction failed! Magic bytes: %r, error: %s",
-                            magic, exc,
-                        )
-                        raise ValueError("Unsupported format")
+                except Exception as exc:
+                    log.error(
+                        "run_bruteforce: 7z extraction failed! Magic bytes: %r, error: %s",
+                        magic, exc,
+                    )
+                    raise ValueError("Unsupported format")
             elif save_archive.startswith(b"PK\x03\x04") or save_archive.startswith(b"PK\x05\x06"):
-                # ZIP — try zipfile first, fall back to 7z subprocess
+                # ZIP — use zipfile
                 try:
                     with zipfile.ZipFile(archive_path, "r") as archive:
                         archive.extractall(extract_dir)
-                except Exception:
-                    try:
-                        subprocess.run(
-                            [seven_z_path, "x", str(archive_path), f"-o{extract_dir}"],
-                            check=True, capture_output=True,
-                        )
-                    except Exception as exc:
-                        log.error(
-                            "run_bruteforce: ZIP extraction failed! Magic bytes: %r, error: %s",
-                            magic, exc,
-                        )
-                        raise ValueError("Unsupported format")
+                except Exception as exc:
+                    log.error(
+                        "run_bruteforce: ZIP extraction failed! Magic bytes: %r, error: %s",
+                        magic, exc,
+                    )
+                    raise ValueError("Unsupported format")
             else:
                 log.error(
                     "run_bruteforce: unknown archive format! Magic bytes: %r, "
@@ -480,9 +463,6 @@ class SaveSigner:
             extract_dir.mkdir()
             input_dir.mkdir()
 
-            # Resolve 7z binary path (handles environments where /usr/bin is not in PATH)
-            seven_z_path = shutil.which("7z") or shutil.which("7za") or "7z"
-
             # Extract archive
             archive_path = tmpdir_path / "archive"
             archive_path.write_bytes(save_archive)
@@ -492,12 +472,10 @@ class SaveSigner:
             log.debug("run_resign: archive magic bytes (first 10): %r", magic)
 
             if save_archive.startswith(b"Rar!\x1a\x07"):
-                # RAR (v4/v5) — py7zr and zipfile cannot handle it
+                # RAR (v4/v5) — use rarfile
                 try:
-                    subprocess.run(
-                        [seven_z_path, "x", str(archive_path), f"-o{extract_dir}"],
-                        check=True, capture_output=True,
-                    )
+                    with rarfile.RarFile(archive_path) as archive:
+                        archive.extractall(extract_dir)
                 except Exception as exc:
                     log.error(
                         "run_resign: RAR extraction failed! Magic bytes: %r, error: %s",
@@ -505,39 +483,27 @@ class SaveSigner:
                     )
                     raise ValueError("Unsupported format")
             elif save_archive.startswith(b"7z\xbc\xaf\x27\x1c"):
-                # 7z — try py7zr first, fall back to 7z subprocess
+                # 7z — use py7zr
                 try:
                     with py7zr.SevenZipFile(archive_path, "r") as archive:
                         archive.extractall(extract_dir)
-                except Exception:
-                    try:
-                        subprocess.run(
-                            [seven_z_path, "x", str(archive_path), f"-o{extract_dir}"],
-                            check=True, capture_output=True,
-                        )
-                    except Exception as exc:
-                        log.error(
-                            "run_resign: 7z extraction failed! Magic bytes: %r, error: %s",
-                            magic, exc,
-                        )
-                        raise ValueError("Unsupported format")
+                except Exception as exc:
+                    log.error(
+                        "run_resign: 7z extraction failed! Magic bytes: %r, error: %s",
+                        magic, exc,
+                    )
+                    raise ValueError("Unsupported format")
             elif save_archive.startswith(b"PK\x03\x04") or save_archive.startswith(b"PK\x05\x06"):
-                # ZIP — try zipfile first, fall back to 7z subprocess
+                # ZIP — use zipfile
                 try:
                     with zipfile.ZipFile(archive_path, "r") as archive:
                         archive.extractall(extract_dir)
-                except Exception:
-                    try:
-                        subprocess.run(
-                            [seven_z_path, "x", str(archive_path), f"-o{extract_dir}"],
-                            check=True, capture_output=True,
-                        )
-                    except Exception as exc:
-                        log.error(
-                            "run_resign: ZIP extraction failed! Magic bytes: %r, error: %s",
-                            magic, exc,
-                        )
-                        raise ValueError("Unsupported format")
+                except Exception as exc:
+                    log.error(
+                        "run_resign: ZIP extraction failed! Magic bytes: %r, error: %s",
+                        magic, exc,
+                    )
+                    raise ValueError("Unsupported format")
             else:
                 log.error(
                     "run_resign: unknown archive format! Magic bytes: %r, "

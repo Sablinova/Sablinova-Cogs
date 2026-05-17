@@ -20,6 +20,7 @@ from urllib.parse import unquote, urlparse
 import aiohttp
 import discord
 import py7zr
+import rarfile
 from discord import app_commands
 from redbot.core import Config, commands
 from redbot.core.bot import Red
@@ -3074,11 +3075,8 @@ class SabPubHelper(commands.Cog):
                 with py7zr.SevenZipFile(archive_path, "r") as z:
                     z.extractall(extract_dir)
             elif fmt == "rar":
-                import subprocess
-                subprocess.run(
-                    ["7z", "x", str(archive_path), f"-o{extract_dir}"],
-                    check=True, capture_output=True,
-                )
+                with rarfile.RarFile(archive_path, "r") as z:
+                    z.extractall(extract_dir)
             else:  # zip
                 with zipfile.ZipFile(archive_path, "r") as z:
                     z.extractall(extract_dir)
@@ -3220,16 +3218,8 @@ class SabPubHelper(commands.Cog):
                                 with py7zr.SevenZipFile(basefiles_path, "r") as z:
                                     names = z.getnames()
                             elif fmt == "rar":
-                                import subprocess
-                                result = subprocess.run(
-                                    ["7z", "l", "-ba", str(basefiles_path)],
-                                    check=True, capture_output=True, text=True,
-                                )
-                                names = []
-                                for line in result.stdout.splitlines():
-                                    parts = line.split()
-                                    if len(parts) >= 5:
-                                        names.append(parts[-1])
+                                with rarfile.RarFile(basefiles_path, "r") as z:
+                                    names = z.namelist()
                             else:  # zip
                                 with zipfile.ZipFile(basefiles_path, "r") as z:
                                     names = z.namelist()
@@ -3370,17 +3360,8 @@ class SabPubHelper(commands.Cog):
                 with py7zr.SevenZipFile(archive_path, "r") as archive:
                     files = sorted(archive.getnames())
             elif fmt == "rar":
-                import subprocess
-                result = subprocess.run(
-                    ["7z", "l", "-ba", str(archive_path)],
-                    check=True, capture_output=True, text=True,
-                )
-                files = []
-                for line in result.stdout.splitlines():
-                    parts = line.split()
-                    if len(parts) >= 5:
-                        files.append(parts[-1])
-                files = sorted(files)
+                with rarfile.RarFile(archive_path, "r") as archive:
+                    files = sorted(archive.namelist())
             else:  # zip
                 with zipfile.ZipFile(archive_path, "r") as archive:
                     files = sorted(archive.namelist())
@@ -3606,11 +3587,8 @@ class SabPubHelper(commands.Cog):
                     with py7zr.SevenZipFile(archive_path, "r") as z:
                         z.extractall(extract_dir)
                 elif fmt == "rar":
-                    import subprocess
-                    subprocess.run(
-                        ["7z", "x", str(archive_path), f"-o{extract_dir}"],
-                        check=True, capture_output=True,
-                    )
+                    with rarfile.RarFile(archive_path, "r") as z:
+                        z.extractall(extract_dir)
                 else:  # zip
                     with zipfile.ZipFile(archive_path, "r") as z:
                         z.extractall(extract_dir)
@@ -3896,11 +3874,8 @@ class SabPubHelper(commands.Cog):
                             with py7zr.SevenZipFile(basefiles_path, "r") as z:
                                 z.extractall(extract_path)
                         elif fmt == "rar":
-                            import subprocess
-                            subprocess.run(
-                                ["7z", "x", str(basefiles_path), f"-o{extract_path}"],
-                                check=True, capture_output=True,
-                            )
+                            with rarfile.RarFile(basefiles_path, "r") as z:
+                                z.extractall(extract_path)
                         else:
                             with zipfile.ZipFile(basefiles_path, "r") as z:
                                 z.extractall(extract_path)
@@ -5157,11 +5132,8 @@ class SabPubHelper(commands.Cog):
                     with py7zr.SevenZipFile(basefiles_path, "r") as z:
                         z.extractall(extract_dir)
                 elif fmt == "rar":
-                    import subprocess
-                    subprocess.run(
-                        ["7z", "x", str(basefiles_path), f"-o{extract_dir}"],
-                        check=True, capture_output=True,
-                    )
+                    with rarfile.RarFile(basefiles_path, "r") as z:
+                        z.extractall(extract_dir)
                 else:  # zip
                     with zipfile.ZipFile(basefiles_path, "r") as z:
                         z.extractall(extract_dir)
