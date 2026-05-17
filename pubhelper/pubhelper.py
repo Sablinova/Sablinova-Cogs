@@ -580,6 +580,13 @@ def _detect_archive_format(content: bytes) -> str | None:
         return "zip"
     elif content.startswith(b"Rar!\x1a\x07"):
         return "rar"
+    # Unknown — log the first bytes for debugging
+    magic = content[:10] if len(content) >= 10 else content
+    log.error(
+        "_detect_archive_format: unknown format! Magic bytes (first %d): %r, "
+        "total length: %d bytes",
+        len(magic), magic, len(content),
+    )
     return None
 
 
@@ -5097,6 +5104,13 @@ class SabPubHelper(commands.Cog):
 
                     if b"This content is no longer available" in content:
                         return "Link expired"
+
+                    # Log what we got for archive debugging
+                    magic = content[:10] if len(content) >= 10 else content
+                    log.debug(
+                        "_download_file: downloaded %d bytes, magic: %r, URL: %s",
+                        len(content), magic, url[:120],
+                    )
 
                     return content
 
