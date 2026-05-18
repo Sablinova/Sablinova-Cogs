@@ -4605,12 +4605,12 @@ class SabPubHelper(commands.Cog):
                     if file:
                         await _send_file_with_fallback(
                             interaction.followup.send,
-                            {},
+                            {"content": inst} if inst else {},
                             file,
                             anon_data,
                             anon_filename,
                         )
-                    if inst:
+                    elif inst:
                         await interaction.followup.send(inst)
                     return
                 except Exception as e:
@@ -4623,7 +4623,7 @@ class SabPubHelper(commands.Cog):
                         file.fp.seek(0)
                 await _send_file_with_fallback(
                     interaction.user.send,
-                    {"content": content},
+                    {"content": f"{content}\n\n{inst}"} if inst else {"content": content},
                     file,
                     anon_data,
                     anon_filename,
@@ -4651,7 +4651,7 @@ class SabPubHelper(commands.Cog):
                     try:
                         await _send_file_with_fallback(
                             ch.send,
-                            {"content": mention_content},
+                            {"content": f"{mention_content}\n\n{inst}"} if inst else {"content": mention_content},
                             file,
                             anon_data,
                             anon_filename,
