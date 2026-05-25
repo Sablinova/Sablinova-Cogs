@@ -1,0 +1,15 @@
+{
+    "name": "Denuvoauto",
+    "short": "Manual-activation support wizard",
+    "description": "Guided triage wizard for Denuvo offline/manual-activation support. Collects diagnostics (pub_dep.txt / pub_crash.txt), asks structured questions, and routes users to staff. Token/DRM-sensitive steps are manual staff gates — this cog does NOT automate DRM circumvention.",
+    "end_user_data_statement": "This cog stores transient in-memory session state (current wizard node and user-provided answers) per active session. Guild-level configuration (staff role/channel IDs) is stored via Red Config. No personal data is persisted beyond Discord IDs.",
+    "install_msg": "Denuvoauto installed. Configure with `[p]denuvoautoset staffrole <role>` and `[p]denuvoautoset staffchannel <channel>`. Users start the wizard with `/denuvoauto`. Note: all token/DRM-sensitive steps are manual staff gates by design.",
+    "author": ["Sablinova"],
+    "required_cogs": {},
+    "requirements": [],
+    "tags": ["denuvo", "support", "wizard", "offline", "activation"],
+    "min_bot_version": "3.5.0",
+    "hidden": false,
+    "disabled": false,
+    "type": "COG"
+}
