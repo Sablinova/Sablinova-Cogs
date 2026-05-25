@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import tempfile
+import time
 import zipfile
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -4679,17 +4680,33 @@ class SabPubHelper(commands.Cog):
 
         progress_task = None
         log_message = None
+        start_time = time.monotonic()
+        cancelled = False
 
         if cli_log_channel:
             try:
                 log_message = await cli_log_channel.send(
-                    f"🔄 **Savebrute started for {interaction.user.name}**\nGame: {SAVE_PROFILES[game]['name']}\nChannel: {interaction.channel.mention}\n```\nWaiting for logs...\n```"
+                    (
+                        f"🟢 **Savebrute — running**\n"
+                        f"User: {interaction.user.mention}   Game: {SAVE_PROFILES[game]['name']}   "
+                        f"Channel: {interaction.channel.mention}\n"
+                        f"Lines: 0   Elapsed: 0:00\n"
+                        f"```\nStarting…\n```"
+                    )
                 )
             except Exception as e:
                 log.error(f"Failed to send initial log message: {e}")
                 cli_log_channel = None
 
         log_buffer = []
+
+        def _fmt_duration(seconds: float) -> str:
+            seconds = max(0, int(seconds))
+            m, s = divmod(seconds, 60)
+            if m >= 60:
+                h, m = divmod(m, 60)
+                return f"{h:d}:{m:02d}:{s:02d}"
+            return f"{m:d}:{s:02d}"
 
         async def log_updater():
             while True:
@@ -4722,7 +4739,14 @@ class SabPubHelper(commands.Cog):
                     if cli_log_channel and log_message:
                         try:
                             await log_message.edit(
-                                content=f"🔄 **Savebrute running for {interaction.user.name}**\nGame: {SAVE_PROFILES[game]['name']}\nChannel: {interaction.channel.mention}\n```\n{log_text}\n```"
+                                content=(
+                                    f"🟢 **Savebrute — running**\n"
+                                    f"User: {interaction.user.mention}   Game: {SAVE_PROFILES[game]['name']}   "
+                                    f"Channel: {interaction.channel.mention}\n"
+                                    f"Lines: {len(log_buffer)}   Elapsed: "
+                                    f"{_fmt_duration(time.monotonic() - start_time)}\n"
+                                    f"```\n{log_text}\n```"
+                                )
                             )
                         except Exception as e:
                             log.warning(f"Failed to update log message: {e}")
@@ -4864,6 +4888,7 @@ class SabPubHelper(commands.Cog):
             success = True
 
         except asyncio.CancelledError:
+            cancelled = True
             await send_final_message(f"🛑 **Savebrute Cancelled manually by user.**")
         except Exception as e:
             log.error(f"Savebrute error: {e}", exc_info=True)
@@ -4879,15 +4904,31 @@ class SabPubHelper(commands.Cog):
                 progress_task.cancel()
                 if cli_log_channel and log_message:
                     try:
-                        icon = "✅" if success else "❌"
-                        status_text = "finished" if success else "failed"
+                        if cancelled:
+                            icon = "🛑"
+                            status_text = "cancelled"
+                        elif success:
+                            icon = "✅"
+                            status_text = "complete"
+                        else:
+                            icon = "❌"
+                            status_text = "failed"
+
                         final_logs = (
                             "\n".join(log_buffer[-10:])
                             if log_buffer
                             else "No logs produced."
                         )
+                        duration_text = _fmt_duration(time.monotonic() - start_time)
+                        line_count = len(log_buffer)
                         await log_message.edit(
-                            content=f"{icon} **Savebrute {status_text} for {interaction.user.name}**\nGame: {SAVE_PROFILES[game]['name']}\nChannel: {interaction.channel.mention}\n```\n{final_logs}\n```"
+                            content=(
+                                f"{icon} **Savebrute — {status_text}**\n"
+                                f"User: {interaction.user.mention}   Game: {SAVE_PROFILES[game]['name']}   "
+                                f"Channel: {interaction.channel.mention}\n"
+                                f"Lines: {line_count}   Duration: {duration_text}\n"
+                                f"```\n{final_logs}\n```"
+                            )
                         )
                     except Exception:
                         pass
