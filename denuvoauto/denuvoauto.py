@@ -59,6 +59,62 @@ class N:
 
 MANUAL_GATES = {N.COLDCLIENT_CHECK, N.APPLY_TOKEN, N.ANTI_TAMPER_SUBCODE, N.HYPERVISOR}
 
+DEFAULT_TAGS: dict[str, str] = {
+    "steam_install_steps": "Please make sure Steam is installed, then try launching the game again.",
+    "run_game": "Have you tried running the game and reached the current error state?",
+    "minus_bitdefender": "Noted. Continue after temporarily excluding the relevant game path if staff already instructed that step.",
+    "coldclient_check": (
+        "🛑 **Manual staff step.**\n"
+        "ColdClient-related review requires a staff member. Please wait — "
+        "staff will assist you here. Do not attempt unsafe workarounds."
+    ),
+    "minus_pcl": "PCL/launch context noted. Moving to the next compatibility check.",
+    "ue_guide": "UE branch selected. If available, upload `pub_dep.txt` and `pub_crash.txt` now.",
+    "normal_guide": "Standard branch selected. If available, upload `pub_dep.txt` and `pub_crash.txt` now.",
+    "wait_for_txts": "Upload `pub_dep.txt` and/or `pub_crash.txt`, then press **I uploaded the txts**. If you do not have them, press **Skip / no logs**.",
+    "verify_game": "Have you already verified/rechecked the game files in the intended launcher context?",
+    "apply_token": (
+        "🛑 **Manual staff step.**\n"
+        "Token application requires a staff member. Please wait — "
+        "staff will assist you here. Do not attempt unsafe workarounds."
+    ),
+    "anti_tamper_prompt": "Choose the anti-tamper subcode shown, if any.",
+    "anti_tamper_wait": (
+        "🛑 **Manual staff step.**\n"
+        "Anti-tamper code handling is reviewed by staff only. Please wait — "
+        "staff will assist you here without unsafe automation."
+    ),
+    "hypervisor": (
+        "🛑 **Manual staff step.**\n"
+        "Hypervisor-related troubleshooting needs human staff review. Please wait — "
+        "staff will assist you here. Do not try risky bypass steps."
+    ),
+    "save_gone": "Save-loss issues should be reviewed by staff with your context preserved.",
+    "auto_save": "Autosave issues should be reviewed by staff with the rest of your session details.",
+    "describe_diff": "Thanks. Staff will review the session report and ask for any extra detail they need.",
+}
+
+MANUAL_GATE_TAG_KEYS: set[str] = {"coldclient_check", "apply_token", "anti_tamper_wait", "hypervisor"}
+
+TAG_USED_IN: dict[str, str] = {
+    "steam_install_steps": "Shown after the Steam-installed=No branch.",
+    "run_game": "YesNo prompt before bitdefender check.",
+    "minus_bitdefender": "Bitdefender exclusion follow-up.",
+    "coldclient_check": "ColdClient manual staff gate message.",
+    "minus_pcl": "PCL/launch follow-up before UE check.",
+    "ue_guide": "UE branch — invites pub_dep/pub_crash uploads.",
+    "normal_guide": "Standard branch — invites pub_dep/pub_crash uploads.",
+    "wait_for_txts": "Wait-for-attachment prompt with upload/skip buttons.",
+    "verify_game": "YesNo prompt before the token gate.",
+    "apply_token": "Token application manual staff gate message.",
+    "anti_tamper_prompt": "Subcode select prompt (non-gate).",
+    "anti_tamper_wait": "Anti-tamper manual staff gate message after subcode chosen.",
+    "hypervisor": "Hypervisor manual staff gate message.",
+    "save_gone": "Save-loss branch handoff intro.",
+    "auto_save": "Autosave-issue branch handoff intro.",
+    "describe_diff": "Generic 'describe difference' staff handoff intro.",
+}
+
 
 @dataclass
 class Session:
@@ -266,6 +322,163 @@ class UploadedView(BaseWizardView):
         await self.cog._advance(self.session, channel=interaction.channel)
 
 
+class SetupWizardView(discord.ui.View):
+    def __init__(self, cog: "Denuvoauto", guild: discord.Guild, owner_id: int, keys: list[str]) -> None:
+        super().__init__(timeout=900)
+        self.cog = cog
+        self.guild = guild
+        self.owner_id = owner_id
+        self.keys = keys
+        self.index = 0
+        self.changes: dict[str, str] = {}
+        self.message: Optional[discord.Message] = None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user is None or interaction.user.id != self.owner_id:
+            try:
+                await interaction.response.send_message(
+                    "This setup wizard is owned by someone else.", ephemeral=True
+                )
+            except Exception:
+                log.exception("setup wizard ownership reply failed")
+            return False
+        return True
+
+    async def on_timeout(self) -> None:
+        try:
+            if self.message is not None:
+                await self.message.edit(
+                    content="Setup wizard timed out — run `[p]denuvoautosetup` again to continue.",
+                    embed=None,
+                    view=None,
+                )
+        except Exception:
+            log.exception("Failed to edit timed out setup wizard view")
+
+    async def build_step_embed(self) -> discord.Embed:
+        key = self.keys[self.index]
+        default = DEFAULT_TAGS.get(key, "")
+        tags = await self.cog.config.guild(self.guild).tags()
+        current = tags.get(key) if isinstance(tags, dict) else None
+        is_gate = key in MANUAL_GATE_TAG_KEYS
+        embed = discord.Embed(title=f"Setup [{self.index + 1}/{len(self.keys)}]: {key}")
+        if is_gate:
+            embed.description = (
+                "⚠️ This is a MANUAL STAFF GATE message. The text only changes what the user sees while waiting — "
+                "the wait-and-handoff behavior cannot be disabled."
+            )
+        embed.add_field(name="Used in", value=TAG_USED_IN.get(key, "—"), inline=False)
+        embed.add_field(name="Default", value=f"```\n{default[:1000]}\n```", inline=False)
+        embed.add_field(
+            name="Current override",
+            value=(f"```\n{current[:1000]}\n```" if current else "(unset — using default)"),
+            inline=False,
+        )
+        return embed
+
+    async def _update_message(
+        self,
+        interaction: discord.Interaction,
+        *,
+        embed: discord.Embed,
+        view: Optional[discord.ui.View],
+    ) -> None:
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.edit_message(embed=embed, view=view)
+                return
+        except Exception:
+            log.exception("setup wizard inline edit failed")
+        try:
+            if self.message is not None:
+                await self.message.edit(embed=embed, view=view)
+        except Exception:
+            log.exception("setup wizard fallback edit failed")
+
+    async def advance_step(self, interaction: discord.Interaction) -> None:
+        self.index += 1
+        if self.index >= len(self.keys):
+            summary = discord.Embed(
+                title="Setup complete",
+                description="\n".join(
+                    f"`{k}`: {'updated' if k in self.changes else 'unchanged'}" for k in self.keys
+                )[:4000],
+            )
+            await self._update_message(interaction, embed=summary, view=None)
+            self.stop()
+            return
+        embed = await self.build_step_embed()
+        await self._update_message(interaction, embed=embed, view=self)
+
+    @discord.ui.button(label="Set", style=discord.ButtonStyle.primary)
+    async def set_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        key = self.keys[self.index]
+        tags = await self.cog.config.guild(self.guild).tags()
+        current = tags.get(key) if isinstance(tags, dict) else None
+        modal = TagModal(self, key, current or DEFAULT_TAGS.get(key, ""))
+        try:
+            await interaction.response.send_modal(modal)
+        except Exception:
+            log.exception("setup wizard modal send failed")
+
+    @discord.ui.button(label="Keep current", style=discord.ButtonStyle.secondary)
+    async def keep_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self.advance_step(interaction)
+
+    @discord.ui.button(label="Skip / unset", style=discord.ButtonStyle.danger)
+    async def skip_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        key = self.keys[self.index]
+        try:
+            async with self.cog.config.guild(self.guild).tags() as tags:
+                tags.pop(key, None)
+            self.changes[key] = "(unset)"
+        except Exception:
+            log.exception("setup wizard unset failed for %s", key)
+        await self.advance_step(interaction)
+
+
+class TagModal(discord.ui.Modal):
+    def __init__(self, parent: SetupWizardView, key: str, prefill: str) -> None:
+        super().__init__(title=f"Edit tag: {key}"[:45])
+        self.parent = parent
+        self.key = key
+        self.input = discord.ui.TextInput(
+            label="Tag content",
+            style=discord.TextStyle.paragraph,
+            required=True,
+            max_length=2000,
+            default=prefill[:2000] if prefill else None,
+        )
+        self.add_item(self.input)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        value = str(self.input.value or "").strip()
+        if not value:
+            try:
+                await interaction.response.send_message("Empty value — keeping current.", ephemeral=True)
+            except Exception:
+                log.exception("modal empty reply failed")
+            await self.parent.advance_step(interaction)
+            return
+        try:
+            async with self.parent.cog.config.guild(self.parent.guild).tags() as tags:
+                tags[self.key] = value
+            self.parent.changes[self.key] = "updated"
+        except Exception:
+            log.exception("modal write failed for %s", self.key)
+        await self.parent.advance_step(interaction)
+
+
+def _editor_check():
+    async def predicate(ctx: commands.Context) -> bool:
+        cog: Denuvoauto = ctx.cog  # type: ignore[assignment]
+        if cog is None or ctx.guild is None or not isinstance(ctx.author, discord.Member):
+            return False
+        return await cog._is_editor(ctx.author)
+
+    return commands.check(predicate)
+
+
 class Denuvoauto(commands.Cog):
     """Manual-activation support wizard for Denuvo offline/no-internet users.
 
@@ -281,7 +494,13 @@ class Denuvoauto(commands.Cog):
     def __init__(self, bot: Red) -> None:
         self.bot = bot
         self.config = Config.get_conf(self, identifier=948273615, force_registration=True)
-        self.config.register_guild(staff_role_id=None, staff_channel_id=None, log_channel_id=None)
+        self.config.register_guild(
+            staff_role_id=None,
+            staff_channel_id=None,
+            log_channel_id=None,
+            tags={},
+            editor_role_ids=[],
+        )
         self.sessions: dict[tuple[int, int, int], Session] = {}
         self._nodes: dict[str, Callable[[Session, _Target], Any]] = {
             N.START: self._node_start,
@@ -336,6 +555,44 @@ class Denuvoauto(commands.Cog):
 
     def _clear_session(self, guild_id: int, channel_id: int, user_id: int) -> None:
         self.sessions.pop((guild_id, channel_id, user_id), None)
+
+    async def _is_editor(self, member: discord.Member) -> bool:
+        try:
+            if member is None:
+                return False
+            if getattr(member.guild_permissions, "manage_guild", False):
+                return True
+            try:
+                if await self.bot.is_owner(member):
+                    return True
+            except Exception:
+                log.exception("is_owner check failed")
+            if member.guild is None:
+                return False
+            editor_ids = await self.config.guild(member.guild).editor_role_ids()
+            editor_set = set(editor_ids or [])
+            return any(role.id in editor_set for role in member.roles)
+        except Exception:
+            log.exception("_is_editor failed")
+            return False
+
+    async def _render_tag(self, guild: Optional[discord.Guild], key: str) -> str:
+        default = DEFAULT_TAGS.get(key, "")
+        if guild is None:
+            return default
+        try:
+            tags = await self.config.guild(guild).tags()
+            if isinstance(tags, dict):
+                value = tags.get(key)
+                if value:
+                    return value
+            return default
+        except Exception:
+            log.exception("tag render failed for %s", key)
+            return default
+
+    def _session_guild(self, session: Session) -> Optional[discord.Guild]:
+        return self.bot.get_guild(session.guild_id)
 
     async def _advance(
         self,
@@ -455,6 +712,119 @@ class Denuvoauto(commands.Cog):
         self.sessions = {k: v for k, v in self.sessions.items() if k[0] != ctx.guild.id}
         await ctx.send("Cleared active Denuvoauto sessions for this guild.")
 
+    @denuvoautoset.group(name="tags")
+    @_editor_check()
+    @commands.guild_only()
+    async def denuvoautoset_tags(self, ctx: commands.Context) -> None:
+        if ctx.invoked_subcommand is None:
+            await ctx.send("Use a subcommand: set, get, clear, list, reset.")
+
+    @denuvoautoset_tags.command(name="set")
+    async def denuvoautoset_tags_set(self, ctx: commands.Context, key: str, *, value: str) -> None:
+        if key not in DEFAULT_TAGS:
+            await ctx.send(f"Unknown tag key: `{key}`. Use `{ctx.clean_prefix}denuvoautoset tags list`.")
+            return
+        if len(value) > 2000:
+            await ctx.send("Tag value too long (max 2000 characters).")
+            return
+        async with self.config.guild(ctx.guild).tags() as tags:
+            tags[key] = value
+        await ctx.send(f"Tag `{key}` updated.")
+
+    @denuvoautoset_tags.command(name="get")
+    async def denuvoautoset_tags_get(self, ctx: commands.Context, key: str) -> None:
+        if key not in DEFAULT_TAGS:
+            await ctx.send(f"Unknown tag key: `{key}`.")
+            return
+        tags = await self.config.guild(ctx.guild).tags()
+        value = tags.get(key) if isinstance(tags, dict) else None
+        if value:
+            await ctx.send(f"`{key}` override:\n```\n{value[:1800]}\n```")
+        else:
+            await ctx.send(f"`{key}` is unset; falls back to default:\n```\n{DEFAULT_TAGS[key][:1800]}\n```")
+
+    @denuvoautoset_tags.command(name="clear")
+    async def denuvoautoset_tags_clear(self, ctx: commands.Context, key: str) -> None:
+        if key not in DEFAULT_TAGS:
+            await ctx.send(f"Unknown tag key: `{key}`.")
+            return
+        async with self.config.guild(ctx.guild).tags() as tags:
+            tags.pop(key, None)
+        await ctx.send(f"Tag `{key}` cleared. Default text will be used.")
+
+    @denuvoautoset_tags.command(name="list")
+    async def denuvoautoset_tags_list(self, ctx: commands.Context) -> None:
+        tags = await self.config.guild(ctx.guild).tags() or {}
+        embed = discord.Embed(title="Denuvoauto tag overrides")
+        lines = []
+        for key in DEFAULT_TAGS:
+            gate = " (MANUAL GATE)" if key in MANUAL_GATE_TAG_KEYS else ""
+            status = "set" if (isinstance(tags, dict) and tags.get(key)) else "default"
+            lines.append(f"`{key}`{gate} — {status}")
+        embed.description = "\n".join(lines)[:4000]
+        await ctx.send(embed=embed)
+
+    @denuvoautoset_tags.command(name="reset")
+    async def denuvoautoset_tags_reset(self, ctx: commands.Context) -> None:
+        await self.config.guild(ctx.guild).tags.set({})
+        await ctx.send("All tag overrides cleared.")
+
+    @commands.group(name="denuvoautoowner")
+    @commands.is_owner()
+    @commands.guild_only()
+    async def denuvoautoowner(self, ctx: commands.Context) -> None:
+        if ctx.invoked_subcommand is None:
+            await ctx.send("Use a subcommand: addeditor, removeeditor, showeditors.")
+
+    @denuvoautoowner.command(name="addeditor")
+    async def denuvoautoowner_addeditor(self, ctx: commands.Context, role: discord.Role) -> None:
+        async with self.config.guild(ctx.guild).editor_role_ids() as ids:
+            if role.id not in ids:
+                ids.append(role.id)
+        await ctx.send(
+            f"Added {role.mention} to Denuvoauto editor roles.",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    @denuvoautoowner.command(name="removeeditor")
+    async def denuvoautoowner_removeeditor(self, ctx: commands.Context, role: discord.Role) -> None:
+        async with self.config.guild(ctx.guild).editor_role_ids() as ids:
+            try:
+                ids.remove(role.id)
+            except ValueError:
+                pass
+        await ctx.send(
+            f"Removed {role.mention} from Denuvoauto editor roles.",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    @denuvoautoowner.command(name="showeditors")
+    async def denuvoautoowner_showeditors(self, ctx: commands.Context) -> None:
+        ids = await self.config.guild(ctx.guild).editor_role_ids()
+        if not ids:
+            await ctx.send(
+                "No editor roles configured. Only admins (manage_guild) and the bot owner can edit tags."
+            )
+            return
+        mentions = []
+        for rid in ids:
+            role = ctx.guild.get_role(rid)
+            mentions.append(role.mention if role else f"`{rid}` (missing)")
+        await ctx.send(
+            "Editor roles: " + ", ".join(mentions),
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    @commands.command(name="denuvoautosetup")
+    @_editor_check()
+    @commands.guild_only()
+    async def denuvoautosetup(self, ctx: commands.Context) -> None:
+        keys = list(DEFAULT_TAGS.keys())
+        view = SetupWizardView(self, ctx.guild, ctx.author.id, keys)
+        embed = await view.build_step_embed()
+        msg = await ctx.send(embed=embed, view=view)
+        view.message = msg
+
     async def _node_start(self, session: Session, target: _Target) -> None:
         session.node = N.ERROR_SELECT
         await self._advance(session, channel=target.channel)
@@ -470,12 +840,14 @@ class Denuvoauto(commands.Cog):
     async def _node_steam_install_steps(self, session: Session, target: _Target) -> None:
         session.answers["steam_steps"] = "Asked user to ensure Steam is installed before retrying."
         session.node = N.RUN_GAME
-        await target.send(content="Please make sure Steam is installed, then try launching the game again.")
+        text = await self._render_tag(self._session_guild(session), "steam_install_steps")
+        await target.send(content=text)
         await self._advance(session, channel=target.channel)
 
     async def _node_run_game(self, session: Session, target: _Target) -> None:
         view = YesNoView(self, session, N.BITDEFENDER_CHECK, N.SCREENSHOT_ERROR)
-        await self._send_with_view(target, "Have you tried running the game and reached the current error state?", view=view)
+        text = await self._render_tag(self._session_guild(session), "run_game")
+        await self._send_with_view(target, text, view=view)
 
     async def _node_bitdefender_check(self, session: Session, target: _Target) -> None:
         view = YesNoView(self, session, N.MINUS_BITDEFENDER, N.COLDCLIENT_CHECK)
@@ -484,23 +856,21 @@ class Denuvoauto(commands.Cog):
     async def _node_minus_bitdefender(self, session: Session, target: _Target) -> None:
         session.answers["bitdefender"] = "present"
         session.node = N.COLDCLIENT_CHECK
-        await target.send(content="Noted. Continue after temporarily excluding the relevant game path if staff already instructed that step.")
+        text = await self._render_tag(self._session_guild(session), "minus_bitdefender")
+        await target.send(content=text)
         await self._advance(session, channel=target.channel)
 
     async def _node_coldclient_check(self, session: Session, target: _Target) -> None:
         # MANUAL STAFF GATE — do not automate DRM/token steps
-        msg = (
-            "🛑 **Manual staff step.**\n"
-            "ColdClient-related review requires a staff member. Please wait — "
-            "staff will assist you here. Do not attempt unsafe workarounds."
-        )
+        msg = await self._render_tag(self._session_guild(session), "coldclient_check")
         await target.send(content=msg)
         session.node = N.STAFF_HANDOFF
         await self._advance(session, channel=target.channel)
 
     async def _node_minus_pcl(self, session: Session, target: _Target) -> None:
         session.node = N.UE_GAME_CHECK
-        await target.send(content="PCL/launch context noted. Moving to the next compatibility check.")
+        text = await self._render_tag(self._session_guild(session), "minus_pcl")
+        await target.send(content=text)
         await self._advance(session, channel=target.channel)
 
     async def _node_ue_game_check(self, session: Session, target: _Target) -> None:
@@ -509,19 +879,22 @@ class Denuvoauto(commands.Cog):
 
     async def _node_ue_guide(self, session: Session, target: _Target) -> None:
         session.node = N.WAIT_FOR_TXTS
-        await target.send(content="UE branch selected. If available, upload `pub_dep.txt` and `pub_crash.txt` now.")
+        text = await self._render_tag(self._session_guild(session), "ue_guide")
+        await target.send(content=text)
         await self._advance(session, channel=target.channel)
 
     async def _node_normal_guide(self, session: Session, target: _Target) -> None:
         session.node = N.WAIT_FOR_TXTS
-        await target.send(content="Standard branch selected. If available, upload `pub_dep.txt` and `pub_crash.txt` now.")
+        text = await self._render_tag(self._session_guild(session), "normal_guide")
+        await target.send(content=text)
         await self._advance(session, channel=target.channel)
 
     async def _node_wait_for_txts(self, session: Session, target: _Target) -> None:
         view = UploadedView(self, session)
+        text = await self._render_tag(self._session_guild(session), "wait_for_txts")
         await self._send_with_view(
             target,
-            "Upload `pub_dep.txt` and/or `pub_crash.txt`, then press **I uploaded the txts**. If you do not have them, press **Skip / no logs**.",
+            text,
             view=view,
         )
 
@@ -545,15 +918,12 @@ class Denuvoauto(commands.Cog):
 
     async def _node_verify_game(self, session: Session, target: _Target) -> None:
         view = YesNoView(self, session, N.APPLY_TOKEN, N.DESCRIBE_DIFF)
-        await self._send_with_view(target, "Have you already verified/rechecked the game files in the intended launcher context?", view=view)
+        text = await self._render_tag(self._session_guild(session), "verify_game")
+        await self._send_with_view(target, text, view=view)
 
     async def _node_apply_token(self, session: Session, target: _Target) -> None:
         # MANUAL STAFF GATE — do not automate DRM/token steps
-        msg = (
-            "🛑 **Manual staff step.**\n"
-            "Token application requires a staff member. Please wait — "
-            "staff will assist you here. Do not attempt unsafe workarounds."
-        )
+        msg = await self._render_tag(self._session_guild(session), "apply_token")
         await target.send(content=msg)
         session.node = N.STAFF_HANDOFF
         await self._advance(session, channel=target.channel)
@@ -569,27 +939,21 @@ class Denuvoauto(commands.Cog):
         await self._advance(session, channel=target.channel)
 
     async def _node_anti_tamper_subcode(self, session: Session, target: _Target) -> None:
+        guild = self._session_guild(session)
         if "anti_tamper_subcode" not in session.answers:
             view = AntiTamperSelectView(self, session)
-            await self._send_with_view(target, "Choose the anti-tamper subcode shown, if any.", view=view)
+            prompt = await self._render_tag(guild, "anti_tamper_prompt")
+            await self._send_with_view(target, prompt, view=view)
             return
         # MANUAL STAFF GATE — do not automate DRM/token steps
-        msg = (
-            "🛑 **Manual staff step.**\n"
-            "Anti-tamper code handling is reviewed by staff only. Please wait — "
-            "staff will assist you here without unsafe automation."
-        )
+        msg = await self._render_tag(guild, "anti_tamper_wait")
         await target.send(content=msg)
         session.node = N.STAFF_HANDOFF
         await self._advance(session, channel=target.channel)
 
     async def _node_hypervisor(self, session: Session, target: _Target) -> None:
         # MANUAL STAFF GATE — do not automate DRM/token steps
-        msg = (
-            "🛑 **Manual staff step.**\n"
-            "Hypervisor-related troubleshooting needs human staff review. Please wait — "
-            "staff will assist you here. Do not try risky bypass steps."
-        )
+        msg = await self._render_tag(self._session_guild(session), "hypervisor")
         await target.send(content=msg)
         session.node = N.STAFF_HANDOFF
         await self._advance(session, channel=target.channel)
@@ -632,19 +996,22 @@ class Denuvoauto(commands.Cog):
     async def _node_save_gone(self, session: Session, target: _Target) -> None:
         session.answers["save_issue"] = "save_gone"
         session.node = N.STAFF_HANDOFF
-        await target.send(content="Save-loss issues should be reviewed by staff with your context preserved.")
+        text = await self._render_tag(self._session_guild(session), "save_gone")
+        await target.send(content=text)
         await self._advance(session, channel=target.channel)
 
     async def _node_auto_save(self, session: Session, target: _Target) -> None:
         session.answers["save_issue"] = "auto_save"
         session.node = N.STAFF_HANDOFF
-        await target.send(content="Autosave issues should be reviewed by staff with the rest of your session details.")
+        text = await self._render_tag(self._session_guild(session), "auto_save")
+        await target.send(content=text)
         await self._advance(session, channel=target.channel)
 
     async def _node_describe_diff(self, session: Session, target: _Target) -> None:
         session.answers.setdefault("describe_diff", "User needs manual follow-up for details.")
         session.node = N.STAFF_HANDOFF
-        await target.send(content="Thanks. Staff will review the session report and ask for any extra detail they need.")
+        text = await self._render_tag(self._session_guild(session), "describe_diff")
+        await target.send(content=text)
         await self._advance(session, channel=target.channel)
 
     async def _node_staff_handoff(self, session: Session, target: _Target) -> None:
