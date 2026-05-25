@@ -4682,6 +4682,7 @@ class SabPubHelper(commands.Cog):
         log_message = None
         start_time = time.monotonic()
         cancelled = False
+        finalizing = {"done": False}
 
         if cli_log_channel:
             try:
@@ -4738,6 +4739,8 @@ class SabPubHelper(commands.Cog):
 
                     if cli_log_channel and log_message:
                         try:
+                            if finalizing["done"]:
+                                return
                             await log_message.edit(
                                 content=(
                                     f"🟢 **Savebrute — running**\n"
@@ -4838,10 +4841,11 @@ class SabPubHelper(commands.Cog):
 
             # Stop the progress updater so it can't overwrite messages during resign
             if progress_task and not progress_task.done():
+                finalizing["done"] = True
                 progress_task.cancel()
                 try:
                     await progress_task
-                except asyncio.CancelledError:
+                except (asyncio.CancelledError, Exception):
                     pass
                 progress_task = None
 
@@ -4901,37 +4905,43 @@ class SabPubHelper(commands.Cog):
                 self.active_brutes.pop(interaction.user.id, None)
 
             if progress_task:
+                finalizing["done"] = True
                 progress_task.cancel()
-                if cli_log_channel and log_message:
-                    try:
-                        if cancelled:
-                            icon = "🛑"
-                            status_text = "cancelled"
-                        elif success:
-                            icon = "✅"
-                            status_text = "complete"
-                        else:
-                            icon = "❌"
-                            status_text = "failed"
+                try:
+                    await progress_task
+                except (asyncio.CancelledError, Exception):
+                    pass
 
-                        final_logs = (
-                            "\n".join(log_buffer[-10:])
-                            if log_buffer
-                            else "No logs produced."
+            if cli_log_channel and log_message:
+                try:
+                    if cancelled:
+                        icon = "🛑"
+                        status_text = "cancelled"
+                    elif success:
+                        icon = "✅"
+                        status_text = "complete"
+                    else:
+                        icon = "❌"
+                        status_text = "failed"
+
+                    final_logs = (
+                        "\n".join(log_buffer[-10:])
+                        if log_buffer
+                        else "No logs produced."
+                    )
+                    duration_text = _fmt_duration(time.monotonic() - start_time)
+                    line_count = len(log_buffer)
+                    await log_message.edit(
+                        content=(
+                            f"{icon} **Savebrute — {status_text}**\n"
+                            f"User: {interaction.user.mention}   Game: {SAVE_PROFILES[game]['name']}   "
+                            f"Channel: {interaction.channel.mention}\n"
+                            f"Lines: {line_count}   Duration: {duration_text}\n"
+                            f"```\n{final_logs}\n```"
                         )
-                        duration_text = _fmt_duration(time.monotonic() - start_time)
-                        line_count = len(log_buffer)
-                        await log_message.edit(
-                            content=(
-                                f"{icon} **Savebrute — {status_text}**\n"
-                                f"User: {interaction.user.mention}   Game: {SAVE_PROFILES[game]['name']}   "
-                                f"Channel: {interaction.channel.mention}\n"
-                                f"Lines: {line_count}   Duration: {duration_text}\n"
-                                f"```\n{final_logs}\n```"
-                            )
-                        )
-                    except Exception:
-                        pass
+                    )
+                except Exception:
+                    pass
 
     @app_commands.command(
         name="cancelbrute",
