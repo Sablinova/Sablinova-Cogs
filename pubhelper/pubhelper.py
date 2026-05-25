@@ -4709,6 +4709,24 @@ class SabPubHelper(commands.Cog):
                 return f"{h:d}:{m:02d}:{s:02d}"
             return f"{m:d}:{s:02d}"
 
+        async def _drain_log_queue():
+            try:
+                while True:
+                    log_buffer.append(log_queue.get_nowait())
+            except asyncio.QueueEmpty:
+                pass
+
+        def _build_final_log_text() -> str:
+            if not log_buffer:
+                return "No logs produced."
+
+            final_text = "\n".join(log_buffer[-25:])
+            if len(final_text) <= 1800:
+                return final_text
+
+            trimmed_text = final_text[-1797:]
+            return f"...{trimmed_text}"
+
         async def log_updater():
             while True:
                 try:
@@ -4719,6 +4737,7 @@ class SabPubHelper(commands.Cog):
                 except asyncio.TimeoutError:
                     pass
                 except asyncio.CancelledError:
+                    await _drain_log_queue()
                     break
 
                 if log_buffer:
@@ -4847,6 +4866,7 @@ class SabPubHelper(commands.Cog):
                     await progress_task
                 except (asyncio.CancelledError, Exception):
                     pass
+                await _drain_log_queue()
                 progress_task = None
 
             await send_final_message(
@@ -4911,6 +4931,7 @@ class SabPubHelper(commands.Cog):
                     await progress_task
                 except (asyncio.CancelledError, Exception):
                     pass
+                await _drain_log_queue()
 
             if cli_log_channel and log_message:
                 try:
@@ -4920,15 +4941,12 @@ class SabPubHelper(commands.Cog):
                     elif success:
                         icon = "✅"
                         status_text = "complete"
+                        log_buffer.append("Savebrute completed successfully.")
                     else:
                         icon = "❌"
                         status_text = "failed"
 
-                    final_logs = (
-                        "\n".join(log_buffer[-10:])
-                        if log_buffer
-                        else "No logs produced."
-                    )
+                    final_logs = _build_final_log_text()
                     duration_text = _fmt_duration(time.monotonic() - start_time)
                     line_count = len(log_buffer)
                     await log_message.edit(
