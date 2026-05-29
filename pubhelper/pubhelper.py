@@ -5504,7 +5504,10 @@ class SabPubHelper(commands.Cog):
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
-                    url, timeout=aiohttp.ClientTimeout(total=60)
+                    url,
+                    timeout=aiohttp.ClientTimeout(
+                        total=None, connect=15, sock_connect=15, sock_read=120
+                    ),
                 ) as resp:
                     if resp.status == 403:
                         return "Access denied (403)"
@@ -5512,6 +5515,15 @@ class SabPubHelper(commands.Cog):
                         return "File not found (404)"
                     elif resp.status != 200:
                         return f"HTTP {resp.status}"
+
+                    content_length_header = resp.headers.get("Content-Length")
+                    if content_length_header and content_length_header.isdigit():
+                        advertised = int(content_length_header)
+                        if advertised > 500 * 1024 * 1024:
+                            return (
+                                f"File too large ({advertised // (1024 * 1024)} MB). "
+                                f"Maximum supported is 500 MB."
+                            )
 
                     content = await resp.read()
 

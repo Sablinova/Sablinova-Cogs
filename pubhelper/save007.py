@@ -55,15 +55,21 @@ class Save007Resigner:
             archive_path = tmpdir_path / "archive"
             extract_dir = tmpdir_path / "extracted"
             dst_dir = tmpdir_path / "resigned"
-            archive_path.write_bytes(archive_bytes)
+            # Offload heavy sync I/O (file write + archive extraction + tree
+            # walks) so the asyncio event loop stays responsive. Without this,
+            # large .7z/.zip/.rar inputs freeze the bot for many seconds and
+            # cause subsequent interaction defers to expire (NotFound 10062).
+            await asyncio.to_thread(archive_path.write_bytes, archive_bytes)
             extract_dir.mkdir()
             dst_dir.mkdir()
 
-            extracted = self._extract_archive(archive_bytes, archive_path, extract_dir)
+            extracted = await asyncio.to_thread(
+                self._extract_archive, archive_bytes, archive_path, extract_dir
+            )
             if extracted:
                 return extracted
 
-            src_dir = self._find_save_root(extract_dir)
+            src_dir = await asyncio.to_thread(self._find_save_root, extract_dir)
             if src_dir is None:
                 return Resign007Result(
                     ok=False,
