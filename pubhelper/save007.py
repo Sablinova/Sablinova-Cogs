@@ -58,8 +58,8 @@ class Save007Resigner:
         self,
         archive_bytes: bytes,
         new_id: str,
-        rewrite_0x00: bool,
         progress_callback: ProgressCallback,
+        dry_run: bool = False,
         timeout_seconds: int = 600,
     ) -> Resign007Result:
         zip_filename = self._zip_filename(new_id)
@@ -157,8 +157,8 @@ class Save007Resigner:
                     new_id,
                     "--yes",
                 ]
-                if rewrite_0x00:
-                    cmd.append("--rewrite-0x00")
+                if dry_run:
+                    cmd.append("--dry-run")
                 self._log_step("build subprocess command:", command=shlex.join(cmd), elapsed="0.000s")
                 await self._report_step(progress_callback, "Launching 007 resigner subprocess...")
                 result = await self._run_process(cmd, new_id, progress_callback, timeout_seconds, dst_dir)

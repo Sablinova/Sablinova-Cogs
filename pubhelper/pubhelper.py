@@ -5043,13 +5043,13 @@ class SabPubHelper(commands.Cog):
 
     @app_commands.command(
         name="savesign007",
-        description="Resign a 007 save archive (no bruteforce)",
+        description="Resign a 007 save archive (auto-detects old Steam64)",
     )
     @app_commands.describe(
         link="Direct URL to the save archive (zip/rar/7z)",
         newid="Steam ID to resign the saves to",
         user="Optional user to mention/DM when done",
-        arg="Optional flag (e.g. rewrite-0x00). Leave empty for default.",
+        arg="Optional flag (e.g. dry-run). Leave empty for default.",
     )
     async def savesign007(
         self,
@@ -5069,12 +5069,12 @@ class SabPubHelper(commands.Cog):
             )
             return
 
-        rewrite_0x00 = False
+        dry_run: bool = False
         ignored_arg_note = ""
         if arg:
             normalized_arg = arg.strip().lower().lstrip("-")
-            if normalized_arg == "rewrite-0x00":
-                rewrite_0x00 = True
+            if normalized_arg == "dry-run":
+                dry_run = True
             elif normalized_arg:
                 log.warning(
                     "savesign007: ignoring unrecognized arg from user %s: %r",
@@ -5177,7 +5177,7 @@ class SabPubHelper(commands.Cog):
                             await asyncio.sleep(2.5)
                             continue
                         status_line = f"**Progress:** `{latest[:1500]}`"
-                        mode_line = "\nMode: `rewrite-0x00`" if rewrite_0x00 else ""
+                        mode_line = "\nMode: `dry-run`" if dry_run else ""
                         await interaction.edit_original_response(
                             content=(
                                 f"⏳ Re-signing **007** saves to `{normalized_newid}`..."
@@ -5298,8 +5298,8 @@ class SabPubHelper(commands.Cog):
             result = await save007.run_resign(
                 archive_bytes=data,
                 new_id=normalized_newid,
-                rewrite_0x00=rewrite_0x00,
                 progress_callback=progress_callback,
+                dry_run=dry_run,
                 timeout_seconds=600,
             )
         except Exception:
@@ -5347,7 +5347,7 @@ class SabPubHelper(commands.Cog):
                 pass
 
         notify_line = f"{user.mention}\n" if user else ""
-        mode_line = "\nMode: `rewrite-0x00`" if rewrite_0x00 else ""
+        mode_line = "\nMode: `dry-run`" if dry_run else ""
         if not result.ok:
             error_text = result.error or "Unknown resign error"
             tail_text = result.stdout_tail[-1200:] if result.stdout_tail else ""
@@ -5358,14 +5358,28 @@ class SabPubHelper(commands.Cog):
             return
 
         summary_line = ""
+        partial_warning_line = ""
         if result.summary_json:
-            files_resigned = result.summary_json.get("files_resigned")
-            files_total = result.summary_json.get("files_total")
-            if files_resigned is not None and files_total is not None:
-                summary_line = f"\nFiles resigned: `{files_resigned}/{files_total}`"
+            files = result.summary_json.get("files")
+            if isinstance(files, dict):
+                index_count = files.get("index")
+                data_count = files.get("data")
+                copied_count = files.get("copied")
+                skipped_count = files.get("skipped")
+                file_counts = (index_count, data_count, copied_count, skipped_count)
+                if all(isinstance(count, int) for count in file_counts):
+                    summary_line = (
+                        f"\nFiles: index={index_count} data={data_count} "
+                        f"copied={copied_count} skipped={skipped_count}"
+                    )
+                    processed_count = index_count + data_count
+                    if skipped_count > 0 and processed_count > 0:
+                        partial_warning_line = (
+                            f"\n⚠️ Partial: `{skipped_count}` container(s) skipped — see logs for details."
+                        )
         success_content = (
             f"{notify_line}✅ **007 resign complete!**\n\n"
-            f"New ID: `{normalized_newid}`{mode_line}{summary_line}{ignored_arg_note}"
+            f"New ID: `{normalized_newid}`{mode_line}{summary_line}{partial_warning_line}{ignored_arg_note}"
         )
         await send_final_message(success_content, result.zip_bytes, result.zip_filename)
 

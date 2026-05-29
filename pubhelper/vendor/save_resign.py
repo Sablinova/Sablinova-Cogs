@@ -1,705 +1,408 @@
 #!/usr/bin/env python3
+"""007 First Light save tools, version 2.0.0."""
+
 from __future__ import annotations
 
 import argparse
-import hashlib
+import json
 import os
-from pathlib import Path
-import re
 import shutil
 import struct
 import sys
-import tempfile
-import traceback
-from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Tuple
+import zlib
+from pathlib import Path
 
-SID_MIN = 76561197960265728
-SID_MAX = 76561202255233023
-ACCOUNT_OFFSET = 76561197960265728
-ACCOUNT_INSTANCE = 0x0110000100000000
-MAGIC = b"\x77\x65\x57\x60"
-MAGIC_OFFSET = 0x0c
+STEAM64_BASE = 76561197960265728
+INDEX_HEADER = b"SSaveGameHeader"
+DATA_PREAMBLE = b"\x03\x00\x00\x00"
+ACCOUNT_HIGH_BYTES = b"\x01\x00\x10\x01"
+STEAM_HIGH_BYTES = b"\x01\x00\x10\x01"
+EXIT_OK = 0
 EXIT_BAD_ARGS = 2
 EXIT_SAFETY = 3
 EXIT_FORMAT = 4
 EXIT_IO = 5
-SAVE_NAMES = {"index.save": "index", "data.save": "data"}
-BANNER = """============================================================
-save_resign.py — local save file resigning utility
-For LOCAL, OFFLINE, USER-OWNED saves only.
-This tool rewrites schema-specific AccountID uint32 fields in
-index.save files. Field 0x138 is preserved, and 0x00 is also
-preserved by default unless --rewrite-0x00 is explicitly used.
-This tool does NOT bypass online auth, DRM, anti-cheat, or
-server-side validation. Modifying saves may violate the
-game's Terms of Service. Use at your own risk.
-============================================================"""
+__version__ = "2.0.0"
+KNOWN_NAMES = ["Version", "Spawnpoint", "PlayerName", "Difficulty", "Mission", "Checkpoint", "Score", "Time", "Health"]
 
 
-@dataclass(frozen=True)
-class Schema:
-    name: str
-    pattern: re.Pattern
-    size: int
-    offsets: tuple[int, ...]
+def steam64_to_le8(sid: int) -> bytes:
+    """Return Steam64 as 8-byte little-endian."""
+    return sid.to_bytes(8, "little")
 
 
-SCHEMAS = [
-    Schema("KntProfileSaveFile", re.compile(r"^KntProfileSaveFile(?:-BCK-\d+)?$"), 390, (0x18, 0x140, 0x180)),
-    Schema("LocalProfile", re.compile(r"^LocalProfile$"), 390, (0x18, 0x140, 0x180)),
-    Schema("KntSlotSaveFile", re.compile(r"^KntSlotSaveFile-\d+$"), 382, (0x18, 0x140, 0x178)),
-    Schema("SystemData", re.compile(r"^SystemData$"), 384, (0x18, 0x140)),
-]
+def le8_to_steam64(data: bytes) -> int:
+    """Return Steam64 integer from 8-byte little-endian."""
+    return int.from_bytes(data, "little")
 
 
-@dataclass
-class IndexInfo:
-    path: Path
-    size: int
-    sha256: str
-    schema: Optional[Schema]
-    magic_valid: bool
-    account_ids: tuple[int, ...]
-    consensus_account_id: Optional[int]
-    value_0x138: Optional[int]
-    value_0x00: Optional[int]
+def xor_stream(buf: bytes, key8: bytes) -> bytes:
+    """XOR a buffer with a repeating 8-byte key."""
+    return bytes(b ^ key8[i & 7] for i, b in enumerate(buf))
 
 
-class SafetyError(Exception):
-    pass
+def account_id_to_steam64(aid: int) -> int:
+    """Convert AccountID to Steam64."""
+    return STEAM64_BASE + aid
 
 
-class FormatError(Exception):
-    pass
+def steam64_to_account_id(sid: int) -> int:
+    """Convert Steam64 to AccountID."""
+    return sid - STEAM64_BASE
 
 
-class BadArgsError(Exception):
-    pass
+def fail(message: str, code: int = EXIT_FORMAT) -> RuntimeError:
+    return RuntimeError(f"{code}:{message}")
 
 
-def eprint(message: str) -> None:
-    print(message, file=sys.stderr)
+def out(args: argparse.Namespace, text: str, error: bool = False) -> None:
+    stream = sys.stderr if args.json or error else sys.stdout
+    print(text, file=stream)
 
 
-def fail(code: int, message: str) -> int:
-    eprint(f"ERROR: {message}")
-    return code
-
-
-def _emit_summary(args: argparse.Namespace, summary: dict) -> None:
-    """Print the human-readable footer and, if --json, the JSON line.
-
-    The JSON line is always the LAST line on stdout so callers (e.g. a Discord cog)
-    can `tail -1` or read the final line to parse it.
-
-    JSON summary shapes:
-    - inspect: {"command","status","dir","source_steam64","consensus_account_ids",
-      "derived_steam64_ids","index_files","data_files","all_match"}
-    - resign: {"command","status","src","dst","dry_run","source_steam64",
-      "target_steam64","files_total","files_planned","files_resigned",
-      "files_copied","files_unchanged"}
-    - verify: {"command","status","orig","resigned","source_steam64",
-      "target_steam64","passed","failed","total"}
-    """
-    status = summary.get("status", "unknown")
+def summary(args: argparse.Namespace, data: dict) -> None:
+    if args.json:
+        print(json.dumps(data, sort_keys=True), flush=True)
+        return
     print("== Result ==")
-    print(f"  command          : {summary.get('command', '')}")
-    print(f"  status           : {status}")
-    if "source_steam64" in summary:
-        print(f"  source Steam64   : {summary.get('source_steam64') or '(none detected)'}")
-    if "target_steam64" in summary:
-        print(f"  target Steam64   : {summary.get('target_steam64') or '(n/a)'}")
-    for key in ("src", "dst", "dir", "orig", "resigned"):
-        if key in summary:
-            print(f"  {key:<17}: {summary[key]}")
-    for key in (
-        "files_total",
-        "files_planned",
-        "files_copied",
-        "files_resigned",
-        "files_unchanged",
-        "passed",
-        "failed",
-        "total",
-        "index_files",
-        "data_files",
-        "all_match",
-        "dry_run",
-    ):
-        if key in summary:
-            print(f"  {key:<17}: {summary[key]}")
-    if getattr(args, "json_output", False):
-        import json as _json
-
-        print(_json.dumps(summary, sort_keys=True, default=str))
-
-
-def sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    print(f"command: {data.get('command', 'N/A')}")
+    print(f"status: {data.get('status', 'error')}")
+    print(f"source steam64: {data.get('source_steam64', 'N/A')}")
+    print(f"target steam64: {data.get('target_steam64', 'N/A')}")
+    counts = data.get("files", {})
+    print(f"files: index={counts.get('index', 0)} data={counts.get('data', 0)} copied={counts.get('copied', 0)} skipped={counts.get('skipped', 0)}")
+    note = "After resigning, regenerate remotecache.vdf with Steam closed."
+    print(f"note: {note}")
+    if data.get("command") in {"resign", "encrypt"} and data.get("status") != "error":
+        print("      Path on Windows: %PROGRAMFILES(X86)%/Steam/userdata/<AccountID>/<AppID>/remotecache.vdf")
+        print("      Delete it; Steam will rebuild on next launch (with Steam closed during file edits).")
 
 
 def parse_steam_id(value: str) -> int:
-    s = value.strip()
-    sid: Optional[int] = None
-    if re.fullmatch(r"\d+", s):
-        raw = int(s, 10)
-        if raw < SID_MIN:
-            if raw == 0:
-                raise BadArgsError(f"account ID 0 is not valid: {value!r}")
-            sid = ACCOUNT_INSTANCE | raw
-        else:
-            sid = raw
-    elif re.fullmatch(r"0[xX][0-9a-fA-F]{1,16}", s):
-        sid = int(s, 16)
-    elif re.fullmatch(r"[0-9a-fA-F]{16}", s) and re.search(r"[a-fA-F]", s):
-        sid = int(s, 16)
-    else:
-        match = re.fullmatch(r"\[?U:1:(\d+)\]?", s)
-        if match:
-            sid = ACCOUNT_INSTANCE | int(match.group(1), 10)
-        else:
-            match = re.fullmatch(r"STEAM_[01]:([01]):(\d+)", s)
-            if match:
-                y = int(match.group(1), 10)
-                z = int(match.group(2), 10)
-                sid = ACCOUNT_OFFSET + (2 * z) + y
-    if sid is None or not (SID_MIN <= sid <= SID_MAX):
-        raise BadArgsError(f"invalid Steam ID: {value!r}")
+    """Parse a decimal Steam64 string."""
+    sid = int(value)
+    if sid < STEAM64_BASE:
+        sid = account_id_to_steam64(sid)
     return sid
 
 
-def format_steam_id_variants(sid: int) -> Dict[str, str]:
-    account_id = sid - ACCOUNT_OFFSET
-    y = account_id & 1
-    z = account_id // 2
-    return {
-        "decimal": str(sid),
-        "hex": f"0x{sid:016x}",
-        "U:1": f"[U:1:{account_id}]",
-        "STEAM_0": f"STEAM_0:{y}:{z}",
-    }
-
-
-def format_hex_bytes(data: bytes) -> str:
-    return " ".join(f"{byte:02x}" for byte in data)
-
-
-def find_save_files(root: Path) -> Dict[str, List[Path]]:
-    found = {"index": [], "data": [], "other": []}
-    for path in sorted(p for p in root.rglob("*") if p.is_file() and not p.is_symlink()):
-        key = SAVE_NAMES.get(path.name, "other")
-        found[key].append(path)
-    return found
-
-
-def account_id_from_sid(sid: int) -> int:
-    account_id = sid - ACCOUNT_OFFSET
-    if not (0 <= account_id <= 0xFFFFFFFF):
-        raise BadArgsError(f"Steam ID out of AccountID uint32 range: {sid}")
-    return account_id
-
-
-def steam64_from_account_id(account_id: int) -> int:
-    return ACCOUNT_OFFSET + account_id
-
-
-def match_schema(parent_dir_name: str, size: int) -> Optional[Schema]:
-    for schema in SCHEMAS:
-        if schema.pattern.match(parent_dir_name) and schema.size == size:
-            return schema
+def detect_steam_id_from_index(path: Path) -> int | None:
+    """Detect Steam64 from index.save using known plaintext and fixed high bytes."""
+    for candidate in [path, path.parent / "Backup" / "index.save", path.parent / "index.save.backup"]:
+        try:
+            cipher = candidate.read_bytes()
+        except OSError:
+            continue
+        if len(cipher) < 24:
+            continue
+        low4 = bytes(cipher[i] ^ DATA_PREAMBLE[i] for i in range(4))
+        key8 = low4 + STEAM_HIGH_BYTES
+        plain_9_24 = bytes(cipher[9 + i] ^ key8[(9 + i) & 7] for i in range(15))
+        if plain_9_24 != INDEX_HEADER:
+            continue
+        return le8_to_steam64(key8)
     return None
 
 
-def require_magic(data: bytes, path: Path) -> None:
-    if data[MAGIC_OFFSET:MAGIC_OFFSET + 4] != MAGIC:
-        raise FormatError(f"{path}: magic mismatch at 0x0c")
-
-
-def read_u32_le(data: bytes, offset: int) -> int:
-    return struct.unpack("<I", data[offset:offset + 4])[0]
-
-
-def read_u64_le(data: bytes, offset: int) -> int:
-    return struct.unpack("<Q", data[offset:offset + 8])[0]
-
-
-def read_index(path: Path) -> IndexInfo:
-    data = path.read_bytes()
-    schema = match_schema(path.parent.name, len(data))
-    magic_valid = data[MAGIC_OFFSET:MAGIC_OFFSET + 4] == MAGIC
-    account_ids = tuple(read_u32_le(data, offset) for offset in schema.offsets) if schema else ()
-    consensus = account_ids[0] if account_ids and len(set(account_ids)) == 1 else None
-    value_0x138 = read_u64_le(data, 0x138) if len(data) >= 0x140 else None
-    value_0x00 = read_u32_le(data, 0x00) if len(data) >= 4 else None
-    return IndexInfo(
-        path=path,
-        size=len(data),
-        sha256=sha256_bytes(data),
-        schema=schema,
-        magic_valid=magic_valid,
-        account_ids=account_ids,
-        consensus_account_id=consensus,
-        value_0x138=value_0x138,
-        value_0x00=value_0x00,
-    )
-
-
-def safe_copy_tree(
-    src: Path,
-    dst: Path,
-    transforms: Dict[Path, Callable[[bytes], bytes]],
-    actions: Dict[Path, str],
-    dry_run: bool,
-    yes: bool,
-) -> List[Tuple[Path, Path, str]]:
-    plan: List[Tuple[Path, Path, str]] = []
-    for source in sorted(p for p in src.rglob("*") if p.is_file() and not p.is_symlink()):
-        rel = source.relative_to(src)
-        target = dst / rel
-        action = actions.get(rel, "copy")
-        plan.append((source, target, action))
-    if dry_run:
-        return plan
-    staging_parent = dst.parent
-    staging = Path(tempfile.mkdtemp(prefix=f".{dst.name}.staging-", dir=staging_parent))
-    staged_root = staging / dst.name
-    old_backup: Optional[Path] = None
-    try:
-        for source, target, action in plan:
-            del action
-            rel = target.relative_to(dst)
-            staged_target = staged_root / rel
-            staged_target.parent.mkdir(parents=True, exist_ok=True)
-            transform = transforms.get(rel)
-            if transform:
-                staged_target.write_bytes(transform(source.read_bytes()))
-            else:
-                shutil.copy2(source, staged_target)
-        if yes and dst.exists():
-            if not dst.is_dir():
-                raise OSError(f"destination exists and is not a directory: {dst}")
-            old_backup = dst.parent / f".{dst.name}.old.{os.urandom(4).hex()}"
-            os.rename(dst, old_backup)
-        try:
-            os.rename(staged_root, dst)
-        except Exception:
-            if old_backup is not None and old_backup.exists():
+def brute_force_data_key(path: Path) -> int | None:
+    """Recover Steam64 for data.save via constrained 16-bit key search."""
+    cipher = path.read_bytes()
+    if len(cipher) < 8:
+        return None
+    for z1 in (0x01, 0x5E, 0x9C, 0xDA):
+        k0 = cipher[0] ^ 0x78
+        k1 = cipher[1] ^ z1
+        for k2 in range(256):
+            for k3 in range(256):
+                key8 = bytes((k0, k1, k2, k3)) + STEAM_HIGH_BYTES
+                chunk = xor_stream(cipher[:256], key8)
+                if chunk[:2] != bytes((0x78, z1)):
+                    continue
                 try:
-                    os.rename(old_backup, dst)
-                except Exception:
-                    pass
-            raise
-        if old_backup is not None and old_backup.exists():
-            try:
-                shutil.rmtree(old_backup)
-            except Exception:
-                pass
-    except OSError as exc:
-        raise OSError(f"I/O failure while writing staged tree: {exc}") from exc
-    finally:
-        shutil.rmtree(staging, ignore_errors=True)
-    return plan
+                    plain = zlib.decompress(xor_stream(cipher, key8))
+                except zlib.error:
+                    continue
+                if plain.startswith(DATA_PREAMBLE):
+                    return le8_to_steam64(key8)
+    return None
 
 
-def collect_index_infos(root: Path) -> List[IndexInfo]:
-    return [read_index(path) for path in find_save_files(root)["index"]]
+def quick_verify_data_key(path: Path, sid: int) -> bool:
+    """Check whether a Steam64 likely matches data.save via zlib header bytes."""
+    cipher = path.read_bytes()[:2]
+    if len(cipher) < 2:
+        return False
+    head = xor_stream(cipher, steam64_to_le8(sid))
+    return head in {b"x\x01", b"x^", b"x\x9c", b"x\xda"}
 
 
-def autodetect_old_account_id(index_infos: List[IndexInfo]) -> int:
-    if not index_infos:
-        raise FormatError("no index.save files found")
-    unknown = [str(info.path) for info in index_infos if info.schema is None]
-    if unknown:
-        raise FormatError("unrecognized index.save schema(s): " + ", ".join(unknown))
-    bad_magic = [str(info.path) for info in index_infos if not info.magic_valid]
-    if bad_magic:
-        raise FormatError("magic mismatch in index.save file(s): " + ", ".join(bad_magic))
-    missing = [str(info.path) for info in index_infos if info.consensus_account_id is None]
-    if missing:
-        raise FormatError("mixed AccountID values within index.save file(s): " + ", ".join(missing))
-    account_ids = {info.consensus_account_id for info in index_infos if info.consensus_account_id is not None}
-    if len(account_ids) == 1:
-        return next(iter(account_ids))
-    details = "\n".join(
-        f"  {info.path}: {info.consensus_account_id if info.consensus_account_id is not None else info.account_ids}"
-        for info in index_infos
-    )
-    raise FormatError(f"mixed AccountIDs found in source tree:\n{details}")
+def decrypt_index(path: Path, sid: int) -> bytes:
+    """Decrypt index.save plaintext."""
+    return xor_stream(path.read_bytes(), steam64_to_le8(sid))
 
 
-def validate_resign_paths(src: Path, dst: Path, yes: bool) -> None:
-    src_resolved = src.resolve()
-    dst_resolved = dst.resolve(strict=False)
-    if src_resolved == dst_resolved:
-        raise SafetyError("source and destination must differ")
-    if src_resolved.is_relative_to(dst_resolved) or dst_resolved.is_relative_to(src_resolved):
-        raise SafetyError("source and destination must not contain one another")
-    if dst.exists() and any(dst.iterdir()) and not yes:
-        raise SafetyError("destination exists and is non-empty; pass --yes to overwrite")
+def decrypt_data(path: Path, sid: int) -> bytes:
+    """Decrypt and decompress data.save plaintext."""
+    return zlib.decompress(xor_stream(path.read_bytes(), steam64_to_le8(sid)))
 
 
-def preflight_index_infos(index_infos: List[IndexInfo], old_account_id: int, rewrite_0x00: bool) -> None:
-    unknown = [str(info.path) for info in index_infos if info.schema is None]
-    if unknown:
-        raise FormatError("unrecognized index.save schema(s): " + ", ".join(unknown))
-    bad_magic = [str(info.path) for info in index_infos if not info.magic_valid]
-    if bad_magic:
-        raise FormatError("magic mismatch in index.save file(s): " + ", ".join(bad_magic))
-    for info in index_infos:
-        assert info.schema is not None
-        for offset, account_id in zip(info.schema.offsets, info.account_ids):
-            if account_id != old_account_id:
-                raise FormatError(
-                    f"{info.path}: offset 0x{offset:x} expected AccountID {old_account_id}, found {account_id}"
-                )
-        if rewrite_0x00:
-            expected = (old_account_id - 3) & 0xFFFFFFFF
-            if info.value_0x00 != expected:
-                found = "None" if info.value_0x00 is None else str(info.value_0x00)
-                raise FormatError(f"{info.path}: offset 0x00 expected {expected}, found {found}")
+def encrypt_index(path: Path, sid: int) -> bytes:
+    """Encrypt index.save from plaintext sibling."""
+    return xor_stream(path.read_bytes(), steam64_to_le8(sid))
 
 
-def build_index_transform(rel: Path, schema: Schema, new_account_id: int, rewrite_0x00: bool) -> Callable[[bytes], bytes]:
-    new_le = struct.pack("<I", new_account_id)
-    new_0x00 = struct.pack("<I", (new_account_id - 3) & 0xFFFFFFFF)
-
-    def transform(data: bytes) -> bytes:
-        require_magic(data, rel)
-        if len(data) != schema.size:
-            raise FormatError(f"{rel}: size changed since preflight, expected {schema.size}, found {len(data)}")
-        buf = bytearray(data)
-        for offset in schema.offsets:
-            buf[offset:offset + 4] = new_le
-        if rewrite_0x00:
-            buf[0:4] = new_0x00
-        return bytes(buf)
-
-    return transform
+def encrypt_data(path: Path, sid: int) -> bytes:
+    """Encrypt data.save from plaintext sibling."""
+    return xor_stream(zlib.compress(path.read_bytes(), level=4), steam64_to_le8(sid))
 
 
-def format_account_line(offset: int, account_id: int) -> str:
-    steam64 = steam64_from_account_id(account_id)
-    return f"    0x{offset:03x}: account_id={account_id} steam64={steam64}"
+def find_save_containers(root: Path) -> list[Path]:
+    """Return directories containing index.save and/or data.save."""
+    found = []
+    for dirpath, _, filenames in os.walk(root):
+        if "index.save" in filenames or "data.save" in filenames:
+            found.append(Path(dirpath))
+    return sorted(found)
 
 
-def print_index_report(info: IndexInfo) -> None:
-    schema_name = info.schema.name if info.schema else "UNKNOWN"
-    print(f"== {info.path.parent.name}/{info.path.name} ==")
-    print(f"  parent dir       : {info.path.parent.name}")
-    print(f"  size             : {info.size} bytes")
-    print(f"  sha256           : {info.sha256}")
-    print(f"  schema           : {schema_name}")
-    print(f"  magic valid      : {'yes' if info.magic_valid else 'no'}")
-    print("  account fields   :")
-    if info.schema:
-        for offset, account_id in zip(info.schema.offsets, info.account_ids):
-            print(format_account_line(offset, account_id))
-    else:
-        print("    (no schema match; offsets unknown)")
-    if info.consensus_account_id is not None:
-        steam64 = steam64_from_account_id(info.consensus_account_id)
-        print(f"  consensus        : AccountID {info.consensus_account_id} Steam64 {steam64}")
-    elif info.account_ids:
-        print(f"  consensus        : WARN divergent AccountIDs {list(info.account_ids)}")
-    else:
-        print("  consensus        : none")
-    preserved_138 = "None" if info.value_0x138 is None else f"0x{info.value_0x138:016x}"
-    preserved_00 = "None" if info.value_0x00 is None else f"0x{info.value_0x00:08x}"
-    print(f"  preserved 0x138  : {preserved_138}")
-    print(f"  preserved 0x00   : {preserved_00}")
-    if info.value_0x00 is None or info.consensus_account_id is None:
-        note = "mismatch"
-    else:
-        note = "matches AccountID-3 pattern" if ((info.value_0x00 + 3) & 0xFFFFFFFF) == info.consensus_account_id else "mismatch"
-    print(f"  0x00 pattern     : {note}")
+def detect_container_ids(container: Path) -> tuple[int | None, int | None]:
+    """Detect index and data Steam64 ids for a container."""
+    idx = detect_steam_id_from_index(container / "index.save") if (container / "index.save").exists() else None
+    dat = None
+    if (container / "data.save").exists():
+        dat = idx if idx is not None and quick_verify_data_key(container / "data.save", idx) else brute_force_data_key(container / "data.save")
+    return idx, dat
+
+
+def write_bytes(path: Path, data: bytes, dry_run: bool) -> None:
+    """Write bytes unless dry-run is active."""
+    if not dry_run:
+        path.write_bytes(data)
+
+
+def looks_like_name_prefix(buf: bytes, name_pos: int, name_len: int) -> bool:
+    """Return True when the 4-byte prefix matches a short name length."""
+    if name_pos < 4:
+        return False
+    raw = int.from_bytes(buf[name_pos - 4:name_pos], "little")
+    masked = raw & 0x7FFFFFFF
+    return raw == name_len or masked == name_len or (masked & 0xFF) == name_len
+
+
+def decode_variable_value(tail: bytes) -> object:
+    """Best-effort decode of a value following a matched variable name."""
+    if len(tail) >= 4:
+        small = int.from_bytes(tail[:4], "little")
+        if small < 0x10000:
+            return small
+        fval = struct.unpack("<f", tail[:4])[0]
+        if fval == fval and abs(fval) < 1e9:
+            return round(fval, 6)
+        slen = int.from_bytes(tail[:4], "little") & 0x7FFFFFFF
+        sraw = tail[4:4 + slen]
+        if 0 < slen <= len(tail) - 4 and all(32 <= c < 127 for c in sraw):
+            return sraw.decode("ascii", "replace")
+    return "?"
+
+
+def parse_variables(blob: bytes) -> dict:
+    """Best-effort parse of known variable names."""
+    result = {}
+    for name in KNOWN_NAMES:
+        needle = name.encode("ascii")
+        pos = blob.find(needle)
+        while pos != -1:
+            if looks_like_name_prefix(blob, pos, len(needle)):
+                tail = blob[pos + len(needle):pos + len(needle) + 32]
+                result[name] = decode_variable_value(tail)
+                break
+            pos = blob.find(needle, pos + 1)
+    for name in KNOWN_NAMES:
+        if name not in result and name.encode("ascii") in blob:
+            result[name] = "present"
+    return result
 
 
 def cmd_inspect(args: argparse.Namespace) -> int:
-    root = Path(args.dir)
-    files = find_save_files(root)
-    index_infos = [read_index(path) for path in files["index"]]
-    for info in index_infos:
-        print_index_report(info)
-    print("== data.save files ==")
-    for path in files["data"]:
-        print(f"  {path.relative_to(root)} sha256={sha256_file(path)}")
-    schema_counts: Dict[str, int] = {}
-    consensus_ids = sorted({info.consensus_account_id for info in index_infos if info.consensus_account_id is not None})
-    for info in index_infos:
-        key = info.schema.name if info.schema else "UNKNOWN"
-        schema_counts[key] = schema_counts.get(key, 0) + 1
-    steam64_ids = [steam64_from_account_id(account_id) for account_id in consensus_ids]
-    print("== Summary ==")
-    print(f"  total index files : {len(files['index'])}")
-    print(f"  total data files  : {len(files['data'])}")
-    for name in sorted(key for key in schema_counts if key != 'UNKNOWN'):
-        print(f"  schema {name:<16}: {schema_counts[name]}")
-    print(f"  UNKNOWN           : {schema_counts.get('UNKNOWN', 0)}")
-    print(f"  consensus AccountIDs: {consensus_ids if consensus_ids else '[]'}")
-    print(f"  derived Steam64 IDs: {steam64_ids if steam64_ids else '[]'}")
-    print(f"  all match         : {'yes' if len(consensus_ids) == 1 and index_infos else 'no'}")
-    source_steam64 = steam64_ids[0] if len(steam64_ids) == 1 else None
-    all_match = len(consensus_ids) == 1 and bool(index_infos)
-    summary = {
-        "command": "inspect",
-        "status": "success" if all_match else "partial",
-        "dir": str(root),
-        "source_steam64": source_steam64,
-        "consensus_account_ids": [str(x) for x in consensus_ids],
-        "derived_steam64_ids": [str(x) for x in steam64_ids],
-        "index_files": len(files["index"]),
-        "data_files": len(files["data"]),
-        "all_match": all_match,
-    }
-    _emit_summary(args, summary)
-    return 0
+    root = Path(args.target)
+    counts = {"index": 0, "data": 0, "copied": 0, "skipped": 0}
+    detected = []
+    for container in find_save_containers(root):
+        idx, dat = detect_container_ids(container)
+        counts["index"] += int((container / "index.save").exists())
+        counts["data"] += int((container / "data.save").exists())
+        state = "ok" if idx == dat or idx is None or dat is None else "warn"
+        out(args, f"{container}: index={idx} data={dat} status={state}")
+        detected.extend(v for v in (idx, dat) if v is not None)
+    sid = detected[0] if len(set(detected)) == 1 and detected else "N/A"
+    summary(args, {"command": "inspect", "status": "ok", "source_steam64": sid, "target_steam64": "N/A", "files": counts})
+    return EXIT_OK
+
+
+def cmd_decrypt(args: argparse.Namespace) -> int:
+    root = Path(args.src)
+    counts = {"index": 0, "data": 0, "copied": 0, "skipped": 0}
+    source_sid = None
+    for container in find_save_containers(root):
+        idx_sid, dat_sid = detect_container_ids(container)
+        sid = parse_steam_id(args.steam_id) if args.steam_id else (idx_sid or dat_sid)
+        if sid is None:
+            counts["skipped"] += 1
+            out(args, f"warn: could not detect steam id for {container}", True)
+            continue
+        source_sid = source_sid or sid
+        if (container / "index.save").exists():
+            write_bytes(container / "index.save.decrypted", decrypt_index(container / "index.save", sid), False)
+            counts["index"] += 1
+        if (container / "data.save").exists():
+            write_bytes(container / "data.save.decrypted", decrypt_data(container / "data.save", sid), False)
+            counts["data"] += 1
+    summary(args, {"command": "decrypt", "status": "ok", "source_steam64": source_sid or "N/A", "target_steam64": "N/A", "files": counts})
+    return EXIT_OK
+
+
+def cmd_encrypt(args: argparse.Namespace) -> int:
+    root = Path(args.src)
+    sid = parse_steam_id(args.steam_id)
+    counts = {"index": 0, "data": 0, "copied": 0, "skipped": 0}
+    for path in root.rglob("*.decrypted"):
+        if path.name == "index.save.decrypted":
+            write_bytes(path.with_name("index.save"), encrypt_index(path, sid), False)
+            counts["index"] += 1
+        elif path.name == "data.save.decrypted":
+            write_bytes(path.with_name("data.save"), encrypt_data(path, sid), False)
+            counts["data"] += 1
+    summary(args, {"command": "encrypt", "status": "ok", "source_steam64": sid, "target_steam64": sid, "files": counts})
+    return EXIT_OK
+
+
+def validate_resign(src: Path, dst: Path, yes: bool) -> None:
+    """Validate resign source and destination safety rules."""
+    src_r, dst_r = src.resolve(), dst.resolve()
+    if src_r == dst_r:
+        raise fail("src and dst are the same", EXIT_SAFETY)
+    if str(dst_r).startswith(str(src_r) + os.sep):
+        raise fail("dst is inside src", EXIT_SAFETY)
+    if str(src_r).startswith(str(dst_r) + os.sep):
+        raise fail("src is inside dst", EXIT_SAFETY)
+    if dst.exists() and dst.is_file():
+        raise fail(f"--dst points to a file, not a directory: {dst}", EXIT_SAFETY)
+    if dst.exists() and any(dst.iterdir()) and not yes:
+        raise fail("dst exists and is not empty; pass --yes", EXIT_SAFETY)
 
 
 def cmd_resign(args: argparse.Namespace) -> int:
-    src = Path(args.src)
-    dst = Path(args.dst)
-    if not src.is_dir():
-        raise BadArgsError(f"source directory does not exist or is not a directory: {src}")
+    src, dst = Path(args.src), Path(args.dst)
+    validate_resign(src, dst, args.yes)
+    counts = {"index": 0, "data": 0, "copied": 0, "skipped": 0}
+    if args.dry_run:
+        out(args, f"would copy {src} -> {dst}")
+    else:
+        shutil.copytree(src, dst, dirs_exist_ok=args.yes)
+    counts["copied"] = sum(1 for _ in src.rglob("*") if _.is_file())
     new_sid = parse_steam_id(args.new_id)
-    new_account_id = account_id_from_sid(new_sid)
-    validate_resign_paths(src, dst, args.yes)
-    files = find_save_files(src)
-    index_infos = [read_index(path) for path in files["index"]]
-    old_account_id = account_id_from_sid(parse_steam_id(args.old_id)) if args.old_id else autodetect_old_account_id(index_infos)
-    preflight_index_infos(index_infos, old_account_id, args.rewrite_0x00)
-    transforms: Dict[Path, Callable[[bytes], bytes]] = {}
-    actions: Dict[Path, str] = {}
-    for info in index_infos:
-        assert info.schema is not None
-        rel = info.path.relative_to(src)
-        transforms[rel] = build_index_transform(rel, info.schema, new_account_id, args.rewrite_0x00)
-        actions[rel] = "resign-accountid+0x00" if args.rewrite_0x00 else "resign-accountid"
-    plan = safe_copy_tree(src, dst, transforms, actions, args.dry_run, args.yes)
-    for source, target, action in plan:
-        print(f"{source} -> {target} [{action}]")
-    files_total = len(plan)
-    files_resigned = sum(1 for _, _, action in plan if "resign" in action.lower() or "rewrite" in action.lower())
-    files_copied = sum(1 for _, _, action in plan if action.lower().startswith("copy"))
-    files_unchanged = files_total - files_resigned - files_copied
-    source_steam64 = steam64_from_account_id(old_account_id) if old_account_id is not None else None
-    target_steam64 = steam64_from_account_id(new_account_id)
-    summary = {
-        "command": "resign",
-        "status": "success" if not args.dry_run else "planned",
-        "src": str(args.src),
-        "dst": str(args.dst),
-        "dry_run": bool(args.dry_run),
-        "source_steam64": source_steam64,
-        "target_steam64": target_steam64,
-        "files_total": files_total,
-        "files_planned": files_total,
-        "files_resigned": files_resigned,
-        "files_copied": files_copied,
-        "files_unchanged": files_unchanged,
-    }
-    _emit_summary(args, summary)
-    return 0
-
-
-def verify_index_pair(
-    orig: Path,
-    resigned: Path,
-    old_account_id: int,
-    new_account_id: int,
-    rewrite_0x00: bool,
-) -> Tuple[bool, str]:
-    left = orig.read_bytes()
-    right = resigned.read_bytes()
-    if len(left) != len(right):
-        return False, "size changed"
-    schema = match_schema(orig.parent.name, len(left))
-    if schema is None:
-        return False, "unknown schema"
-    if match_schema(resigned.parent.name, len(right)) != schema:
-        return False, "schema mismatch"
-    try:
-        require_magic(left, orig)
-        require_magic(right, resigned)
-    except FormatError as exc:
-        return False, str(exc)
-    diffs = {index for index, pair in enumerate(zip(left, right)) if pair[0] != pair[1]}
-    allowed = {i for offset in schema.offsets for i in range(offset, offset + 4)}
-    if rewrite_0x00:
-        allowed.update(range(0, 4))
-    disallowed = sorted(index for index in diffs if index not in allowed)
-    if disallowed:
-        return False, f"bytes changed outside allowed regions: {disallowed[:8]}"
-    for offset in schema.offsets:
-        if read_u32_le(left, offset) != old_account_id:
-            return False, f"orig offset 0x{offset:x} does not match old AccountID"
-        if read_u32_le(right, offset) != new_account_id:
-            return False, f"resigned offset 0x{offset:x} does not match new AccountID"
-    if left[0x138:0x140] != right[0x138:0x140]:
-        return False, "0x138..0x140 changed"
-    if right[0x138:0x13c] == struct.pack("<I", new_account_id):
-        return False, "new AccountID bytes appear at 0x138"
-    if not rewrite_0x00 and left[0:4] != right[0:4]:
-        return False, "0x00 changed without --rewrite-0x00"
-    if rewrite_0x00:
-        old_expected = struct.pack("<I", (old_account_id - 3) & 0xFFFFFFFF)
-        new_expected = struct.pack("<I", (new_account_id - 3) & 0xFFFFFFFF)
-        if left[0:4] != old_expected:
-            return False, "orig 0x00 does not match old AccountID-3"
-        if right[0:4] != new_expected:
-            return False, "resigned 0x00 does not match new AccountID-3"
-    return True, "PASS"
-
-
-def cmd_verify(args: argparse.Namespace) -> int:
-    orig = Path(args.orig)
-    resigned = Path(args.resigned)
-    if not orig.is_dir():
-        raise BadArgsError(f"source directory does not exist or is not a directory: {orig}")
-    if not resigned.is_dir():
-        raise BadArgsError(f"source directory does not exist or is not a directory: {resigned}")
-    new_account_id = account_id_from_sid(parse_steam_id(args.new_id))
-    orig_indexes = collect_index_infos(orig)
-    old_account_id = (
-        account_id_from_sid(parse_steam_id(args.old_id)) if args.old_id else autodetect_old_account_id(orig_indexes)
-    )
-    orig_files = find_save_files(orig)
-    new_files = find_save_files(resigned)
-    orig_rel = sorted(path.relative_to(orig) for group in orig_files.values() for path in group)
-    new_rel = sorted(path.relative_to(resigned) for group in new_files.values() for path in group)
-    source_steam64 = steam64_from_account_id(old_account_id) if old_account_id is not None else None
-    target_steam64 = steam64_from_account_id(new_account_id)
-    if orig_rel != new_rel:
-        print("FAIL tree contents differ")
-        summary = {
-            "command": "verify",
-            "status": "failed",
-            "reason": "tree contents differ",
-            "orig": str(args.orig),
-            "resigned": str(args.resigned),
-            "source_steam64": source_steam64,
-            "target_steam64": target_steam64,
-            "passed": 0,
-            "failed": 0,
-            "total": 0,
-        }
-        _emit_summary(args, summary)
-        return EXIT_FORMAT
-    passed = 0
-    total = 0
-    for rel in orig_rel:
-        total += 1
-        left = orig / rel
-        right = resigned / rel
-        if rel.name == "data.save":
-            ok = sha256_file(left) == sha256_file(right)
-            reason = "data.save sha256"
-        elif rel.name == "index.save":
-            ok, reason = verify_index_pair(left, right, old_account_id, new_account_id, args.rewrite_0x00)
+    old_seen = []
+    for container in find_save_containers(dst if not args.dry_run else src):
+        idx_path, data_path = container / "index.save", container / "data.save"
+        detected_idx = detect_steam_id_from_index(idx_path) if idx_path.exists() else None
+        old_sid = parse_steam_id(args.old_id) if args.old_id else detected_idx
+        if old_sid is not None:
+            old_seen.append(old_sid)
+        if args.old_id and old_sid and detected_idx not in (None, old_sid):
+            out(args, f"warn: --old-id disagrees for {container}", True)
+        if old_sid is None:
+            out(args, f"WARN: {container} — could not determine old Steam64 (no --old-id and detection failed). Skipping.", True)
+            counts["skipped"] += 1
+            continue
+        if idx_path.exists():
+            counts["index"] += 1
+            if not args.dry_run and old_sid is not None:
+                idx_path.write_bytes(xor_stream(idx_path.read_bytes(), steam64_to_le8(old_sid ^ new_sid)))
         else:
-            ok = sha256_file(left) == sha256_file(right)
-            reason = "copied unchanged"
-        print(f"{'PASS' if ok else 'FAIL'} {rel} {reason}")
-        passed += 1 if ok else 0
-    print(f"Aggregate: {passed}/{total} PASS")
-    status = "success" if passed == total and total > 0 else ("failed" if total > 0 else "empty")
-    summary = {
-        "command": "verify",
-        "status": status,
-        "orig": str(args.orig),
-        "resigned": str(args.resigned),
-        "source_steam64": source_steam64,
-        "target_steam64": target_steam64,
-        "passed": passed,
-        "failed": total - passed,
-        "total": total,
-    }
-    _emit_summary(args, summary)
-    return 0 if passed == total else EXIT_FORMAT
+            counts["skipped"] += 1
+        if data_path.exists():
+            counts["data"] += 1
+            if not args.dry_run and old_sid is not None:
+                plain = decrypt_data(data_path, old_sid)
+                data_path.write_bytes(xor_stream(zlib.compress(plain, level=4), steam64_to_le8(new_sid)))
+        else:
+            counts["skipped"] += 1
+    source_sid = old_seen[0] if len(set(old_seen)) == 1 and old_seen else "N/A"
+    summary(args, {"command": "resign", "status": "ok", "source_steam64": source_sid, "target_steam64": new_sid, "files": counts})
+    return EXIT_OK
+
+
+def cmd_bruteforce(args: argparse.Namespace) -> int:
+    path = Path(args.path)
+    sid = detect_steam_id_from_index(path) if path.name == "index.save" else brute_force_data_key(path)
+    if sid is None:
+        raise fail(f"could not recover steam64 for {path}")
+    out(args, f"{path}: steam64={sid}")
+    summary(args, {"command": "bruteforce", "status": "ok", "source_steam64": sid, "target_steam64": "N/A", "files": {"index": int(path.name == 'index.save'), "data": int(path.name == 'data.save'), "copied": 0, "skipped": 0}})
+    return EXIT_OK
+
+
+def cmd_parse(args: argparse.Namespace) -> int:
+    path = Path(args.path)
+    sid = detect_steam_id_from_index(path) if path.name == "index.save" else brute_force_data_key(path)
+    if sid is None:
+        raise fail(f"could not detect steam64 for {path}")
+    plain = decrypt_index(path, sid) if path.name == "index.save" else decrypt_data(path, sid)
+    variables = parse_variables(plain)
+    base = path.with_suffix("")
+    report = base.parent / f"{base.name}_report.txt"
+    vjson = base.parent / f"{base.name}_variables.json"
+    report.write_text("\n".join(f"{k}: {v}" for k, v in variables.items()) + "\n", encoding="utf-8")
+    vjson.write_text(json.dumps(variables, indent=2, sort_keys=True), encoding="utf-8")
+    for key, value in variables.items():
+        out(args, f"{key}: {value}")
+    summary(args, {"command": "parse", "status": "ok", "source_steam64": sid, "target_steam64": "N/A", "files": {"index": int(path.name == 'index.save'), "data": int(path.name == 'data.save'), "copied": 2, "skipped": 0}})
+    return EXIT_OK
+
+
+def cmd_vdf(args: argparse.Namespace) -> int:
+    out(args, "Delete and regenerate remotecache.vdf while Steam is fully closed.")
+    out(args, "Windows path: %PROGRAMFILES(X86)%/Steam/userdata/<AccountID>/<AppID>/remotecache.vdf")
+    out(args, "Delete the file after edits; Steam rebuilds it on next launch.")
+    summary(args, {"command": "vdf", "status": "ok", "source_steam64": "N/A", "target_steam64": "N/A", "files": {"index": 0, "data": 0, "copied": 0, "skipped": 0}})
+    return EXIT_OK
 
 
 def build_parser() -> argparse.ArgumentParser:
-    description = (
-        "Inspect, resign, and verify local 007 First Light save trees.\n\n"
-        "Examples:\n"
-        "  Inspect a save tree:\n"
-        "    save_resign.py inspect /path/to/remote\n\n"
-        "  Dry-run a resign:\n"
-        "    save_resign.py resign --src ./remote --dst ./out --new-id 76561198000000001 --dry-run\n\n"
-        "  Resign for real:\n"
-        "    save_resign.py resign --src ./remote --dst ./out --new-id [U:1:775667115]\n\n"
-        "  Accepted Steam ID formats:\n"
-        "    76561198735932843              (Steam64 decimal)\n"
-        "    0x011000012e3bbdab             (Steam64 hex)\n"
-        "    [U:1:775667115] or U:1:775667115  (SteamID3)\n"
-        "    775667115                      (Account ID — auto-wrapped to Steam64)\n"
-        "    STEAM_0:1:387833557            (Legacy)"
-    )
-    parser = argparse.ArgumentParser(
-        prog="save_resign.py",
-        description=description,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument(
-        "--json",
-        dest="json_output",
-        action="store_true",
-        help="emit a machine-readable JSON summary on the final line of stdout",
-    )
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    inspect_parser = subparsers.add_parser("inspect", help="inspect a save tree and report index/data metadata")
-    inspect_parser.add_argument("dir", help="save tree root directory")
-    inspect_parser.set_defaults(func=cmd_inspect)
-
-    resign_parser = subparsers.add_parser("resign", help="copy a save tree and rewrite AccountID fields in index.save files")
-    resign_parser.add_argument("--src", required=True, help="source save tree")
-    resign_parser.add_argument("--dst", required=True, help="destination save tree")
-    resign_parser.add_argument("--new-id", required=True, help="new Steam ID in any supported format")
-    resign_parser.add_argument("--old-id", help="expected old Steam ID; auto-detected if omitted")
-    resign_parser.add_argument("--dry-run", action="store_true", help="print the copy/resign plan without writing files")
-    resign_parser.add_argument("--yes", action="store_true", help="allow replacing a non-empty destination")
-    resign_parser.add_argument("--rewrite-0x00", action="store_true", help="also rewrite 0x00 as AccountID-3")
-    resign_parser.set_defaults(func=cmd_resign)
-
-    verify_parser = subparsers.add_parser("verify", help="compare an original and resigned save tree")
-    verify_parser.add_argument("--orig", required=True, help="original source save tree")
-    verify_parser.add_argument("--resigned", required=True, help="resigned destination save tree")
-    verify_parser.add_argument("--new-id", required=True, help="new Steam ID in any supported format")
-    verify_parser.add_argument("--old-id", help="expected old Steam ID; auto-detected from --orig if omitted")
-    verify_parser.add_argument("--rewrite-0x00", action="store_true", help="verify 0x00 was rewritten as AccountID-3")
-    verify_parser.set_defaults(func=cmd_verify)
+    """Build the CLI parser."""
+    parser = argparse.ArgumentParser(prog="save_resign.py")
+    parser.add_argument("--json", action="store_true", help="emit final-line JSON summary")
+    parser.add_argument("--version", action="version", version=f"save_resign.py {__version__}")
+    sub = parser.add_subparsers(dest="command", required=True)
+    p = sub.add_parser("inspect"); p.add_argument("target"); p.set_defaults(func=cmd_inspect)
+    p = sub.add_parser("decrypt"); p.add_argument("--src", required=True); p.add_argument("--steam-id"); p.set_defaults(func=cmd_decrypt)
+    p = sub.add_parser("encrypt"); p.add_argument("--src", required=True); p.add_argument("--steam-id", required=True); p.set_defaults(func=cmd_encrypt)
+    p = sub.add_parser("resign"); p.add_argument("--src", required=True); p.add_argument("--dst", required=True); p.add_argument("--new-id", required=True); p.add_argument("--old-id"); p.add_argument("--yes", action="store_true"); p.add_argument("--dry-run", action="store_true"); p.set_defaults(func=cmd_resign)
+    p = sub.add_parser("bruteforce"); p.add_argument("path"); p.set_defaults(func=cmd_bruteforce)
+    p = sub.add_parser("parse"); p.add_argument("path"); p.set_defaults(func=cmd_parse)
+    p = sub.add_parser("vdf"); p.set_defaults(func=cmd_vdf)
     return parser
 
 
-def main(argv: Optional[List[str]] = None) -> int:
-    eprint(BANNER)
+def main(argv: list[str] | None = None) -> int:
+    """Run the CLI."""
     parser = build_parser()
+    args = parser.parse_args(argv)
     try:
-        args = parser.parse_args(argv)
         return args.func(args)
-    except BrokenPipeError:
-        return 0
-    except SafetyError as exc:
-        return fail(EXIT_SAFETY, str(exc))
-    except FormatError as exc:
-        return fail(EXIT_FORMAT, str(exc))
-    except BadArgsError as exc:
-        return fail(EXIT_BAD_ARGS, str(exc))
-    except ValueError as exc:
-        return fail(EXIT_BAD_ARGS, str(exc))
+    except RuntimeError as exc:
+        code_str, _, msg = str(exc).partition(":")
+        code = int(code_str) if code_str.isdigit() else EXIT_IO
+        if args.json:
+            print(json.dumps({"status": "error", "error": msg or str(exc), "command": getattr(args, 'command', None)}))
+        else:
+            print(f"error: {msg or exc}", file=sys.stderr)
+        return code
     except OSError as exc:
-        return fail(EXIT_IO, str(exc))
-    except Exception:
-        eprint(traceback.format_exc())
+        if args.json:
+            print(json.dumps({"status": "error", "error": str(exc), "command": getattr(args, 'command', None)}))
+        else:
+            print(f"error: {exc}", file=sys.stderr)
         return EXIT_IO
 
 
