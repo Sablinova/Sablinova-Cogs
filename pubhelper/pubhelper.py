@@ -1128,6 +1128,41 @@ class SabPubHelper(commands.Cog):
         """Return a short SHA-1 hash of text for cache keying."""
         return hashlib.sha1(text.encode()).hexdigest()[:12]
 
+    async def _safe_defer(
+        self,
+        interaction: discord.Interaction,
+        *,
+        thinking: bool = False,
+        ephemeral: bool = False,
+    ) -> bool:
+        """Defer an interaction, returning False if it already expired.
+
+        Discord requires interactions be acknowledged within 3 seconds.
+        If the event loop was blocked or there was network lag, the defer
+        call raises discord.NotFound (10062). We log it and return False
+        so the caller can abort cleanly without an unhandled exception.
+        """
+        try:
+            await interaction.response.defer(thinking=thinking, ephemeral=ephemeral)
+            return True
+        except discord.NotFound:
+            log.warning(
+                "Interaction expired before defer for command %s (user=%s, guild=%s). "
+                "Likely event loop blocked or network lag.",
+                getattr(interaction.command, "name", "<unknown>"),
+                interaction.user,
+                getattr(interaction.guild, "id", None),
+            )
+            return False
+        except discord.HTTPException as e:
+            log.warning(
+                "HTTPException while deferring interaction for command %s (user=%s): %s",
+                getattr(interaction.command, "name", "<unknown>"),
+                interaction.user,
+                e,
+            )
+            return False
+
     def _load_manual_funny_overrides(self) -> dict:
         """Load manual funny saveinst overrides from JSON file."""
         if not self.funny_overrides_path.exists():
@@ -4445,7 +4480,8 @@ class SabPubHelper(commands.Cog):
         self, interaction: discord.Interaction, game: str, new_id: str, link: str, notify: discord.Member = None,
     ) -> None:
         """Bruteforce User ID from save and re-sign to new ID."""
-        await interaction.response.defer(thinking=True)
+        if not await self._safe_defer(interaction, thinking=True):
+            return
 
         # Check if tool is installed
         if not self.save_signer.is_tool_installed():
@@ -5017,7 +5053,8 @@ class SabPubHelper(commands.Cog):
         user: discord.Member | None = None,
         arg: str | None = None,
     ) -> None:
-        await interaction.response.defer(thinking=True)
+        if not await self._safe_defer(interaction, thinking=True):
+            return
 
         normalized_newid = newid.strip()
         if not normalized_newid:
@@ -5340,7 +5377,8 @@ class SabPubHelper(commands.Cog):
         notify: discord.Member = None,
     ) -> None:
         """Re-sign save files to a new User ID."""
-        await interaction.response.defer(thinking=True)
+        if not await self._safe_defer(interaction, thinking=True):
+            return
 
         # Check if tool is installed
         if not self.save_signer.is_tool_installed():
