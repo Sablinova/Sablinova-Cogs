@@ -34,6 +34,7 @@ from .savesigner import (
     SAVE_INSTRUCTIONS_SEGA,
     SEGA_PROFILES,
 )
+from .save007 import Save007Resigner
 
 log = logging.getLogger("red.sablinova.pubhelper")
 
@@ -4997,6 +4998,320 @@ class SabPubHelper(commands.Cog):
                 "❌ You don't have any active or queued savebrute tasks.",
                 ephemeral=True,
             )
+
+    @app_commands.command(
+        name="savesign007",
+        description="Resign a 007 save archive (no bruteforce)",
+    )
+    @app_commands.describe(
+        link="Direct URL to the save archive (zip/rar/7z)",
+        newid="Steam ID to resign the saves to",
+        user="Optional user to mention/DM when done",
+        arg="Optional flag (e.g. rewrite-0x00). Leave empty for default.",
+    )
+    async def savesign007(
+        self,
+        interaction: discord.Interaction,
+        link: str,
+        newid: str,
+        user: discord.Member | None = None,
+        arg: str | None = None,
+    ) -> None:
+        await interaction.response.defer(thinking=True)
+
+        normalized_newid = newid.strip()
+        if not normalized_newid:
+            await interaction.edit_original_response(
+                content="❌ Please provide a non-empty Steam ID in `newid`."
+            )
+            return
+
+        rewrite_0x00 = False
+        ignored_arg_note = ""
+        if arg:
+            normalized_arg = arg.strip().lower().lstrip("-")
+            if normalized_arg == "rewrite-0x00":
+                rewrite_0x00 = True
+            elif normalized_arg:
+                log.warning(
+                    "savesign007: ignoring unrecognized arg from user %s: %r",
+                    interaction.user,
+                    arg,
+                )
+                ignored_arg_note = "\n-# Ignored unknown arg input."
+
+        await interaction.edit_original_response(
+            content=(
+                f"⏳ Downloading archive for **007 resign → `{normalized_newid}`**…"
+                f"{ignored_arg_note}"
+            )
+        )
+
+        data = await self._download_file(link)
+        if isinstance(data, str):
+            await interaction.edit_original_response(content=f"❌ Download failed: {data}")
+            return
+
+        log_queue: asyncio.Queue[str] = asyncio.Queue()
+        cli_log_channel_id = await self.config.cli_log_channel()
+        cli_log_channel = self.bot.get_channel(cli_log_channel_id) if cli_log_channel_id else None
+        log_message = None
+        finalizing = {"done": False}
+        log_buffer: list[str] = []
+        start_time = time.monotonic()
+
+        def _fmt_duration(seconds: float) -> str:
+            seconds = max(0, int(seconds))
+            m, s = divmod(seconds, 60)
+            if m >= 60:
+                h, m = divmod(m, 60)
+                return f"{h:d}:{m:02d}:{s:02d}"
+            return f"{m:d}:{s:02d}"
+
+        async def _drain_log_queue() -> None:
+            try:
+                while True:
+                    log_buffer.append(log_queue.get_nowait())
+            except asyncio.QueueEmpty:
+                return
+
+        def _latest_progress_line() -> str | None:
+            for line in reversed(log_buffer):
+                if line.strip():
+                    return line
+            return None
+
+        async def progress_callback(line: str) -> None:
+            log_queue.put_nowait(line)
+
+        if cli_log_channel:
+            try:
+                channel_mention = interaction.channel.mention if interaction.channel else "(unknown channel)"
+                log_message = await cli_log_channel.send(
+                    (
+                        f"🟢 **SaveSign007 — running**\n"
+                        f"User: {interaction.user.mention}   New ID: `{normalized_newid}`   "
+                        f"Channel: {channel_mention}\n"
+                        f"Lines: 0   Elapsed: 0:00\n"
+                        f"```\nStarting…\n```"
+                    )
+                )
+            except Exception as e:
+                log.error(f"Failed to send initial savesign007 log message: {e}")
+                cli_log_channel = None
+
+        async def log_updater() -> None:
+            while True:
+                try:
+                    line = await asyncio.wait_for(log_queue.get(), timeout=15.0)
+                    log_buffer.append(line)
+                    while not log_queue.empty():
+                        log_buffer.append(log_queue.get_nowait())
+                except asyncio.TimeoutError:
+                    pass
+                except asyncio.CancelledError:
+                    await _drain_log_queue()
+                    break
+
+                latest = _latest_progress_line()
+                if latest and not finalizing["done"]:
+                    if cli_log_channel and log_message:
+                        channel_mention = interaction.channel.mention if interaction.channel else "(unknown channel)"
+                        try:
+                            await log_message.edit(
+                                content=(
+                                    f"🟢 **SaveSign007 — running**\n"
+                                    f"User: {interaction.user.mention}   New ID: `{normalized_newid}`   "
+                                    f"Channel: {channel_mention}\n"
+                                    f"Lines: {len(log_buffer)}   Elapsed: {_fmt_duration(time.monotonic() - start_time)}\n"
+                                    f"```\n{latest[-1800:]}\n```"
+                                )
+                            )
+                        except Exception as e:
+                            log.warning(f"Failed to update savesign007 log message: {e}")
+                    try:
+                        status_line = f"**Progress:** `{latest[:1500]}`"
+                        mode_line = "\nMode: `rewrite-0x00`" if rewrite_0x00 else ""
+                        await interaction.edit_original_response(
+                            content=(
+                                f"⏳ Re-signing **007** saves to `{normalized_newid}`..."
+                                f"{mode_line}\n{status_line}{ignored_arg_note}"
+                            )
+                        )
+                    except Exception:
+                        pass
+                await asyncio.sleep(2.5)
+
+        async def send_final_message(content: str, file_bytes: bytes | None = None, filename: str | None = None) -> None:
+            log_channel_id = await self.config.log_channel()
+            fallback_channel = self.bot.get_channel(log_channel_id) if log_channel_id else None
+
+            async def _send_file_with_fallback(send_fn, send_kwargs, payload, payload_name):
+                file_obj = None
+                if payload is not None and payload_name:
+                    file_obj = discord.File(io.BytesIO(payload), filename=payload_name)
+                try:
+                    if file_obj:
+                        await send_fn(**send_kwargs, file=file_obj)
+                    else:
+                        await send_fn(**send_kwargs)
+                    return True
+                except discord.HTTPException as e:
+                    log.warning(
+                        "Discord file upload failed (%s %s), falling back to AnonDrop",
+                        e.status,
+                        e.code,
+                    )
+                if payload is None or not payload_name:
+                    return False
+
+                _nitro_note = "\n-# 💡 Non-Nitro Discord limit is 10MB. Have Nitro? The file would've been sent directly — no upload needed."
+
+                async def _progress(percent: int):
+                    bar = "█" * (percent // 10) + "░" * (10 - percent // 10)
+                    try:
+                        await interaction.edit_original_response(
+                            content=f"{content}\n⬆️ Uploading to AnonDrop... `[{bar}] {percent}%`"
+                        )
+                    except Exception:
+                        pass
+
+                await interaction.edit_original_response(
+                    content=f"{content}\n⬆️ Uploading to AnonDrop... `[░░░░░░░░░░] 0%`"
+                )
+                anon_url = await self.save_signer.upload_to_anondrop(payload, payload_name, _progress)
+                if anon_url:
+                    send_kwargs["content"] = send_kwargs.get("content", "") + f"\n📎 {anon_url}{_nitro_note}"
+                else:
+                    send_kwargs["content"] = send_kwargs.get("content", "") + (
+                        "\n❌ File was too large for Discord and AnonDrop upload also failed."
+                    )
+                await send_fn(**send_kwargs)
+                return bool(anon_url)
+
+            try:
+                await interaction.edit_original_response(content=content)
+                if file_bytes is not None and filename:
+                    await _send_file_with_fallback(interaction.followup.send, {}, file_bytes, filename)
+                return
+            except Exception as e:
+                log.warning(f"Failed to edit original savesign007 response: {e}")
+
+            if user:
+                try:
+                    await _send_file_with_fallback(user.send, {"content": content}, file_bytes, filename)
+                    return
+                except (discord.Forbidden, discord.HTTPException) as e:
+                    log.warning(f"Failed to send savesign007 DM to notify user {user}: {e}")
+
+            try:
+                await _send_file_with_fallback(interaction.user.send, {"content": content}, file_bytes, filename)
+                return
+            except (discord.Forbidden, discord.HTTPException) as e:
+                log.warning(f"Failed to send savesign007 DM to command user {interaction.user}: {e}")
+
+            fallback_channels = []
+            if interaction.channel and hasattr(interaction.channel, "send"):
+                fallback_channels.append(interaction.channel)
+            if fallback_channel:
+                fallback_channels.append(fallback_channel)
+            if cli_log_channel:
+                fallback_channels.append(cli_log_channel)
+
+            mention_prefix = f"{user.mention} " if user else f"{interaction.user.mention} "
+            for channel in fallback_channels:
+                try:
+                    await _send_file_with_fallback(
+                        channel.send,
+                        {"content": f"{mention_prefix}{content}"},
+                        file_bytes,
+                        filename,
+                    )
+                    return
+                except Exception as e:
+                    log.error(f"Failed to send savesign007 result to fallback channel {channel.id}: {e}")
+
+            log.error("Failed to deliver savesign007 results for %s via any fallback", interaction.user)
+
+        progress_task = asyncio.create_task(log_updater())
+        result = None
+        try:
+            save007 = Save007Resigner(log)
+            result = await save007.run_resign(
+                archive_bytes=data,
+                new_id=normalized_newid,
+                rewrite_0x00=rewrite_0x00,
+                progress_callback=progress_callback,
+                timeout_seconds=600,
+            )
+        except Exception:
+            log.exception("Unexpected savesign007 failure for %s", interaction.user)
+            finalizing["done"] = True
+            progress_task.cancel()
+            try:
+                await progress_task
+            except Exception:
+                pass
+            await interaction.edit_original_response(
+                content="❌ Unexpected error while processing the 007 archive."
+            )
+            return
+        finally:
+            if not progress_task.done():
+                finalizing["done"] = True
+                progress_task.cancel()
+                try:
+                    await progress_task
+                except Exception:
+                    pass
+            await _drain_log_queue()
+
+        if result is None:
+            await interaction.edit_original_response(content="❌ Unknown savesign007 failure.")
+            return
+
+        if cli_log_channel and log_message:
+            try:
+                icon = "✅" if result.ok else "❌"
+                status = "complete" if result.ok else "failed"
+                final_log_text = "\n".join(log_buffer[-25:]) if log_buffer else (result.stdout_tail or "No logs produced.")
+                if len(final_log_text) > 1800:
+                    final_log_text = f"...{final_log_text[-1797:]}"
+                channel_mention = interaction.channel.mention if interaction.channel else "(unknown channel)"
+                await log_message.edit(
+                    content=(
+                        f"{icon} **SaveSign007 — {status}**\n"
+                        f"User: {interaction.user.mention}   New ID: `{normalized_newid}`   "
+                        f"Channel: {channel_mention}\n"
+                        f"Lines: {len(log_buffer)}   Duration: {_fmt_duration(time.monotonic() - start_time)}\n"
+                        f"```\n{final_log_text}\n```"
+                    )
+                )
+            except Exception:
+                pass
+
+        notify_line = f"{user.mention}\n" if user else ""
+        mode_line = "\nMode: `rewrite-0x00`" if rewrite_0x00 else ""
+        if not result.ok:
+            error_text = result.error or "Unknown resign error"
+            tail_text = result.stdout_tail[-1200:] if result.stdout_tail else ""
+            details = f"\n```\n{tail_text}\n```" if tail_text else ""
+            await interaction.edit_original_response(
+                content=f"❌ **007 resign failed**\n{error_text}{mode_line}{ignored_arg_note}{details}"
+            )
+            return
+
+        summary_line = ""
+        if result.summary_json:
+            files_resigned = result.summary_json.get("files_resigned")
+            files_total = result.summary_json.get("files_total")
+            if files_resigned is not None and files_total is not None:
+                summary_line = f"\nFiles resigned: `{files_resigned}/{files_total}`"
+        success_content = (
+            f"{notify_line}✅ **007 resign complete!**\n\n"
+            f"New ID: `{normalized_newid}`{mode_line}{summary_line}{ignored_arg_note}"
+        )
+        await send_final_message(success_content, result.zip_bytes, result.zip_filename)
 
     @app_commands.command(
         name="savesign",
