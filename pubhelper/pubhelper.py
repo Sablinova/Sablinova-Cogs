@@ -5,6 +5,7 @@ Provides slash commands to combine user configs with basefiles for different gam
 """
 
 import asyncio
+import contextlib
 import hashlib
 import io
 import json
@@ -37,6 +38,11 @@ from .savesigner import (
 from .save007 import Save007Resigner
 
 log = logging.getLogger("red.sablinova.pubhelper")
+
+
+def _sanitize_cdn_url(url: str) -> str:
+    parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
 
 INVALID_LINK_MSG = "Invalid or expired link. Please provide a valid token link."
 
@@ -5084,11 +5090,6 @@ class SabPubHelper(commands.Cog):
             )
         )
 
-        data = await self._download_file(link)
-        if isinstance(data, str):
-            await interaction.edit_original_response(content=f"❌ Download failed: {data}")
-            return
-
         log_queue: asyncio.Queue[str] = asyncio.Queue()
         cli_log_channel_id = await self.config.cli_log_channel()
         cli_log_channel = self.bot.get_channel(cli_log_channel_id) if cli_log_channel_id else None
@@ -5167,6 +5168,14 @@ class SabPubHelper(commands.Cog):
                         except Exception as e:
                             log.warning(f"Failed to update savesign007 log message: {e}")
                     try:
+                        lowered = latest.lower()
+                        should_surface = any(
+                            token in lowered
+                            for token in ("download", "extract", "resign", "zip", "%")
+                        )
+                        if not should_surface:
+                            await asyncio.sleep(2.5)
+                            continue
                         status_line = f"**Progress:** `{latest[:1500]}`"
                         mode_line = "\nMode: `rewrite-0x00`" if rewrite_0x00 else ""
                         await interaction.edit_original_response(
@@ -5178,6 +5187,8 @@ class SabPubHelper(commands.Cog):
                     except Exception:
                         pass
                 await asyncio.sleep(2.5)
+
+        progress_task = asyncio.create_task(log_updater())
 
         async def send_final_message(content: str, file_bytes: bytes | None = None, filename: str | None = None) -> None:
             log_channel_id = await self.config.log_channel()
@@ -5270,9 +5281,19 @@ class SabPubHelper(commands.Cog):
 
             log.error("Failed to deliver savesign007 results for %s via any fallback", interaction.user)
 
-        progress_task = asyncio.create_task(log_updater())
         result = None
+        data = None
         try:
+            data = await self._download_file(
+                link,
+                progress_callback=progress_callback,
+                total_timeout=600,
+                logger=log,
+            )
+            if isinstance(data, str):
+                await interaction.edit_original_response(content=f"❌ Download failed: {data}")
+                return
+
             save007 = Save007Resigner(log)
             result = await save007.run_resign(
                 archive_bytes=data,
@@ -5294,13 +5315,11 @@ class SabPubHelper(commands.Cog):
             )
             return
         finally:
+            finalizing["done"] = True
             if not progress_task.done():
-                finalizing["done"] = True
                 progress_task.cancel()
-                try:
-                    await progress_task
-                except Exception:
-                    pass
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await progress_task
             await _drain_log_queue()
 
         if result is None:
@@ -5499,16 +5518,45 @@ class SabPubHelper(commands.Cog):
         if file_sent:
             await interaction.followup.send(placement_txt)
 
-    async def _download_file(self, url: str) -> bytes | str:
+    async def _download_file(
+        self,
+        url: str,
+        progress_callback=None,
+        total_timeout: int | None = None,
+        logger: logging.Logger | None = None,
+    ) -> bytes | str:
         """Download file from URL. Returns bytes on success, error string on failure."""
+        active_logger = logger or log
+        sanitized_url = _sanitize_cdn_url(url)
+        timeout = aiohttp.ClientTimeout(
+            total=total_timeout, connect=15, sock_connect=15, sock_read=120
+        )
+        started = time.monotonic()
+
+        async def emit(line: str) -> None:
+            if progress_callback is None:
+                return
+            result = progress_callback(line)
+            if asyncio.iscoroutine(result) or asyncio.isfuture(result):
+                await result
+
         try:
+            active_logger.info("[savesign007] download request start: url=%s", sanitized_url)
+            await emit("Starting archive download...")
             async with aiohttp.ClientSession() as session:
                 async with session.get(
                     url,
-                    timeout=aiohttp.ClientTimeout(
-                        total=None, connect=15, sock_connect=15, sock_read=120
-                    ),
+                    timeout=timeout,
                 ) as resp:
+                    content_length_header = resp.headers.get("Content-Length")
+                    content_type = resp.headers.get("Content-Type", "")
+                    active_logger.info(
+                        "[savesign007] download response: url=%s status=%s content_length=%s content_type=%s",
+                        sanitized_url,
+                        resp.status,
+                        content_length_header,
+                        content_type,
+                    )
                     if resp.status == 403:
                         return "Access denied (403)"
                     elif resp.status == 404:
@@ -5516,7 +5564,7 @@ class SabPubHelper(commands.Cog):
                     elif resp.status != 200:
                         return f"HTTP {resp.status}"
 
-                    content_length_header = resp.headers.get("Content-Length")
+                    advertised = None
                     if content_length_header and content_length_header.isdigit():
                         advertised = int(content_length_header)
                         if advertised > 500 * 1024 * 1024:
@@ -5525,7 +5573,55 @@ class SabPubHelper(commands.Cog):
                                 f"Maximum supported is 500 MB."
                             )
 
-                    content = await resp.read()
+                    chunks: list[bytes] = []
+                    downloaded = 0
+                    last_progress = started
+                    async for chunk in resp.content.iter_chunked(65536):
+                        chunks.append(chunk)
+                        downloaded += len(chunk)
+                        now = time.monotonic()
+                        if downloaded > 500 * 1024 * 1024:
+                            active_logger.warning(
+                                "[savesign007] download size cap exceeded: url=%s bytes=%d",
+                                sanitized_url,
+                                downloaded,
+                            )
+                            await emit("Archive exceeds 500MB limit")
+                            return "Archive exceeds 500MB limit"
+                        if now - last_progress >= 1.0:
+                            downloaded_mb = downloaded / (1024 * 1024)
+                            if advertised:
+                                percent = (downloaded / advertised) * 100 if advertised else 0
+                                total_mb = advertised / (1024 * 1024)
+                                line = f"Downloaded {downloaded_mb:.1f} / {total_mb:.1f} MB ({percent:.1f}%)"
+                            else:
+                                line = f"Downloaded {downloaded_mb:.1f} MB"
+                            active_logger.info(
+                                "[savesign007] download progress: url=%s bytes=%d advertised=%s",
+                                sanitized_url,
+                                downloaded,
+                                advertised,
+                            )
+                            await emit(line)
+                            last_progress = now
+
+                    content = b"".join(chunks)
+                    elapsed = max(time.monotonic() - started, 0.001)
+                    speed_mb_s = (len(content) / (1024 * 1024)) / elapsed
+                    downloaded_mb = len(content) / (1024 * 1024)
+                    if advertised:
+                        await emit(
+                            f"Downloaded {downloaded_mb:.1f} / {advertised / (1024 * 1024):.1f} MB (100.0%)"
+                        )
+                    else:
+                        await emit(f"Downloaded {downloaded_mb:.1f} MB")
+                    active_logger.info(
+                        "[savesign007] download finish: url=%s bytes=%d elapsed=%.3fs speed_mb_s=%.3f",
+                        sanitized_url,
+                        len(content),
+                        elapsed,
+                        speed_mb_s,
+                    )
 
                     if content.startswith(b"<!DOCTYPE") or content.startswith(b"<html"):
                         return "Link returned a webpage, not a file"
@@ -5535,18 +5631,21 @@ class SabPubHelper(commands.Cog):
 
                     # Log what we got for archive debugging
                     magic = content[:10] if len(content) >= 10 else content
-                    log.debug(
-                        "_download_file: downloaded %d bytes, magic: %r, URL: %s",
-                        len(content), magic, url[:120],
+                    active_logger.debug(
+                        "[savesign007] download bytes ready: bytes=%d magic=%r url=%s",
+                        len(content), magic, sanitized_url,
                     )
 
                     return content
 
         except asyncio.TimeoutError:
+            active_logger.exception("[savesign007] download timed out: url=%s", sanitized_url)
             return "Download timed out"
         except aiohttp.ClientError as e:
+            active_logger.exception("[savesign007] download client error: url=%s", sanitized_url)
             return f"Connection error: {e}"
         except Exception as e:
+            active_logger.exception("[savesign007] download unexpected error: url=%s", sanitized_url)
             return str(e)
 
     def _combine_files(
