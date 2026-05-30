@@ -174,6 +174,84 @@ def detect_container_ids(container: Path) -> tuple[int | None, int | None]:
     return idx, dat
 
 
+def resolve_old_sid_for_container(c_dir: Path, override_sid: int | None) -> tuple[int | None, int | None]:
+    """Resolve per-container source Steam64 ids for data.save and index.save."""
+    idx_path = c_dir / "index.save"
+    data_path = c_dir / "data.save"
+    if override_sid is not None:
+        return override_sid, override_sid
+    index_sid = detect_steam_id_from_index(idx_path) if idx_path.exists() else None
+    if not data_path.exists():
+        return None, index_sid
+    if index_sid is not None and quick_verify_data_key(data_path, index_sid):
+        return index_sid, index_sid
+    return brute_force_data_key(data_path), index_sid
+
+
+def resign_one_container(c_dir: Path, override_sid: int | None, new_sid: int, dry_run: bool, args: argparse.Namespace) -> dict:
+    """Resign one save container and capture per-file failures."""
+    idx_path = c_dir / "index.save"
+    data_path = c_dir / "data.save"
+    result = {
+        "container": str(c_dir),
+        "index_sid": None,
+        "data_sid": None,
+        "index_processed": False,
+        "data_processed": False,
+        "skipped": [],
+        "failures": [],
+    }
+    detected_idx = detect_steam_id_from_index(idx_path) if idx_path.exists() else None
+    if args.old_id and detected_idx not in (None, override_sid):
+        out(args, f"warn: --old-id disagrees for {c_dir}", True)
+    try:
+        data_sid, index_sid = resolve_old_sid_for_container(c_dir, override_sid)
+    except Exception as exc:
+        result["failures"].append({"file": "detection", "stage": "resolve", "error": str(exc)})
+        return result
+    result["index_sid"] = index_sid
+    result["data_sid"] = data_sid
+    if idx_path.exists():
+        if index_sid is None:
+            result["failures"].append({"file": "index.save", "stage": "detect", "error": "could not determine index SteamID"})
+        elif dry_run:
+            result["index_processed"] = True
+        else:
+            try:
+                idx_path.write_bytes(xor_stream(idx_path.read_bytes(), steam64_to_le8(index_sid ^ new_sid)))
+                result["index_processed"] = True
+            except Exception as exc:
+                result["failures"].append({"file": "index.save", "stage": "rewrite", "error": str(exc)})
+    else:
+        result["skipped"].append("index.save")
+    if data_path.exists():
+        if data_sid is None:
+            result["failures"].append({"file": "data.save", "stage": "detect", "error": "could not determine data SteamID (index detection and brute-force both failed)"})
+        elif dry_run:
+            result["data_processed"] = True
+        else:
+            try:
+                plain = decrypt_data(data_path, data_sid)
+            except Exception as exc:
+                result["failures"].append({"file": "data.save", "stage": "decrypt", "error": str(exc)})
+            else:
+                try:
+                    cipher_payload = zlib.compress(plain, level=4)
+                except Exception as exc:
+                    result["failures"].append({"file": "data.save", "stage": "recompress", "error": str(exc)})
+                else:
+                    try:
+                        data_path.write_bytes(xor_stream(cipher_payload, steam64_to_le8(new_sid)))
+                        result["data_processed"] = True
+                    except Exception as exc:
+                        result["failures"].append({"file": "data.save", "stage": "encrypt_write", "error": str(exc)})
+    else:
+        result["skipped"].append("data.save")
+    if result["index_processed"] and result["data_processed"] and index_sid != data_sid and index_sid is not None and data_sid is not None:
+        out(args, f"warn: {c_dir}: index.save and data.save have different source SteamIDs (idx={index_sid}, data={data_sid}); processing independently", True)
+    return result
+
+
 def write_bytes(path: Path, data: bytes, dry_run: bool) -> None:
     """Write bytes unless dry-run is active."""
     if not dry_run:
@@ -294,42 +372,65 @@ def validate_resign(src: Path, dst: Path, yes: bool) -> None:
 def cmd_resign(args: argparse.Namespace) -> int:
     src, dst = Path(args.src), Path(args.dst)
     validate_resign(src, dst, args.yes)
-    counts = {"index": 0, "data": 0, "copied": 0, "skipped": 0}
     if args.dry_run:
         out(args, f"would copy {src} -> {dst}")
     else:
         shutil.copytree(src, dst, dirs_exist_ok=args.yes)
-    counts["copied"] = sum(1 for _ in src.rglob("*") if _.is_file())
     new_sid = parse_steam_id(args.new_id)
+    override_sid = parse_steam_id(args.old_id) if args.old_id else None
+    counts = {"index": 0, "data": 0, "copied": 0, "skipped": 0}
+    counts["copied"] = sum(1 for _ in src.rglob("*") if _.is_file())
+
+    results = []
     old_seen = []
-    for container in find_save_containers(dst if not args.dry_run else src):
-        idx_path, data_path = container / "index.save", container / "data.save"
-        detected_idx = detect_steam_id_from_index(idx_path) if idx_path.exists() else None
-        old_sid = parse_steam_id(args.old_id) if args.old_id else detected_idx
-        if old_sid is not None:
-            old_seen.append(old_sid)
-        if args.old_id and old_sid and detected_idx not in (None, old_sid):
-            out(args, f"warn: --old-id disagrees for {container}", True)
-        if old_sid is None:
-            out(args, f"WARN: {container} — could not determine old Steam64 (no --old-id and detection failed). Skipping.", True)
-            counts["skipped"] += 1
-            continue
-        if idx_path.exists():
+    container_root = src if args.dry_run else dst
+    for container in find_save_containers(container_root):
+        res = resign_one_container(container, override_sid, new_sid, args.dry_run, args)
+        results.append(res)
+        if res["index_processed"]:
             counts["index"] += 1
-            if not args.dry_run and old_sid is not None:
-                idx_path.write_bytes(xor_stream(idx_path.read_bytes(), steam64_to_le8(old_sid ^ new_sid)))
-        else:
-            counts["skipped"] += 1
-        if data_path.exists():
+        if res["data_processed"]:
             counts["data"] += 1
-            if not args.dry_run and old_sid is not None:
-                plain = decrypt_data(data_path, old_sid)
-                data_path.write_bytes(xor_stream(zlib.compress(plain, level=4), steam64_to_le8(new_sid)))
-        else:
-            counts["skipped"] += 1
+        counts["skipped"] += len(res["skipped"])
+        if res["data_sid"] is not None:
+            old_seen.append(res["data_sid"])
+        elif res["index_sid"] is not None:
+            old_seen.append(res["index_sid"])
+
+    containers_total = len(results)
+    containers_with_failures = sum(1 for r in results if r["failures"])
+    containers_fully_failed = sum(1 for r in results if r["failures"] and not r["index_processed"] and not r["data_processed"])
+    total_processed = counts["index"] + counts["data"]
+
+    partial_failures = []
+    for r in results:
+        for f in r["failures"]:
+            partial_failures.append({
+                "container": r["container"],
+                "file": f["file"],
+                "stage": f["stage"],
+                "error": f["error"],
+            })
+
     source_sid = old_seen[0] if len(set(old_seen)) == 1 and old_seen else "N/A"
-    summary(args, {"command": "resign", "status": "ok", "source_steam64": source_sid, "target_steam64": new_sid, "files": counts})
-    return EXIT_OK
+    status = "ok"
+    exit_code = EXIT_OK
+    if containers_total == 0:
+        pass
+    elif total_processed == 0:
+        status = "error"
+        exit_code = EXIT_IO
+    summary_payload = {
+        "command": "resign",
+        "status": status,
+        "source_steam64": source_sid,
+        "target_steam64": new_sid,
+        "files": counts,
+    }
+    if partial_failures:
+        summary_payload["partial_failures"] = partial_failures
+    summary(args, summary_payload)
+    return exit_code
 
 
 def cmd_bruteforce(args: argparse.Namespace) -> int:
@@ -403,6 +504,16 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"status": "error", "error": str(exc), "command": getattr(args, 'command', None)}))
         else:
             print(f"error: {exc}", file=sys.stderr)
+        return EXIT_IO
+    except Exception as exc:
+        if getattr(args, 'json', False):
+            print(json.dumps({
+                "status": "error",
+                "error": f"unhandled: {type(exc).__name__}: {exc}",
+                "command": getattr(args, 'command', None),
+            }))
+        else:
+            print(f"error: unhandled {type(exc).__name__}: {exc}", file=sys.stderr)
         return EXIT_IO
 
 
