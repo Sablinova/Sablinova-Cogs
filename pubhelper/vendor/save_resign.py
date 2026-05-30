@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""007 First Light save tools, version 2.0.0."""
+"""007 First Light save tools, version 2.1.0."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ EXIT_BAD_ARGS = 2
 EXIT_SAFETY = 3
 EXIT_FORMAT = 4
 EXIT_IO = 5
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 KNOWN_NAMES = ["Version", "Spawnpoint", "PlayerName", "Difficulty", "Mission", "Checkpoint", "Score", "Time", "Health"]
 
 
@@ -71,13 +71,6 @@ def summary(args: argparse.Namespace, data: dict) -> None:
     print(f"target steam64: {data.get('target_steam64', 'N/A')}")
     counts = data.get("files", {})
     print(f"files: index={counts.get('index', 0)} data={counts.get('data', 0)} copied={counts.get('copied', 0)} skipped={counts.get('skipped', 0)}")
-    note = "After resigning, regenerate remotecache.vdf with Steam closed."
-    print(f"note: {note}")
-    if data.get("command") in {"resign", "encrypt"} and data.get("status") != "error":
-        print("      Path on Windows: %PROGRAMFILES(X86)%/Steam/userdata/<AccountID>/<AppID>/remotecache.vdf")
-        print("      Delete it; Steam will rebuild on next launch (with Steam closed during file edits).")
-
-
 def parse_steam_id(value: str) -> int:
     """Parse a decimal Steam64 string."""
     sid = int(value)
@@ -461,14 +454,6 @@ def cmd_parse(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def cmd_vdf(args: argparse.Namespace) -> int:
-    out(args, "Delete and regenerate remotecache.vdf while Steam is fully closed.")
-    out(args, "Windows path: %PROGRAMFILES(X86)%/Steam/userdata/<AccountID>/<AppID>/remotecache.vdf")
-    out(args, "Delete the file after edits; Steam rebuilds it on next launch.")
-    summary(args, {"command": "vdf", "status": "ok", "source_steam64": "N/A", "target_steam64": "N/A", "files": {"index": 0, "data": 0, "copied": 0, "skipped": 0}})
-    return EXIT_OK
-
-
 def build_parser() -> argparse.ArgumentParser:
     """Build the CLI parser."""
     parser = argparse.ArgumentParser(prog="save_resign.py")
@@ -481,7 +466,6 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("resign"); p.add_argument("--src", required=True); p.add_argument("--dst", required=True); p.add_argument("--new-id", required=True); p.add_argument("--old-id"); p.add_argument("--yes", action="store_true"); p.add_argument("--dry-run", action="store_true"); p.set_defaults(func=cmd_resign)
     p = sub.add_parser("bruteforce"); p.add_argument("path"); p.set_defaults(func=cmd_bruteforce)
     p = sub.add_parser("parse"); p.add_argument("path"); p.set_defaults(func=cmd_parse)
-    p = sub.add_parser("vdf"); p.set_defaults(func=cmd_vdf)
     return parser
 
 
