@@ -5083,6 +5083,12 @@ class SabPubHelper(commands.Cog):
                 )
                 ignored_arg_note = "\n-# Ignored unknown arg input."
 
+        if dry_run:
+            await interaction.edit_original_response(
+                content="❌ `dry-run` is no longer supported by the new sabby007 engine. Re-run without the flag."
+            )
+            return
+
         await interaction.edit_original_response(
             content=(
                 f"⏳ Downloading archive for **007 resign → `{normalized_newid}`**…"
@@ -5177,11 +5183,10 @@ class SabPubHelper(commands.Cog):
                             await asyncio.sleep(2.5)
                             continue
                         status_line = f"**Progress:** `{latest[:1500]}`"
-                        mode_line = "\nMode: `dry-run`" if dry_run else ""
                         await interaction.edit_original_response(
                             content=(
                                 f"⏳ Re-signing **007** saves to `{normalized_newid}`..."
-                                f"{mode_line}\n{status_line}{ignored_arg_note}"
+                                f"\n{status_line}{ignored_arg_note}"
                             )
                         )
                     except Exception:
@@ -5347,25 +5352,24 @@ class SabPubHelper(commands.Cog):
                 pass
 
         notify_line = f"{user.mention}\n" if user else ""
-        mode_line = "\nMode: `dry-run`" if dry_run else ""
         if not result.ok:
             error_text = result.error or "Unknown resign error"
             tail_text = result.stdout_tail[-1200:] if result.stdout_tail else ""
             details = f"\n```\n{tail_text}\n```" if tail_text else ""
             await interaction.edit_original_response(
-                content=f"❌ **007 resign failed**\n{error_text}{mode_line}{ignored_arg_note}{details}"
+                content=f"❌ **007 resign failed**\n{error_text}{ignored_arg_note}{details}"
             )
             return
 
         summary_line = ""
         partial_warning_line = ""
         if result.summary_json:
-            files = result.summary_json.get("files")
+            files = result.summary_json.get("files") if isinstance(result.summary_json, dict) else None
             if isinstance(files, dict):
                 index_count = files.get("index")
                 data_count = files.get("data")
                 copied_count = files.get("copied")
-                skipped_count = files.get("skipped")
+                skipped_count = files.get("skipped", 0)
                 file_counts = (index_count, data_count, copied_count, skipped_count)
                 if all(isinstance(count, int) for count in file_counts):
                     summary_line = (
@@ -5379,7 +5383,7 @@ class SabPubHelper(commands.Cog):
                         )
         success_content = (
             f"{notify_line}✅ **007 resign complete!**\n\n"
-            f"New ID: `{normalized_newid}`{mode_line}{summary_line}{partial_warning_line}{ignored_arg_note}"
+            f"New ID: `{normalized_newid}`{summary_line}{partial_warning_line}{ignored_arg_note}"
         )
         await send_final_message(success_content, result.zip_bytes, result.zip_filename)
 

@@ -2,15 +2,15 @@ import asyncio
 import contextlib
 import inspect
 import io
-import json
 import logging
 import os
 import pathlib
 import re
-import shlex
-import sys
+import stat
+import shutil
 import tempfile
 import time
+import uuid
 import zipfile
 from dataclasses import dataclass
 from typing import Awaitable, Callable
@@ -37,8 +37,8 @@ class Save007Resigner:
         self.log = log
 
     @property
-    def vendor_script(self) -> pathlib.Path:
-        return (pathlib.Path(__file__).parent / "vendor" / "save_resign.py").resolve()
+    def vendor_bin(self) -> pathlib.Path:
+        return (pathlib.Path(__file__).parent / "vendor" / "bin" / "sabby007").resolve()
 
     def _zip_filename(self, new_id: str) -> str:
         safe_new_id = re.sub(r"[^A-Za-z0-9._-]", "_", new_id) or "unknown"
@@ -62,6 +62,9 @@ class Save007Resigner:
         dry_run: bool = False,
         timeout_seconds: int = 600,
     ) -> Resign007Result:
+        if dry_run:
+            raise ValueError("Dry run is no longer supported by the sabby007 engine")
+
         zip_filename = self._zip_filename(new_id)
         run_started = time.monotonic()
         self._log_step(
@@ -144,24 +147,46 @@ class Save007Resigner:
                 )
                 await self._report_step(progress_callback, f"Save root found at {chosen_path}.")
 
+                self._validate_new_id(new_id)
+
+                copy_started = time.monotonic()
+                self._log_step("copy source tree start:", src=src_dir, dst=dst_dir)
+                await self._report_step(progress_callback, "Copying extracted save tree before resign...")
+                await asyncio.to_thread(
+                    shutil.copytree,
+                    src_dir,
+                    dst_dir,
+                    dirs_exist_ok=True,
+                    symlinks=True,
+                )
+                backup_restore_name = self._prepare_backup_conflict(dst_dir)
+                self._log_step(
+                    "copy source tree finish:",
+                    elapsed=f"{time.monotonic() - copy_started:.3f}s",
+                )
+
+                vendor_bin = self.vendor_bin
+                self._ensure_vendor_bin(vendor_bin)
+
                 cmd = [
-                    sys.executable,
-                    str(self.vendor_script),
-                    "--json",
+                    str(vendor_bin),
                     "resign",
-                    "--src",
-                    str(src_dir),
-                    "--dst",
+                    "--folder",
                     str(dst_dir),
-                    "--new-id",
+                    "--to-id",
                     new_id,
-                    "--yes",
+                    "-y",
                 ]
-                if dry_run:
-                    cmd.append("--dry-run")
-                self._log_step("build subprocess command:", command=shlex.join(cmd), elapsed="0.000s")
+                self._log_step("build subprocess command:", command=cmd, elapsed="0.000s")
                 await self._report_step(progress_callback, "Launching 007 resigner subprocess...")
-                result = await self._run_process(cmd, new_id, progress_callback, timeout_seconds, dst_dir)
+                result = await self._run_process(
+                    cmd,
+                    new_id,
+                    progress_callback,
+                    timeout_seconds,
+                    dst_dir,
+                    backup_restore_name,
+                )
                 self._log_step(
                     "run finish:",
                     ok=result.ok,
@@ -183,16 +208,20 @@ class Save007Resigner:
         self._log_step("extract start:", archive_type=archive_type, path=archive_path)
         try:
             if archive_bytes.startswith(b"Rar!\x1a\x07"):
+                self._ensure_rar_support()
                 with rarfile.RarFile(archive_path) as archive:
                     self._safe_extract_rar(archive, extract_dir)
+                self._ensure_no_symlinks(extract_dir)
                 return None
             if archive_bytes.startswith(b"7z\xbc\xaf\x27\x1c"):
                 with py7zr.SevenZipFile(archive_path, "r") as archive:
                     self._safe_extract_7z(archive, extract_dir)
+                self._ensure_no_symlinks(extract_dir)
                 return None
             if archive_bytes.startswith(b"PK\x03\x04") or archive_bytes.startswith(b"PK\x05\x06"):
                 with zipfile.ZipFile(archive_path, "r") as archive:
                     self._safe_extract_zip(archive, extract_dir)
+                self._ensure_no_symlinks(extract_dir)
                 return None
         except Exception as exc:
             self.log.exception("[savesign007] extract failed archive_type=%s", archive_type)
@@ -209,20 +238,93 @@ class Save007Resigner:
             return "zip"
         return "unknown"
 
+    def _ensure_vendor_bin(self, vendor_bin: pathlib.Path) -> None:
+        if vendor_bin.exists() and os.access(vendor_bin, os.X_OK):
+            return
+        raise RuntimeError(
+            f"sabby007 binary is missing or not executable at {vendor_bin}. "
+            "Ensure pubhelper/vendor/bin/sabby007 is committed with +x bit "
+            "(git update-index --chmod=+x)."
+        )
+
+    def _ensure_rar_support(self) -> None:
+        unrar = shutil.which("unrar")
+        unar = shutil.which("unar")
+        bsdtar = shutil.which("bsdtar")
+        if unrar:
+            rarfile.UNRAR_TOOL = unrar
+        elif unar:
+            rarfile.UNAR_TOOL = unar
+        elif bsdtar:
+            rarfile.BSDTAR_TOOL = bsdtar
+        else:
+            raise RuntimeError(
+                "RAR extraction requires `unrar`, `unar`, or `bsdtar` on the bot host. "
+                "Install with: `sudo apt install unrar` (or `unar`)."
+            )
+
     def _safe_extract_zip(self, archive: zipfile.ZipFile, extract_dir: pathlib.Path) -> None:
         for member in archive.infolist():
+            self._ensure_zip_member_safe(member)
             self._validate_extract_path(extract_dir, member.filename)
         archive.extractall(extract_dir)
 
     def _safe_extract_rar(self, archive: rarfile.RarFile, extract_dir: pathlib.Path) -> None:
         for member in archive.infolist():
+            self._ensure_rar_member_safe(member)
             self._validate_extract_path(extract_dir, member.filename)
         archive.extractall(extract_dir)
 
     def _safe_extract_7z(self, archive: py7zr.SevenZipFile, extract_dir: pathlib.Path) -> None:
+        for member in archive.list():
+            self._ensure_7z_member_safe(member)
         for name in archive.getnames():
             self._validate_extract_path(extract_dir, name)
         archive.extractall(extract_dir)
+
+    def _ensure_zip_member_safe(self, member: zipfile.ZipInfo) -> None:
+        if stat.S_ISLNK(member.external_attr >> 16):
+            raise RuntimeError("Archive contains symlinks; refusing to extract for safety.")
+
+    def _ensure_rar_member_safe(self, member: rarfile.RarInfo) -> None:
+        is_symlink = False
+        with contextlib.suppress(AttributeError):
+            is_symlink = bool(member.is_symlink())
+        if not is_symlink and (getattr(member, "file_attr", 0) & 0xF000) == 0xA000:
+            is_symlink = True
+        if is_symlink:
+            raise RuntimeError("Archive contains symlinks; refusing to extract for safety.")
+
+    def _ensure_7z_member_safe(self, member: object) -> None:
+        if getattr(member, "is_symlink", False):
+            raise RuntimeError("Archive contains symlinks; refusing to extract for safety.")
+
+    def _ensure_no_symlinks(self, root: pathlib.Path) -> None:
+        for current_root, dirnames, filenames in os.walk(root, followlinks=False):
+            base = pathlib.Path(current_root)
+            for name in [*dirnames, *filenames]:
+                if (base / name).is_symlink():
+                    raise RuntimeError("Archive contains symlinks; refusing to extract for safety.")
+
+    def _validate_new_id(self, new_id: str) -> None:
+        if not re.fullmatch(r"[0-9]{1,20}", new_id or ""):
+            raise ValueError(f"Invalid Steam64 id for --to-id: {new_id!r}")
+
+    def _prepare_backup_conflict(self, dst_dir: pathlib.Path) -> pathlib.Path | None:
+        backup_dir = dst_dir / "Backup"
+        if not backup_dir.exists():
+            return None
+        sentinel = dst_dir / f"_user_backup_{uuid.uuid4().hex}"
+        backup_dir.rename(sentinel)
+        return sentinel
+
+    def _restore_user_backup(self, dst_dir: pathlib.Path, sentinel: pathlib.Path | None) -> None:
+        if sentinel is None or not sentinel.exists():
+            return
+        restored = dst_dir / "Backup"
+        if restored.exists():
+            raise RuntimeError("Resign engine left a conflicting Backup folder after cleanup.")
+        sentinel.rename(restored)
 
     def _validate_extract_path(self, extract_dir: pathlib.Path, member_name: str) -> None:
         base = extract_dir.resolve()
@@ -262,19 +364,28 @@ class Save007Resigner:
         progress_callback: ProgressCallback,
         timeout_seconds: int,
         dst_dir: pathlib.Path,
+        backup_restore_name: pathlib.Path | None,
     ) -> Resign007Result:
         stdout_tail = ""
-        last_non_empty = ""
         zip_filename = self._zip_filename(new_id)
         proc = None
         process_started = time.monotonic()
         try:
             self._log_step("subprocess start:", timeout_seconds=timeout_seconds, elapsed="0.000s")
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                )
+            except OSError as exc:
+                if exc.errno in (8, 13) or "GLIBC" in str(exc):
+                    raise RuntimeError(
+                        "sabby007 binary failed to execute. The bot host may have an incompatible "
+                        "GLIBC (binary requires 2.34+, Debian 12 / Ubuntu 22.04+). "
+                        f"Original error: {exc}"
+                    ) from exc
+                raise
             self._log_step("subprocess pid:", pid=proc.pid, elapsed=f"{time.monotonic() - process_started:.3f}s")
             await self._report_step(progress_callback, f"Resigner started (pid {proc.pid}); waiting for output...")
             if proc.stdout is None:
@@ -290,15 +401,14 @@ class Save007Resigner:
             reader = asyncio.create_task(self._read_stdout(proc.stdout, progress_callback))
             started = time.monotonic()
             try:
-                stdout_tail, last_non_empty = await asyncio.wait_for(
-                    reader, timeout=timeout_seconds
-                )
+                stdout_tail = await asyncio.wait_for(reader, timeout=timeout_seconds)
                 elapsed = time.monotonic() - started
                 remaining = max(1.0, timeout_seconds - elapsed)
                 await asyncio.wait_for(waiter, timeout=remaining)
             except asyncio.TimeoutError:
                 proc.kill()
-                await proc.wait()
+                with contextlib.suppress(asyncio.TimeoutError, Exception):
+                    await asyncio.wait_for(proc.wait(), timeout=5)
                 waiter.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await waiter
@@ -324,7 +434,8 @@ class Save007Resigner:
         finally:
             if proc and proc.returncode is None:
                 proc.kill()
-                await proc.wait()
+                with contextlib.suppress(asyncio.TimeoutError, Exception):
+                    await asyncio.wait_for(proc.wait(), timeout=5)
 
         returncode = proc.returncode if proc else None
         self._log_step(
@@ -333,7 +444,7 @@ class Save007Resigner:
             elapsed=f"{time.monotonic() - process_started:.3f}s",
             stdout_tail_length=len(stdout_tail),
         )
-        summary = self._parse_summary(last_non_empty)
+        summary = self._synthesize_summary(dst_dir, returncode, stdout_tail)
         summary_keys = len(summary) if summary else 0
         self._log_step("summary parse:", parsed=bool(summary), key_count=summary_keys)
         if returncode != 0:
@@ -345,6 +456,9 @@ class Save007Resigner:
                 stdout_tail,
                 f"Resigner exited with code {returncode}",
             )
+
+        await asyncio.to_thread(shutil.rmtree, dst_dir / "Backup", ignore_errors=True)
+        await asyncio.to_thread(self._restore_user_backup, dst_dir, backup_restore_name)
 
         zip_started = time.monotonic()
         self._log_step("zip output start:", root=dst_dir)
@@ -369,45 +483,39 @@ class Save007Resigner:
 
     async def _read_stdout(
         self, stdout: asyncio.StreamReader, progress_callback: ProgressCallback
-    ) -> tuple[str, str]:
+    ) -> str:
         buffer = b""
         tail = ""
-        last_non_empty = ""
         while True:
             chunk = await stdout.read(1024)
             if not chunk:
                 break
             buffer += chunk
-            buffer, tail, last_non_empty = await self._consume_buffer(
-                buffer, tail, last_non_empty, progress_callback
-            )
+            buffer, tail = await self._consume_buffer(buffer, tail, progress_callback)
         if buffer:
             line = buffer.decode("utf-8", errors="ignore").strip()
             tail = self._append_tail(tail, line)
             if line:
-                last_non_empty = line
                 await self._emit_progress(progress_callback, line)
-        return tail, last_non_empty
+        return tail
 
     async def _consume_buffer(
         self,
         buffer: bytes,
         tail: str,
-        last_non_empty: str,
         progress_callback: ProgressCallback,
-    ) -> tuple[bytes, str, str]:
+    ) -> tuple[bytes, str]:
         while True:
             newline = buffer.find(b"\n")
             carriage = buffer.find(b"\r")
             indexes = [idx for idx in (newline, carriage) if idx != -1]
             if not indexes:
-                return buffer, tail, last_non_empty
+                return buffer, tail
             idx = min(indexes)
             line = buffer[:idx].decode("utf-8", errors="ignore").strip()
             buffer = buffer[idx + 1 :]
             tail = self._append_tail(tail, line)
             if line:
-                last_non_empty = line
                 await self._emit_progress(progress_callback, line)
 
     async def _emit_progress(self, progress_callback: ProgressCallback, line: str) -> None:
@@ -421,14 +529,29 @@ class Save007Resigner:
         updated = f"{tail}\n{line}" if tail else line
         return updated[-4000:]
 
-    def _parse_summary(self, line: str) -> dict | None:
-        if not line:
-            return None
-        try:
-            parsed = json.loads(line)
-        except json.JSONDecodeError:
-            return None
-        return parsed if isinstance(parsed, dict) else None
+    def _synthesize_summary(self, dst_dir: pathlib.Path, exit_code: int | None, stdout_tail: str) -> dict:
+        files = {"index": 0, "data": 0, "copied": 0, "skipped": 0}
+        containers = 0
+        for path in dst_dir.rglob("*"):
+            if not path.is_file() or "Backup" in path.parts:
+                continue
+            files["copied"] += 1
+            if path.name == "index.save":
+                files["index"] += 1
+                containers += 1
+            elif path.name == "data.save":
+                files["data"] += 1
+        return {
+            "ok": exit_code == 0,
+            "exit_code": exit_code,
+            "files": files,
+            "containers": containers,
+            "changed": None,
+            "from_id": "unknown",
+            "to_id": "unknown",
+            "stdout_tail": stdout_tail[-4000:],
+            # Safe defaults for legacy consumers expecting JSON-engine keys.
+        }
 
     def _zip_directory(self, root: pathlib.Path) -> bytes:
         buffer = io.BytesIO()
