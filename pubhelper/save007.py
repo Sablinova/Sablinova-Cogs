@@ -614,12 +614,29 @@ class Save007Resigner:
 
         CLI invocation (per upstream README):
             ./remote-cache-vdf-generator -p <path-to-remote-folder>
-        The binary writes ``remotecache.vdf`` into its OWN directory, so we
-        run it from a private working directory and copy the produced file
-        out. The Steam ID (``new_id``) and App ID
-        (``APP_ID_007_FIRST_LIGHT``) are not consumed by the upstream CLI --
-        the generator infers metadata purely from the remote folder
-        contents. They are logged here for traceability.
+
+        Critically, upstream parses the App ID from the parent directory
+        name of the supplied remote path (see ``GetAppIdFromPath`` in
+        ``Models/RemoteCacheVdfFile.cs``):
+
+            var parent = Path.GetFileName(Path.GetDirectoryName(path));
+            return int.TryParse(parent, out var result) ...
+
+        i.e. the immediate parent of ``remote`` MUST be a directory whose
+        name parses as an integer. Passing the bare resigned ``remote/``
+        folder yields ``Invalid AppId in path`` and exit code -6. We
+        therefore stage a Steam-userdata-like layout under a private
+        workdir:
+
+            <workdir>/<APP_ID_007_FIRST_LIGHT>/remote -> dst_dir (symlink,
+                                                       falling back to copytree)
+
+        and invoke the binary with ``-p <workdir>/<APP_ID>/remote``.
+
+        The binary writes ``remotecache.vdf`` into its own directory
+        (``MyAppInfo.RootPath``), so we copy the binary into the workdir
+        first and read the produced vdf from there. The resigned save tree
+        is left untouched.
         """
         vdf_started = time.monotonic()
         vendor_bin = self.vdf_vendor_bin
@@ -667,7 +684,48 @@ class Save007Resigner:
                 await self._report_step(progress_callback, f"VDF skipped: {msg}")
                 return None, msg
 
-            cmd = [str(run_bin), "-p", str(dst_dir)]
+            # Stage a Steam-userdata-style layout: <workdir>/<APP_ID>/remote.
+            # Upstream parses AppId from the parent directory name of the
+            # supplied path, so the immediate parent of `remote` must be the
+            # integer App ID. Prefer a symlink to avoid copying the whole
+            # save tree; fall back to a full copy if symlinking is not
+            # permitted on the host filesystem (e.g. Windows w/o privs,
+            # restricted mounts).
+            app_id_dir = workdir_path / str(self.APP_ID_007_FIRST_LIGHT)
+            staged_remote = app_id_dir / "remote"
+            stage_mode = "symlink"
+            try:
+                await asyncio.to_thread(app_id_dir.mkdir, parents=True, exist_ok=False)
+                try:
+                    await asyncio.to_thread(
+                        os.symlink, str(dst_dir), str(staged_remote), True
+                    )
+                except (OSError, NotImplementedError) as exc:
+                    self._log_step(
+                        "vdf gen stage symlink failed; falling back to copy:",
+                        reason=str(exc),
+                    )
+                    stage_mode = "copytree"
+                    await asyncio.to_thread(
+                        shutil.copytree,
+                        str(dst_dir),
+                        str(staged_remote),
+                        symlinks=False,
+                    )
+            except Exception as exc:
+                msg = f"Failed to stage AppId remote layout: {exc}"
+                self._log_step("vdf gen failed:", reason=msg)
+                await self._report_step(progress_callback, f"VDF skipped: {msg}")
+                return None, msg
+
+            self._log_step(
+                "vdf gen stage layout:",
+                app_id=self.APP_ID_007_FIRST_LIGHT,
+                staged_remote=staged_remote,
+                stage_mode=stage_mode,
+            )
+
+            cmd = [str(run_bin), "-p", str(staged_remote)]
             self._log_step(
                 "vdf gen subprocess:",
                 command=cmd,
@@ -744,15 +802,31 @@ class Save007Resigner:
                 return None, msg
 
             if returncode != 0:
-                tail = (stderr_tail or stdout_tail or "").strip()
+                # Surface the tail of whatever the binary emitted -- upstream
+                # prints errors like "Invalid AppId in path" to stdout, so we
+                # prefer stderr but fall back to stdout. Full tails go to logs;
+                # the user-facing message is bounded to ~200 chars of tail so
+                # the overall message stays under the caller's 300-char cap.
+                combined = "\n".join(
+                    part for part in (stderr_tail, stdout_tail) if part
+                ).strip()
+                # Strip ANSI escape sequences (the .NET console helper emits
+                # colour codes) so the embed/text stays readable.
+                clean_tail = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", combined)
+                # Collapse whitespace and drop the apphost banner lines if any
+                # snuck through; users only care about the actual error text.
+                clean_tail = re.sub(r"\s+", " ", clean_tail).strip()
+                snippet = clean_tail[-200:] if clean_tail else ""
                 msg = (
                     f"VDF generator exited with code {returncode}"
-                    + (f": {tail[-300:]}" if tail else "")
+                    + (f": {snippet}" if snippet else "")
                 )
                 self._log_step(
                     "vdf gen failed:",
                     reason="non-zero exit",
                     code=returncode,
+                    stdout_tail=stdout_tail,
+                    stderr_tail=stderr_tail,
                 )
                 await self._report_step(progress_callback, f"VDF skipped: {msg}")
                 return None, msg
