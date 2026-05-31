@@ -61,9 +61,9 @@ SAVE_PLACEMENT_MSG_007 = (
     "### 📂 Installation Instructions\n"
     "**1.** Press `Win + R`, paste the path below, and hit **Enter**:\n"
     "```\n"
-    "%AppData%\GSE Saves\3768760\remote\\\n"
+    "%AppData%\\GSE Saves\\3768760\\remote\\\n"
     "```\n"
-    "**2.** Extract the attached `.zip` — copy everything inside the `remote` folder into that folder, replacing existing files.\n"
+    "**2.** Extract the attached `.zip` — copy everything inside the `remote` folder into that folder, replacing existing folders.\n"
     "**3.** Launch the game normally!\n\n"
     "-# 🐧 **Linux / Steam Deck:** `~/.local/share/crucible-launcher/Prefix/007_first_lightprefix/drive_c/users/steamuser/AppData/Roaming/GSE Saves/3768760/remote/`\n"
 )
