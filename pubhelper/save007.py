@@ -40,9 +40,9 @@ class Save007Resigner:
     def __init__(self, log: logging.Logger):
         self.log = log
 
-    # 007 First Light Steam App ID. Documented here for traceability; the
-    # upstream VDF generator infers metadata from the `remote/` folder contents
-    # and does not require an App ID flag, so this constant is informational.
+    # 007 First Light Steam App ID. Required by the sabby_vdf binary's
+    # ``--app-id`` flag; the value is written into the produced VDF as the
+    # top-level key Steam looks for.
     APP_ID_007_FIRST_LIGHT = 3768760
 
     @property
@@ -51,8 +51,14 @@ class Save007Resigner:
 
     @property
     def vdf_vendor_bin(self) -> pathlib.Path:
+        # sabby_vdf is a static musl Rust binary we build from
+        # pubhelper/vendor/sabby_vdf_src/. It replaces the upstream
+        # mi5hmash/RemoteCacheVdfGenerator .NET binary so the bot host does
+        # not need a .NET runtime and we are not subject to the upstream
+        # "Press any key to EXIT" interactive prompt that returns non-zero
+        # under non-tty subprocess execution.
         return (
-            pathlib.Path(__file__).parent / "vendor" / "bin" / "remotecache_vdf_gen"
+            pathlib.Path(__file__).parent / "vendor" / "bin" / "sabby_vdf"
         ).resolve()
 
     def _zip_filename(self, new_id: str) -> str:
@@ -605,38 +611,19 @@ class Save007Resigner:
         timeout_seconds: int,
     ) -> tuple[bytes | None, str | None]:
         """Generate ``remotecache.vdf`` for 007 First Light using the vendored
-        Linux binary from RemoteCacheVdfGenerator.
+        ``sabby_vdf`` Rust binary (pubhelper/vendor/bin/sabby_vdf).
 
         Returns ``(vdf_bytes, None)`` on success or ``(None, error_message)``
-        on any failure (missing binary, non-zero exit, timeout, missing
-        runtime, output not produced). NEVER raises -- the caller relies on
-        the soft-fail policy so the resigned save zip is still delivered.
+        on any failure (missing binary, non-zero exit, timeout, output not
+        produced). NEVER raises -- the caller relies on the soft-fail policy
+        so the resigned save zip is still delivered.
 
-        CLI invocation (per upstream README):
-            ./remote-cache-vdf-generator -p <path-to-remote-folder>
+        CLI invocation:
+            sabby_vdf --app-id <APP_ID> --remote <dst_dir> --out <workdir>/remotecache.vdf
 
-        Critically, upstream parses the App ID from the parent directory
-        name of the supplied remote path (see ``GetAppIdFromPath`` in
-        ``Models/RemoteCacheVdfFile.cs``):
-
-            var parent = Path.GetFileName(Path.GetDirectoryName(path));
-            return int.TryParse(parent, out var result) ...
-
-        i.e. the immediate parent of ``remote`` MUST be a directory whose
-        name parses as an integer. Passing the bare resigned ``remote/``
-        folder yields ``Invalid AppId in path`` and exit code -6. We
-        therefore stage a Steam-userdata-like layout under a private
-        workdir:
-
-            <workdir>/<APP_ID_007_FIRST_LIGHT>/remote -> dst_dir (symlink,
-                                                       falling back to copytree)
-
-        and invoke the binary with ``-p <workdir>/<APP_ID>/remote``.
-
-        The binary writes ``remotecache.vdf`` into its own directory
-        (``MyAppInfo.RootPath``), so we copy the binary into the workdir
-        first and read the produced vdf from there. The resigned save tree
-        is left untouched.
+        The binary takes the App ID explicitly so we do not need to stage a
+        ``<AppId>/remote`` parent directory layout (which the previous
+        upstream .NET binary required, see prior commits).
         """
         vdf_started = time.monotonic()
         vendor_bin = self.vdf_vendor_bin
@@ -652,11 +639,10 @@ class Save007Resigner:
             progress_callback, "Generating remotecache.vdf for 007 First Light..."
         )
 
-        # Preflight: binary present and executable.
         if not vendor_bin.exists() or not os.access(vendor_bin, os.X_OK):
             msg = (
                 f"VDF binary missing or not executable at {vendor_bin}. "
-                "Bot host must redeploy with vendor/bin/remotecache_vdf_gen +x."
+                "Bot host must redeploy pubhelper/vendor/bin/sabby_vdf (chmod +x)."
             )
             self._log_step(
                 "vdf gen failed:",
@@ -669,63 +655,16 @@ class Save007Resigner:
 
         with tempfile.TemporaryDirectory(prefix="vdfgen-") as vdf_workdir:
             workdir_path = pathlib.Path(vdf_workdir)
-            # Copy the binary into the workdir so the produced vdf lands here
-            # (the upstream tool writes next to its executable, so isolating
-            # the workdir keeps the resigned save tree untouched).
-            run_bin = workdir_path / vendor_bin.name
-            try:
-                await asyncio.to_thread(shutil.copy2, str(vendor_bin), str(run_bin))
-                await asyncio.to_thread(
-                    os.chmod, str(run_bin), 0o755
-                )
-            except Exception as exc:
-                msg = f"Failed to stage VDF binary: {exc}"
-                self._log_step("vdf gen failed:", reason=msg)
-                await self._report_step(progress_callback, f"VDF skipped: {msg}")
-                return None, msg
-
-            # Stage a Steam-userdata-style layout: <workdir>/<APP_ID>/remote.
-            # Upstream parses AppId from the parent directory name of the
-            # supplied path, so the immediate parent of `remote` must be the
-            # integer App ID. Prefer a symlink to avoid copying the whole
-            # save tree; fall back to a full copy if symlinking is not
-            # permitted on the host filesystem (e.g. Windows w/o privs,
-            # restricted mounts).
-            app_id_dir = workdir_path / str(self.APP_ID_007_FIRST_LIGHT)
-            staged_remote = app_id_dir / "remote"
-            stage_mode = "symlink"
-            try:
-                await asyncio.to_thread(app_id_dir.mkdir, parents=True, exist_ok=False)
-                try:
-                    await asyncio.to_thread(
-                        os.symlink, str(dst_dir), str(staged_remote), True
-                    )
-                except (OSError, NotImplementedError) as exc:
-                    self._log_step(
-                        "vdf gen stage symlink failed; falling back to copy:",
-                        reason=str(exc),
-                    )
-                    stage_mode = "copytree"
-                    await asyncio.to_thread(
-                        shutil.copytree,
-                        str(dst_dir),
-                        str(staged_remote),
-                        symlinks=False,
-                    )
-            except Exception as exc:
-                msg = f"Failed to stage AppId remote layout: {exc}"
-                self._log_step("vdf gen failed:", reason=msg)
-                await self._report_step(progress_callback, f"VDF skipped: {msg}")
-                return None, msg
-
-            self._log_step(
-                "vdf gen stage layout:",
-                app_id=self.APP_ID_007_FIRST_LIGHT,
-                staged_remote=staged_remote,
-                stage_mode=stage_mode,
-            )
-
-            cmd = [str(run_bin), "-p", str(staged_remote)]
+            out_path = workdir_path / "remotecache.vdf"
+            cmd = [
+                str(vendor_bin),
+                "--app-id",
+                str(self.APP_ID_007_FIRST_LIGHT),
+                "--remote",
+                str(dst_dir),
+                "--out",
+                str(out_path),
+            ]
             self._log_step(
                 "vdf gen subprocess:",
                 command=cmd,
@@ -741,13 +680,14 @@ class Save007Resigner:
                     proc = await asyncio.create_subprocess_exec(
                         *cmd,
                         cwd=str(workdir_path),
+                        stdin=asyncio.subprocess.DEVNULL,
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
                     )
                 except OSError as exc:
                     msg = (
                         f"VDF binary failed to launch: {exc}. "
-                        "Bot host may lack .NET 10 runtime or compatible glibc."
+                        "Bot host may have an incompatible architecture."
                     )
                     self._log_step("vdf gen failed:", reason=msg)
                     await self._report_step(progress_callback, f"VDF skipped: {msg}")
@@ -763,7 +703,9 @@ class Save007Resigner:
                     with contextlib.suppress(asyncio.TimeoutError, Exception):
                         await asyncio.wait_for(proc.wait(), timeout=5)
                     msg = f"VDF generator timed out after {timeout_seconds}s"
-                    self._log_step("vdf gen failed:", reason="timeout", timeout=timeout_seconds)
+                    self._log_step(
+                        "vdf gen failed:", reason="timeout", timeout=timeout_seconds
+                    )
                     await self._report_step(progress_callback, f"VDF skipped: {msg}")
                     return None, msg
             except Exception as exc:
@@ -788,34 +730,11 @@ class Save007Resigner:
                 elapsed=f"{time.monotonic() - vdf_started:.3f}s",
             )
 
-            # The .NET apphost can print a "You must install .NET to run this
-            # application." banner and STILL exit 0 -- detect that explicitly.
-            runtime_missing_marker = "You must install .NET"
-            combined_output = f"{stdout_tail}\n{stderr_tail}"
-            if runtime_missing_marker in combined_output:
-                msg = (
-                    "VDF generator requires the .NET 10 runtime on the bot host "
-                    "(install dotnet-runtime-10.0). Resigned zip still delivered without VDF."
-                )
-                self._log_step("vdf gen failed:", reason="dotnet runtime missing")
-                await self._report_step(progress_callback, f"VDF skipped: {msg}")
-                return None, msg
-
             if returncode != 0:
-                # Surface the tail of whatever the binary emitted -- upstream
-                # prints errors like "Invalid AppId in path" to stdout, so we
-                # prefer stderr but fall back to stdout. Full tails go to logs;
-                # the user-facing message is bounded to ~200 chars of tail so
-                # the overall message stays under the caller's 300-char cap.
                 combined = "\n".join(
                     part for part in (stderr_tail, stdout_tail) if part
                 ).strip()
-                # Strip ANSI escape sequences (the .NET console helper emits
-                # colour codes) so the embed/text stays readable.
-                clean_tail = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", combined)
-                # Collapse whitespace and drop the apphost banner lines if any
-                # snuck through; users only care about the actual error text.
-                clean_tail = re.sub(r"\s+", " ", clean_tail).strip()
+                clean_tail = re.sub(r"\s+", " ", combined).strip()
                 snippet = clean_tail[-200:] if clean_tail else ""
                 msg = (
                     f"VDF generator exited with code {returncode}"
@@ -831,17 +750,17 @@ class Save007Resigner:
                 await self._report_step(progress_callback, f"VDF skipped: {msg}")
                 return None, msg
 
-            vdf_path = workdir_path / "remotecache.vdf"
             try:
-                if not vdf_path.exists():
+                if not out_path.exists():
                     msg = (
-                        "VDF generator exited 0 but did not produce remotecache.vdf "
-                        "in its working directory."
+                        "VDF generator exited 0 but did not produce remotecache.vdf."
                     )
-                    self._log_step("vdf gen failed:", reason="output missing", path=vdf_path)
+                    self._log_step(
+                        "vdf gen failed:", reason="output missing", path=out_path
+                    )
                     await self._report_step(progress_callback, f"VDF skipped: {msg}")
                     return None, msg
-                vdf_bytes = await asyncio.to_thread(vdf_path.read_bytes)
+                vdf_bytes = await asyncio.to_thread(out_path.read_bytes)
             except Exception as exc:
                 msg = f"Failed to read produced remotecache.vdf: {exc}"
                 self._log_step("vdf gen failed:", reason=msg)

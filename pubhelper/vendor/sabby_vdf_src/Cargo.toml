@@ -1,0 +1,15 @@
+[package]
+name = "sabby_vdf"
+version = "1.0.0"
+edition = "2021"
+
+[[bin]]
+name = "sabby_vdf"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
