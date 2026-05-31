@@ -57,6 +57,17 @@ SAVE_PLACEMENT_MSG = (
     "-# 🐧 **Linux / Steam Deck:** `~/.local/share/crucible-launcher/Prefix/{linux_folder}/drive_c/users/steamuser/AppData/Roaming/GSE Saves/{steam_id}/remote/win64_save/`\n"
 )
 
+SAVE_PLACEMENT_MSG_007 = (
+    "### 📂 Installation Instructions\n"
+    "**1.** Press `Win + R`, paste the path below, and hit **Enter**:\n"
+    "```\n"
+    "%AppData%\GSE Saves\3768760\remote\\\n"
+    "```\n"
+    "**2.** Extract the attached `.zip` — copy everything inside the `remote` folder into that folder, replacing existing files.\n"
+    "**3.** Launch the game normally!\n\n"
+    "-# 🐧 **Linux / Steam Deck:** `~/.local/share/crucible-launcher/Prefix/007_first_lightprefix/drive_c/users/steamuser/AppData/Roaming/GSE Saves/3768760/remote/`\n"
+)
+
 # Languages available in the /saveinst translate dropdown
 SAVEINST_LANGUAGES = [
     ("🇪🇸 Spanish", "es"),
@@ -5210,7 +5221,7 @@ class SabPubHelper(commands.Cog):
 
         progress_task = asyncio.create_task(log_updater())
 
-        async def send_final_message(content: str, file_bytes: bytes | None = None, filename: str | None = None) -> None:
+        async def send_final_message(content: str, file_bytes: bytes | None = None, filename: str | None = None, inst: str | None = None) -> None:
             log_channel_id = await self.config.log_channel()
             fallback_channel = self.bot.get_channel(log_channel_id) if log_channel_id else None
 
@@ -5260,20 +5271,37 @@ class SabPubHelper(commands.Cog):
             try:
                 await interaction.edit_original_response(content=content)
                 if file_bytes is not None and filename:
-                    await _send_file_with_fallback(interaction.followup.send, {}, file_bytes, filename)
+                    await _send_file_with_fallback(
+                        interaction.followup.send,
+                        {"content": inst} if inst else {}, 
+                        file_bytes, 
+                        filename
+                    )
+                elif inst:
+                    await interaction.followup.send(inst)
                 return
             except Exception as e:
                 log.warning(f"Failed to edit original savesign007 response: {e}")
 
             if user:
                 try:
-                    await _send_file_with_fallback(user.send, {"content": content}, file_bytes, filename)
+                    await _send_file_with_fallback(
+                        user.send,
+                        {"content": f"{content}\n\n{inst}"} if inst else {"content": content},
+                        file_bytes,
+                        filename
+                    )
                     return
                 except (discord.Forbidden, discord.HTTPException) as e:
                     log.warning(f"Failed to send savesign007 DM to notify user {user}: {e}")
 
             try:
-                await _send_file_with_fallback(interaction.user.send, {"content": content}, file_bytes, filename)
+                await _send_file_with_fallback(
+                    interaction.user.send,
+                    {"content": f"{content}\n\n{inst}"} if inst else {"content": content},
+                    file_bytes,
+                    filename
+                )
                 return
             except (discord.Forbidden, discord.HTTPException) as e:
                 log.warning(f"Failed to send savesign007 DM to command user {interaction.user}: {e}")
@@ -5291,7 +5319,7 @@ class SabPubHelper(commands.Cog):
                 try:
                     await _send_file_with_fallback(
                         channel.send,
-                        {"content": f"{mention_prefix}{content}"},
+                        {"content": f"{mention_prefix}{content}\n\n{inst}"} if inst else {"content": f"{mention_prefix}{content}"},
                         file_bytes,
                         filename,
                     )
@@ -5410,11 +5438,12 @@ class SabPubHelper(commands.Cog):
                 "\n⚠️ VDF generation failed — resigned zip delivered without "
                 f"`remotecache.vdf`. Reason: {short_reason}"
             )
+        placement_text = SAVE_PLACEMENT_MSG_007.format(new_id=normalized_newid)
         success_content = (
             f"{notify_line}✅ **007 resign complete!**\n\n"
             f"New ID: `{normalized_newid}`{summary_line}{partial_warning_line}{vdf_line}{ignored_arg_note}"
         )
-        await send_final_message(success_content, result.zip_bytes, result.zip_filename)
+        await send_final_message(success_content, result.zip_bytes, result.zip_filename, inst=placement_text)
 
     @app_commands.command(
         name="savesign",
