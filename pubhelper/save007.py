@@ -30,15 +30,30 @@ class Resign007Result:
     summary_json: dict | None
     stdout_tail: str
     error: str | None
+    # VDF generation outcome (only meaningful when vdf=True was requested).
+    # Values: "skipped" (vdf=no), "ok", "failed".
+    vdf_status: str = "skipped"
+    vdf_message: str | None = None
 
 
 class Save007Resigner:
     def __init__(self, log: logging.Logger):
         self.log = log
 
+    # 007 First Light Steam App ID. Documented here for traceability; the
+    # upstream VDF generator infers metadata from the `remote/` folder contents
+    # and does not require an App ID flag, so this constant is informational.
+    APP_ID_007_FIRST_LIGHT = 3768760
+
     @property
     def vendor_bin(self) -> pathlib.Path:
         return (pathlib.Path(__file__).parent / "vendor" / "bin" / "sabby007").resolve()
+
+    @property
+    def vdf_vendor_bin(self) -> pathlib.Path:
+        return (
+            pathlib.Path(__file__).parent / "vendor" / "bin" / "remotecache_vdf_gen"
+        ).resolve()
 
     def _zip_filename(self, new_id: str) -> str:
         safe_new_id = re.sub(r"[^A-Za-z0-9._-]", "_", new_id) or "unknown"
@@ -61,6 +76,7 @@ class Save007Resigner:
         progress_callback: ProgressCallback,
         dry_run: bool = False,
         timeout_seconds: int = 600,
+        vdf: bool = False,
     ) -> Resign007Result:
         if dry_run:
             raise ValueError("Dry run is no longer supported by the sabby007 engine")
@@ -72,6 +88,7 @@ class Save007Resigner:
             new_id=new_id,
             archive_bytes=len(archive_bytes),
             elapsed="0.000s",
+            vdf_requested=vdf,
         )
         await self._report_step(progress_callback, "Starting 007 resign workflow...")
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -186,6 +203,7 @@ class Save007Resigner:
                     timeout_seconds,
                     dst_dir,
                     backup_restore_name,
+                    vdf=vdf,
                 )
                 self._log_step(
                     "run finish:",
@@ -365,6 +383,7 @@ class Save007Resigner:
         timeout_seconds: int,
         dst_dir: pathlib.Path,
         backup_restore_name: pathlib.Path | None,
+        vdf: bool = False,
     ) -> Resign007Result:
         stdout_tail = ""
         zip_filename = self._zip_filename(new_id)
@@ -460,15 +479,38 @@ class Save007Resigner:
         await asyncio.to_thread(shutil.rmtree, dst_dir / "Backup", ignore_errors=True)
         await asyncio.to_thread(self._restore_user_backup, dst_dir, backup_restore_name)
 
+        vdf_status = "skipped"
+        vdf_message: str | None = None
+        vdf_bytes: bytes | None = None
+        if vdf:
+            vdf_bytes, vdf_message = await self._generate_vdf(
+                dst_dir=dst_dir,
+                new_id=new_id,
+                progress_callback=progress_callback,
+                timeout_seconds=min(120, max(30, timeout_seconds // 4)),
+            )
+            if vdf_bytes is not None:
+                vdf_status = "ok"
+                vdf_message = None
+            else:
+                vdf_status = "failed"
+                # vdf_message already set by _generate_vdf
+
         zip_started = time.monotonic()
-        self._log_step("zip output start:", root=dst_dir)
+        self._log_step(
+            "zip output start:",
+            root=dst_dir,
+            vdf_status=vdf_status,
+            vdf_size=len(vdf_bytes) if vdf_bytes else 0,
+        )
         await self._report_step(progress_callback, "Creating output zip archive...")
-        zip_bytes = await asyncio.to_thread(self._zip_directory, dst_dir)
+        zip_bytes = await asyncio.to_thread(self._zip_directory, dst_dir, vdf_bytes)
         entry_count = await asyncio.to_thread(self._count_extracted_files, dst_dir)
         self._log_step(
             "zip output finish:",
             bytes_count=len(zip_bytes),
             entry_count=entry_count,
+            vdf_included=bool(vdf_bytes),
             elapsed=f"{time.monotonic() - zip_started:.3f}s",
         )
         await self._report_step(progress_callback, f"Output zip ready with {entry_count} files.")
@@ -479,6 +521,8 @@ class Save007Resigner:
             summary,
             stdout_tail,
             None,
+            vdf_status=vdf_status,
+            vdf_message=vdf_message,
         )
 
     async def _read_stdout(
@@ -553,10 +597,221 @@ class Save007Resigner:
             # Safe defaults for legacy consumers expecting JSON-engine keys.
         }
 
-    def _zip_directory(self, root: pathlib.Path) -> bytes:
+    async def _generate_vdf(
+        self,
+        dst_dir: pathlib.Path,
+        new_id: str,
+        progress_callback: ProgressCallback,
+        timeout_seconds: int,
+    ) -> tuple[bytes | None, str | None]:
+        """Generate ``remotecache.vdf`` for 007 First Light using the vendored
+        Linux binary from RemoteCacheVdfGenerator.
+
+        Returns ``(vdf_bytes, None)`` on success or ``(None, error_message)``
+        on any failure (missing binary, non-zero exit, timeout, missing
+        runtime, output not produced). NEVER raises -- the caller relies on
+        the soft-fail policy so the resigned save zip is still delivered.
+
+        CLI invocation (per upstream README):
+            ./remote-cache-vdf-generator -p <path-to-remote-folder>
+        The binary writes ``remotecache.vdf`` into its OWN directory, so we
+        run it from a private working directory and copy the produced file
+        out. The Steam ID (``new_id``) and App ID
+        (``APP_ID_007_FIRST_LIGHT``) are not consumed by the upstream CLI --
+        the generator infers metadata purely from the remote folder
+        contents. They are logged here for traceability.
+        """
+        vdf_started = time.monotonic()
+        vendor_bin = self.vdf_vendor_bin
+        self._log_step(
+            "vdf gen start:",
+            new_id=new_id,
+            app_id=self.APP_ID_007_FIRST_LIGHT,
+            remote=dst_dir,
+            binary=vendor_bin,
+            elapsed="0.000s",
+        )
+        await self._report_step(
+            progress_callback, "Generating remotecache.vdf for 007 First Light..."
+        )
+
+        # Preflight: binary present and executable.
+        if not vendor_bin.exists() or not os.access(vendor_bin, os.X_OK):
+            msg = (
+                f"VDF binary missing or not executable at {vendor_bin}. "
+                "Bot host must redeploy with vendor/bin/remotecache_vdf_gen +x."
+            )
+            self._log_step(
+                "vdf gen failed:",
+                reason="binary missing or not executable",
+                binary=vendor_bin,
+                exists=vendor_bin.exists(),
+            )
+            await self._report_step(progress_callback, f"VDF skipped: {msg}")
+            return None, msg
+
+        with tempfile.TemporaryDirectory(prefix="vdfgen-") as vdf_workdir:
+            workdir_path = pathlib.Path(vdf_workdir)
+            # Copy the binary into the workdir so the produced vdf lands here
+            # (the upstream tool writes next to its executable, so isolating
+            # the workdir keeps the resigned save tree untouched).
+            run_bin = workdir_path / vendor_bin.name
+            try:
+                await asyncio.to_thread(shutil.copy2, str(vendor_bin), str(run_bin))
+                await asyncio.to_thread(
+                    os.chmod, str(run_bin), 0o755
+                )
+            except Exception as exc:
+                msg = f"Failed to stage VDF binary: {exc}"
+                self._log_step("vdf gen failed:", reason=msg)
+                await self._report_step(progress_callback, f"VDF skipped: {msg}")
+                return None, msg
+
+            cmd = [str(run_bin), "-p", str(dst_dir)]
+            self._log_step(
+                "vdf gen subprocess:",
+                command=cmd,
+                workdir=workdir_path,
+                timeout_seconds=timeout_seconds,
+            )
+
+            proc = None
+            stdout_bytes = b""
+            stderr_bytes = b""
+            try:
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        *cmd,
+                        cwd=str(workdir_path),
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                except OSError as exc:
+                    msg = (
+                        f"VDF binary failed to launch: {exc}. "
+                        "Bot host may lack .NET 10 runtime or compatible glibc."
+                    )
+                    self._log_step("vdf gen failed:", reason=msg)
+                    await self._report_step(progress_callback, f"VDF skipped: {msg}")
+                    return None, msg
+
+                try:
+                    stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                        proc.communicate(), timeout=timeout_seconds
+                    )
+                except asyncio.TimeoutError:
+                    with contextlib.suppress(Exception):
+                        proc.kill()
+                    with contextlib.suppress(asyncio.TimeoutError, Exception):
+                        await asyncio.wait_for(proc.wait(), timeout=5)
+                    msg = f"VDF generator timed out after {timeout_seconds}s"
+                    self._log_step("vdf gen failed:", reason="timeout", timeout=timeout_seconds)
+                    await self._report_step(progress_callback, f"VDF skipped: {msg}")
+                    return None, msg
+            except Exception as exc:
+                self.log.exception("[savesign007] vdf subprocess crashed")
+                msg = f"VDF subprocess error: {exc}"
+                await self._report_step(progress_callback, f"VDF skipped: {msg}")
+                return None, msg
+            finally:
+                if proc and proc.returncode is None:
+                    with contextlib.suppress(Exception):
+                        proc.kill()
+                        await asyncio.wait_for(proc.wait(), timeout=5)
+
+            returncode = proc.returncode if proc else None
+            stdout_tail = stdout_bytes.decode("utf-8", errors="ignore")[-1000:]
+            stderr_tail = stderr_bytes.decode("utf-8", errors="ignore")[-1000:]
+            self._log_step(
+                "vdf gen subprocess exit:",
+                code=returncode,
+                stdout_len=len(stdout_bytes),
+                stderr_len=len(stderr_bytes),
+                elapsed=f"{time.monotonic() - vdf_started:.3f}s",
+            )
+
+            # The .NET apphost can print a "You must install .NET to run this
+            # application." banner and STILL exit 0 -- detect that explicitly.
+            runtime_missing_marker = "You must install .NET"
+            combined_output = f"{stdout_tail}\n{stderr_tail}"
+            if runtime_missing_marker in combined_output:
+                msg = (
+                    "VDF generator requires the .NET 10 runtime on the bot host "
+                    "(install dotnet-runtime-10.0). Resigned zip still delivered without VDF."
+                )
+                self._log_step("vdf gen failed:", reason="dotnet runtime missing")
+                await self._report_step(progress_callback, f"VDF skipped: {msg}")
+                return None, msg
+
+            if returncode != 0:
+                tail = (stderr_tail or stdout_tail or "").strip()
+                msg = (
+                    f"VDF generator exited with code {returncode}"
+                    + (f": {tail[-300:]}" if tail else "")
+                )
+                self._log_step(
+                    "vdf gen failed:",
+                    reason="non-zero exit",
+                    code=returncode,
+                )
+                await self._report_step(progress_callback, f"VDF skipped: {msg}")
+                return None, msg
+
+            vdf_path = workdir_path / "remotecache.vdf"
+            try:
+                if not vdf_path.exists():
+                    msg = (
+                        "VDF generator exited 0 but did not produce remotecache.vdf "
+                        "in its working directory."
+                    )
+                    self._log_step("vdf gen failed:", reason="output missing", path=vdf_path)
+                    await self._report_step(progress_callback, f"VDF skipped: {msg}")
+                    return None, msg
+                vdf_bytes = await asyncio.to_thread(vdf_path.read_bytes)
+            except Exception as exc:
+                msg = f"Failed to read produced remotecache.vdf: {exc}"
+                self._log_step("vdf gen failed:", reason=msg)
+                await self._report_step(progress_callback, f"VDF skipped: {msg}")
+                return None, msg
+
+            self._log_step(
+                "vdf gen finish:",
+                bytes_count=len(vdf_bytes),
+                elapsed=f"{time.monotonic() - vdf_started:.3f}s",
+            )
+            await self._report_step(
+                progress_callback,
+                f"remotecache.vdf generated ({len(vdf_bytes)} bytes).",
+            )
+            return vdf_bytes, None
+
+    def _zip_directory(
+        self, root: pathlib.Path, vdf_bytes: bytes | None = None
+    ) -> bytes:
+        """Zip the resigned save tree.
+
+        When ``vdf_bytes`` is provided, the archive is laid out as:
+            remote/<resigned tree...>
+            remotecache.vdf
+        i.e. the resigned files live under a ``remote/`` directory and the
+        ``remotecache.vdf`` sits beside it at the archive root.
+
+        When ``vdf_bytes`` is ``None`` (legacy / vdf=no), the resigned tree
+        is zipped at the archive root (preserving the historical layout).
+        """
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-            for path in sorted(root.rglob("*")):
-                if path.is_file():
-                    archive.write(path, path.relative_to(root))
+            if vdf_bytes is not None:
+                # Place every resigned file under remote/<relpath>.
+                for path in sorted(root.rglob("*")):
+                    if path.is_file():
+                        rel = path.relative_to(root)
+                        arcname = pathlib.PurePosixPath("remote") / pathlib.PurePosixPath(*rel.parts)
+                        archive.writestr(str(arcname), path.read_bytes())
+                # remotecache.vdf at the archive root, beside remote/.
+                archive.writestr("remotecache.vdf", vdf_bytes)
+            else:
+                for path in sorted(root.rglob("*")):
+                    if path.is_file():
+                        archive.write(path, path.relative_to(root))
         return buffer.getvalue()

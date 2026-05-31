@@ -5043,13 +5043,20 @@ class SabPubHelper(commands.Cog):
 
     @app_commands.command(
         name="savesign007",
-        description="Resign a 007 save archive (auto-detects old Steam64)",
+        description="Resign a 007 save archive (auto-detects old Steam64); optional remotecache.vdf",
     )
     @app_commands.describe(
         link="Direct URL to the save archive (zip/rar/7z)",
         newid="Steam ID to resign the saves to",
         user="Optional user to mention/DM when done",
         arg="Optional flag (e.g. dry-run). Leave empty for default.",
+        vdf="Generate remotecache.vdf for 007 First Light beside the resigned remote/ folder",
+    )
+    @app_commands.choices(
+        vdf=[
+            app_commands.Choice(name="yes", value="yes"),
+            app_commands.Choice(name="no", value="no"),
+        ]
     )
     async def savesign007(
         self,
@@ -5058,6 +5065,7 @@ class SabPubHelper(commands.Cog):
         newid: str,
         user: discord.Member | None = None,
         arg: str | None = None,
+        vdf: app_commands.Choice[str] | None = None,
     ) -> None:
         if not await self._safe_defer(interaction, thinking=True):
             return
@@ -5088,6 +5096,13 @@ class SabPubHelper(commands.Cog):
                 content="❌ `dry-run` is no longer supported by the new sabby007 engine. Re-run without the flag."
             )
             return
+
+        # Default vdf=no; only generate VDF when the user explicitly passes yes.
+        vdf_enabled: bool = bool(vdf and vdf.value == "yes")
+        log.info(
+            "[savesign007] options: vdf=%s",
+            "yes" if vdf_enabled else "no",
+        )
 
         await interaction.edit_original_response(
             content=(
@@ -5306,6 +5321,7 @@ class SabPubHelper(commands.Cog):
                 progress_callback=progress_callback,
                 dry_run=dry_run,
                 timeout_seconds=600,
+                vdf=vdf_enabled,
             )
         except Exception:
             log.exception("Unexpected savesign007 failure for %s", interaction.user)
@@ -5381,9 +5397,22 @@ class SabPubHelper(commands.Cog):
                         partial_warning_line = (
                             f"\n⚠️ Partial: `{skipped_count}` container(s) skipped — see logs for details."
                         )
+        vdf_line = ""
+        vdf_status = getattr(result, "vdf_status", "skipped")
+        vdf_message = getattr(result, "vdf_message", None)
+        if vdf_status == "ok":
+            vdf_line = "\n📄 `remotecache.vdf` generated and bundled beside `remote/`."
+        elif vdf_status == "failed":
+            short_reason = (vdf_message or "unknown error").strip()
+            if len(short_reason) > 300:
+                short_reason = short_reason[:297] + "..."
+            vdf_line = (
+                "\n⚠️ VDF generation failed — resigned zip delivered without "
+                f"`remotecache.vdf`. Reason: {short_reason}"
+            )
         success_content = (
             f"{notify_line}✅ **007 resign complete!**\n\n"
-            f"New ID: `{normalized_newid}`{summary_line}{partial_warning_line}{ignored_arg_note}"
+            f"New ID: `{normalized_newid}`{summary_line}{partial_warning_line}{vdf_line}{ignored_arg_note}"
         )
         await send_final_message(success_content, result.zip_bytes, result.zip_filename)
 
