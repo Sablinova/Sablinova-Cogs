@@ -626,13 +626,26 @@ async def _download_spotify(
     temp_dir: str,
     timeout: int = 120,
 ) -> Tuple[List[str], Optional[dict]]:
-    """Download audio from Spotify using SpotiFLAC CLI.
+    """Download audio from Spotify using SpotiFLAC CLI with spotdl fallback.
 
-    Downloads lossless FLAC from Tidal (with Amazon/Qobuz fallback)
-    using the headless SpotiFLAC binary. No API credentials required.
+    Primary: SpotiFLAC (lossless FLAC from Tidal/Amazon/Qobuz).
+    Fallback: spotdl (MP3 via YouTube) when SpotiFLAC APIs are unavailable.
 
     Returns (list of file paths, metadata dict or None).
     """
+    try:
+        return await _download_spotify_spotiflac(url, temp_dir, timeout)
+    except Exception as exc:
+        log.info("[SpotiFLAC] Failed, falling back to spotdl: %s", exc)
+        return await _download_spotify_spotdl(url, temp_dir, timeout)
+
+
+async def _download_spotify_spotiflac(
+    url: str,
+    temp_dir: str,
+    timeout: int = 120,
+) -> Tuple[List[str], Optional[dict]]:
+    """Download from Spotify via SpotiFLAC CLI."""
     if not os.path.isfile(SPOTIFLAC_PATH):
         raise RuntimeError(
             f"SpotiFLAC CLI not found at {SPOTIFLAC_PATH}. "
@@ -724,6 +737,79 @@ async def _download_spotify(
     )
 
     return files, metadata
+
+
+async def _download_spotify_spotdl(
+    url: str,
+    temp_dir: str,
+    timeout: int = 120,
+) -> Tuple[List[str], Optional[dict]]:
+    """Download from Spotify via spotdl (MP3 fallback)."""
+    import yt_dlp
+
+    log.info("[spotdl] Downloading from Spotify URL: %s", url)
+
+    ydl_opts = {
+        "outtmpl": os.path.join(temp_dir, "%(title)s.%(ext)s"),
+        "format": "bestaudio/best",
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+    }
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        if info is None:
+            raise RuntimeError("spotdl returned no info")
+
+        files = []
+        metadata = None
+
+        if "entries" in info:
+            entries = info["entries"]
+        else:
+            entries = [info]
+
+        for entry in entries:
+            if entry is None:
+                continue
+            requested = entry.get("requested_downloads", [])
+            if requested:
+                for dl in requested:
+                    fpath = dl.get("filepath") or dl.get("_filename")
+                    if fpath and os.path.isfile(fpath):
+                        files.append(fpath)
+                        if metadata is None:
+                            parts = []
+                            if entry.get("artist"):
+                                parts.append(entry["artist"])
+                            if entry.get("track"):
+                                parts.append(entry["track"])
+                            title = (
+                                " - ".join(parts)
+                                if parts
+                                else entry.get("title", os.path.basename(fpath))
+                            )
+                            metadata = {
+                                "title": title,
+                                "extractor": "spotify",
+                                "spotiflac_service": "spotdl",
+                                "spotiflac_format": "MP3",
+                            }
+
+        if not files:
+            files = _collect_real_files(temp_dir)
+
+        if not files:
+            raise RuntimeError("spotdl completed but no output files found")
+
+        log.info(
+            "[spotdl] Downloaded %d file(s), total %.1f MB",
+            len(files),
+            sum(os.path.getsize(f) for f in files) / (1024 * 1024),
+        )
+
+        return files, metadata
 
 
 def _purge_temp_files(temp_dir: str) -> None:
