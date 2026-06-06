@@ -744,72 +744,61 @@ async def _download_spotify_spotdl(
     temp_dir: str,
     timeout: int = 120,
 ) -> Tuple[List[str], Optional[dict]]:
-    """Download from Spotify via spotdl (MP3 fallback)."""
-    import yt_dlp
-
+    """Download from Spotify via spotdl CLI (MP3 fallback)."""
     log.info("[spotdl] Downloading from Spotify URL: %s", url)
 
-    ydl_opts = {
-        "outtmpl": os.path.join(temp_dir, "%(title)s.%(ext)s"),
-        "format": "bestaudio/best",
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": True,
-    }
+    cmd = [
+        "spotdl",
+        url,
+        "--output",
+        os.path.join(temp_dir, "{artist} - {title}.{ext}"),
+        "--log-level",
+        "ERROR",
+    ]
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        if info is None:
-            raise RuntimeError("spotdl returned no info")
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
 
-        files = []
-        metadata = None
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise RuntimeError(f"spotdl timed out after {timeout}s")
 
-        if "entries" in info:
-            entries = info["entries"]
-        else:
-            entries = [info]
+    stdout_text = stdout.decode(errors="replace")
+    stderr_text = stderr.decode(errors="replace")
 
-        for entry in entries:
-            if entry is None:
-                continue
-            requested = entry.get("requested_downloads", [])
-            if requested:
-                for dl in requested:
-                    fpath = dl.get("filepath") or dl.get("_filename")
-                    if fpath and os.path.isfile(fpath):
-                        files.append(fpath)
-                        if metadata is None:
-                            parts = []
-                            if entry.get("artist"):
-                                parts.append(entry["artist"])
-                            if entry.get("track"):
-                                parts.append(entry["track"])
-                            title = (
-                                " - ".join(parts)
-                                if parts
-                                else entry.get("title", os.path.basename(fpath))
-                            )
-                            metadata = {
-                                "title": title,
-                                "extractor": "spotify",
-                                "spotiflac_service": "spotdl",
-                                "spotiflac_format": "MP3",
-                            }
+    if proc.returncode != 0:
+        error_hint = stderr_text.strip() or stdout_text.strip()
+        raise RuntimeError(f"spotdl failed: {error_hint[:300]}")
 
-        if not files:
-            files = _collect_real_files(temp_dir)
+    files = _collect_real_files(temp_dir)
+    if not files:
+        raise RuntimeError("spotdl completed but no output files found")
 
-        if not files:
-            raise RuntimeError("spotdl completed but no output files found")
+    metadata = None
+    for fpath in files:
+        basename = os.path.basename(fpath)
+        name = os.path.splitext(basename)[0]
+        if metadata is None:
+            metadata = {
+                "title": name,
+                "extractor": "spotify",
+                "spotiflac_service": "spotdl",
+                "spotiflac_format": "MP3",
+            }
 
-        log.info(
-            "[spotdl] Downloaded %d file(s), total %.1f MB",
-            len(files),
-            sum(os.path.getsize(f) for f in files) / (1024 * 1024),
-        )
+    log.info(
+        "[spotdl] Downloaded %d file(s), total %.1f MB",
+        len(files),
+        sum(os.path.getsize(f) for f in files) / (1024 * 1024),
+    )
 
-        return files, metadata
+    return files, metadata
 
 
 def _purge_temp_files(temp_dir: str) -> None:
