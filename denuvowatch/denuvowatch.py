@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Union
 
 import aiohttp
 import discord
@@ -20,7 +20,8 @@ HEADERS = {
 DEFAULT_GLOBALS = {
     "games": {},          # appid_str -> {name, denuvo, build_id, build_time, header}
     "notify_channel": None,
-    "notify_user": None,
+    "notify_user": None,   # legacy: pinged on build updates only
+    "mention": None,       # {"type": "user"|"role", "id": int} pinged on ALL updates
     "interval_minutes": 15,
 }
 
@@ -183,6 +184,15 @@ class DenuvoWatch(commands.Cog):
 
     # ─── Background check ────────────────────────────────────────────────────
 
+    @staticmethod
+    def _format_mention(mention: Optional[dict]) -> Optional[str]:
+        """Turn a stored mention dict into a pingable string, or None."""
+        if not mention or not mention.get("id"):
+            return None
+        if mention.get("type") == "role":
+            return f"<@&{mention['id']}>"
+        return f"<@{mention['id']}>"
+
     async def check_games_internal(self) -> bool:
         """Scan the whole watchlist. Returns True if any change was detected."""
         if self._check_lock.locked():
@@ -201,6 +211,8 @@ class DenuvoWatch(commands.Cog):
                     return False
 
                 notify_user = await self.config.notify_user()
+                mention = self._format_mention(await self.config.mention())
+                allowed = discord.AllowedMentions(users=True, roles=True)
                 log.info("Checking %d games…", len(games))
 
                 async def check_single(appid_str):
@@ -220,22 +232,28 @@ class DenuvoWatch(commands.Cog):
 
                     if old.get("denuvo") and not new["denuvo"]:
                         await channel.send(
-                            embed=self.build_denuvo_embed(appid, "denuvo_removed", old, new)
+                            content=mention,
+                            embed=self.build_denuvo_embed(appid, "denuvo_removed", old, new),
+                            allowed_mentions=allowed,
                         )
                         changes = True
                     elif not old.get("denuvo") and new["denuvo"]:
                         await channel.send(
-                            embed=self.build_denuvo_embed(appid, "denuvo_added", old, new)
+                            content=mention,
+                            embed=self.build_denuvo_embed(appid, "denuvo_added", old, new),
+                            allowed_mentions=allowed,
                         )
                         changes = True
 
                     old_build = old.get("build_id")
                     new_build = new.get("build_id")
                     if old_build and new_build and old_build != new_build:
-                        content = f"<@{notify_user}>" if notify_user else None
+                        pings = [p for p in (mention, f"<@{notify_user}>" if notify_user else None) if p]
+                        content = " ".join(pings) if pings else None
                         await channel.send(
                             content=content,
                             embed=self.build_depot_embed(appid, old_build, new_build, new),
+                            allowed_mentions=allowed,
                         )
                         changes = True
 
@@ -477,6 +495,7 @@ class DenuvoWatch(commands.Cog):
         games = await self.config.games()
         interval = await self.config.interval_minutes()
         channel_id = await self.config.notify_channel()
+        mention = self._format_mention(await self.config.mention())
         next_iter = self.check_games.next_iteration
         next_str = f"<t:{int(next_iter.timestamp())}:R>" if next_iter else "Starting soon"
 
@@ -484,6 +503,7 @@ class DenuvoWatch(commands.Cog):
         embed.add_field(name="Watching", value=f"{len(games)}/{MAX_GAMES} games", inline=True)
         embed.add_field(name="Check every", value=f"{interval} minutes", inline=True)
         embed.add_field(name="Next check", value=next_str, inline=True)
+        embed.add_field(name="Mention", value=mention or "none", inline=True)
         embed.add_field(
             name="Alert channel",
             value=f"<#{channel_id}>" if channel_id else "❌ not set",
@@ -513,6 +533,27 @@ class DenuvoWatch(commands.Cog):
         else:
             await ctx.send("✅ Build-update ping cleared.")
 
+    @denuvowatch.command(name="mention")
+    async def dw_mention(
+        self,
+        ctx: commands.Context,
+        target: Optional[Union[discord.Member, discord.Role]] = None,
+    ):
+        """Set the user or role pinged on EVERY update (Denuvo + build).
+
+        Run without an argument to clear the mention.
+        """
+        if target is None:
+            await self.config.mention.set(None)
+            await ctx.send("✅ Update mention cleared.")
+            return
+        mtype = "role" if isinstance(target, discord.Role) else "user"
+        await self.config.mention.set({"type": mtype, "id": target.id})
+        await ctx.send(
+            f"✅ Updates will mention {target.mention}.",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
     @denuvowatch.command(name="interval")
     async def dw_interval(self, ctx: commands.Context, minutes: int):
         """Set how often (in minutes) the watchlist is scanned."""
@@ -528,11 +569,13 @@ class DenuvoWatch(commands.Cog):
         """Show the current configuration."""
         channel_id = await self.config.notify_channel()
         user_id = await self.config.notify_user()
+        mention = self._format_mention(await self.config.mention())
         interval = await self.config.interval_minutes()
         games = await self.config.games()
         embed = discord.Embed(title="⚙️ DenuvoWatch Config", color=discord.Color.blurple())
         embed.add_field(name="Alert channel", value=f"<#{channel_id}>" if channel_id else "❌ not set", inline=False)
-        embed.add_field(name="Ping user", value=f"<@{user_id}>" if user_id else "none", inline=False)
+        embed.add_field(name="Update mention", value=mention or "none", inline=False)
+        embed.add_field(name="Build-ping user", value=f"<@{user_id}>" if user_id else "none", inline=False)
         embed.add_field(name="Interval", value=f"{interval} minutes", inline=False)
         embed.add_field(name="Watchlist size", value=f"{len(games)}/{MAX_GAMES}", inline=False)
         await ctx.send(embed=embed)

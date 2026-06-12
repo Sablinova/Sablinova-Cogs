@@ -26,7 +26,8 @@ The cog auto-installs `beautifulsoup4` and `aiohttp` via Downloader.
 | `/dforcecheck` | owner | Manually trigger a full watchlist scan |
 | `/dstatus` | anyone | Watchlist size + next scheduled check |
 | `[p]denuvowatch channel <channel>` | owner | Set alert channel |
-| `[p]denuvowatch pinguser [user]` | owner | Set/clear the build-update ping (omit to clear) |
+| `[p]denuvowatch mention [@user or @role]` | owner | Ping a user/role on **every** update (omit to clear) |
+| `[p]denuvowatch pinguser [user]` | owner | Set/clear an extra ping on build updates only (omit to clear) |
 | `[p]denuvowatch interval <minutes>` | owner | Set scan interval (min 5) |
 | `[p]denuvowatch show` | owner | Show current config |
 | `[p]denuvowatch clear` | owner | Clear the entire watchlist |
@@ -45,6 +46,9 @@ commands (`[p]dadd`, etc.).
 - State (name, Denuvo status, build ID, build timestamp, header image) is stored
   globally via Red `Config` and persists across restarts.
 - On each scan, any change triggers an embed in the configured alert channel.
+- If a mention is set via `[p]denuvowatch mention`, that user or role is pinged
+  on **every** update (Denuvo added/removed and build updates). The legacy
+  `pinguser` adds an extra ping on build updates only.
 
 ## Storage
 
