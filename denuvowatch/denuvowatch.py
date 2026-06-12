@@ -931,7 +931,7 @@ class DenuvoWatch(commands.Cog):
         else:
             current_build, _ = await self.fetch_build_id(appid)
 
-        name, exes, source = await self.get_exe_paths(appid, current_build)
+        name, exes, _source = await self.get_exe_paths(appid, current_build)
         if exes is None:
             await ctx.send(
                 f"❌ No depot data found for `{name or query}` (AppID `{appid}`)."
@@ -962,7 +962,7 @@ class DenuvoWatch(commands.Cog):
             cut = len(exes) - len(shown)
             block = "```\n" + "\n".join(shown) + f"\n```\n…and {cut} more."
         embed.description = block
-        embed.set_footer(text=f"AppID {appid} • {len(exes)} exe(s) • via {source}")
+        embed.set_footer(text=f"AppID {appid} • {len(exes)} exe(s)")
         await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="dforcecheck", description="Manually trigger a full watchlist scan (admin only)")

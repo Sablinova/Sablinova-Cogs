@@ -93,8 +93,8 @@ Depot file data comes from two sources, tried in order:
    depot key (via the `cryptography` library).
 
 The cog parses the raw Steam manifest protobuf itself — no SteamCMD or Steam
-account required. The embed footer shows which source answered. If neither
-source has the game, `/exeloc` reports no depot data.
+account required. If neither source has the game, `/exeloc` reports no depot
+data.
 
 ### Caching (saving HubCap quota)
 
