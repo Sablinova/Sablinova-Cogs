@@ -1641,13 +1641,19 @@ class DenuvoWatch(commands.Cog):
         await ctx.send(embed=embed)
 
     async def _validate_hubcap_key(self, key: str):
-        """Validate a key against the free stats endpoint. Returns info or None."""
+        """Validate a key against the free stats endpoint.
+
+        Returns the stats dict on success, the string "ratelimited" on HTTP 429
+        (valid key, daily limit reached), or None on a real failure.
+        """
         try:
             async with self.session.get(
                 f"{HUBCAP_BASE}/user/stats",
                 headers={"Authorization": f"Bearer {key}"},
                 timeout=aiohttp.ClientTimeout(total=20),
             ) as r:
+                if r.status == 429:
+                    return "ratelimited"
                 if r.status != 200:
                     return None
                 return await r.json(content_type=None)
@@ -1687,9 +1693,12 @@ class DenuvoWatch(commands.Cog):
             return
         keys.append(key)
         await self.config.hubcap_keys.set(keys)
-        used = info.get("daily_usage")
-        limit = info.get("daily_limit")
-        extra = f" (usage {used}/{limit})" if limit is not None else ""
+        if info == "ratelimited":
+            extra = " (daily limit reached — usable tomorrow)"
+        else:
+            used = info.get("daily_usage")
+            limit = info.get("daily_limit")
+            extra = f" (usage {used}/{limit})" if limit is not None else ""
         await ctx.send(
             f"✅ Key added{extra}. Now using **{len(keys)}** key(s) for `/exeloc`."
         )
@@ -1732,6 +1741,9 @@ class DenuvoWatch(commands.Cog):
         unknown = False
         for i, k in enumerate(keys, 1):
             info = await self._validate_hubcap_key(k)
+            if info == "ratelimited":
+                lines.append(f"{i}. `{self._mask_key(k)}` — ⏳ daily limit reached (0 left)")
+                continue
             if info is None:
                 lines.append(f"{i}. `{self._mask_key(k)}` — ❌ invalid/unreachable")
                 continue
