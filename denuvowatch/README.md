@@ -31,6 +31,14 @@ The cog auto-installs `beautifulsoup4` and `aiohttp` via Downloader.
 | `[p]denuvowatch interval <minutes>` | owner | Set scan interval (min 5) |
 | `[p]denuvowatch show` | owner | Show current config |
 | `[p]denuvowatch clear` | owner | Clear the entire watchlist |
+| `[p]denuvowatch import` | owner | Import games from an attached JSON file |
+
+### Importing a watchlist
+
+Run `[p]denuvowatch import` with a JSON file attached. It accepts the original
+`steam_data.json` shape (`{"games": {appid: {...}}}`) or a bare
+`{appid: {...}}` mapping. Existing games are kept, new ones are added up to the
+50-game cap, and a summary of added/skipped is reported.
 
 All `/d*` commands are hybrid, so they work as both slash commands and prefix
 commands (`[p]dadd`, etc.).

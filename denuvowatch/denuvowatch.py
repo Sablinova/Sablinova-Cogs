@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Optional, Union
@@ -585,3 +586,65 @@ class DenuvoWatch(commands.Cog):
         """Clear the entire watchlist."""
         await self.config.games.set({})
         await ctx.send("🗑️ Watchlist cleared.")
+
+    @denuvowatch.command(name="import")
+    async def dw_import(self, ctx: commands.Context):
+        """Import games from an attached JSON file into the watchlist.
+
+        Attach a `steam_data.json`-style file. Accepts either
+        `{"games": {appid: {...}}}` or a bare `{appid: {...}}` mapping.
+        Existing entries are kept; new games are added up to the cap.
+        """
+        if not ctx.message.attachments:
+            await ctx.send(
+                "❌ Attach a JSON file to this command "
+                "(`{\"games\": {...}}` or a bare `{appid: {...}}` mapping)."
+            )
+            return
+
+        attachment = ctx.message.attachments[0]
+        try:
+            raw = await attachment.read()
+            payload = json.loads(raw.decode("utf-8"))
+        except Exception as e:
+            await ctx.send(f"❌ Couldn't read/parse the attached file: `{e}`")
+            return
+
+        incoming = payload.get("games", payload) if isinstance(payload, dict) else None
+        if not isinstance(incoming, dict) or not incoming:
+            await ctx.send("❌ No games found in the file.")
+            return
+
+        games = await self.config.games()
+        added, skipped_existing, skipped_full, invalid = 0, 0, 0, 0
+
+        for appid_str, info in incoming.items():
+            if not str(appid_str).isdigit() or not isinstance(info, dict):
+                invalid += 1
+                continue
+            appid_str = str(appid_str)
+            if appid_str in games:
+                skipped_existing += 1
+                continue
+            if len(games) >= MAX_GAMES:
+                skipped_full += 1
+                continue
+            games[appid_str] = {
+                "name": info.get("name", f"AppID {appid_str}"),
+                "denuvo": bool(info.get("denuvo", False)),
+                "build_id": info.get("build_id"),
+                "build_time": info.get("build_time"),
+                "header": info.get("header", ""),
+            }
+            added += 1
+
+        await self.config.games.set(games)
+
+        lines = [f"✅ Imported **{added}** game(s). Watchlist now {len(games)}/{MAX_GAMES}."]
+        if skipped_existing:
+            lines.append(f"• Skipped {skipped_existing} already on the watchlist.")
+        if skipped_full:
+            lines.append(f"• Skipped {skipped_full} — watchlist full ({MAX_GAMES} cap).")
+        if invalid:
+            lines.append(f"• Ignored {invalid} invalid entr(y/ies).")
+        await ctx.send("\n".join(lines))
