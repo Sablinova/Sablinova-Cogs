@@ -69,7 +69,10 @@ commands (`[p]dadd`, etc.).
 ## Executable lookup (`/exeloc`)
 
 `/exeloc <name or AppID>` lists every `.exe` path in a game's latest public
-depot, e.g.:
+depot. As a slash command it **autocompletes**: your watchlist and cached games
+are suggested first (tagged `[watchlist]` / `[cached]`), and once you type 3+
+characters it also searches the HubCap library (`[library]`). Picking a
+suggestion uses its exact AppID. Example output:
 
 ```
 Engine/Binaries/Win64/CrashReportClient.exe

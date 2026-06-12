@@ -6,6 +6,7 @@ from typing import Optional, Union
 
 import aiohttp
 import discord
+from discord import app_commands
 from bs4 import BeautifulSoup
 from discord.ext import tasks
 from redbot.core import Config, commands
@@ -381,6 +382,28 @@ class DenuvoWatch(commands.Cog):
         except Exception:
             log.exception("HubCap status failed for %s", appid)
             return None
+
+    async def hubcap_search(self, query: str, key: str, limit: int = 20):
+        """Free library search. Returns list of {'appid': int, 'name': str}."""
+        try:
+            async with self.session.get(
+                f"{HUBCAP_BASE}/search",
+                params={"q": query, "limit": limit},
+                headers={"Authorization": f"Bearer {key}"},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as r:
+                if r.status != 200:
+                    return []
+                data = await r.json(content_type=None)
+            out = []
+            for item in data.get("results", []):
+                gid = item.get("game_id")
+                name = item.get("game_name")
+                if gid and name:
+                    out.append({"appid": int(gid), "name": name})
+            return out
+        except Exception:
+            return []
 
     async def _exe_paths_hubcap(self, appid: int, key: str):
         """Return (name, exe_paths) via HubCap manifest ZIP, or (None, None).
@@ -835,7 +858,59 @@ class DenuvoWatch(commands.Cog):
         embed.timestamp = datetime.now(timezone.utc)
         await ctx.send(embed=embed)
 
+    async def _exeloc_autocomplete(self, interaction: discord.Interaction, current: str):
+        """Suggest games: watchlist + cached first, then HubCap library search."""
+        current = (current or "").strip()
+        cur_low = current.lower()
+        choices = []
+        seen = set()
+
+        def add(appid_str, name, tag):
+            if appid_str in seen:
+                return
+            seen.add(appid_str)
+            label = f"{name} [{tag}]"[:100]
+            choices.append(app_commands.Choice(name=label, value=str(appid_str)))
+
+        try:
+            games = await self.config.games()
+            cache = await self.config.exe_cache()
+        except Exception:
+            games, cache = {}, {}
+
+        # 1) Watchlist matches first.
+        for appid_str, info in games.items():
+            if len(choices) >= 25:
+                break
+            name = info.get("name", appid_str)
+            if not cur_low or cur_low in name.lower() or cur_low in appid_str:
+                add(appid_str, name, "watchlist")
+
+        # 2) Cached (not already shown).
+        for appid_str, entry in cache.items():
+            if len(choices) >= 25:
+                break
+            name = entry.get("name", appid_str)
+            if not cur_low or cur_low in str(name).lower() or cur_low in appid_str:
+                add(appid_str, name, "cached")
+
+        # 3) HubCap library search for broader matches (free; needs 3+ chars).
+        if len(choices) < 25 and len(current) >= 3:
+            try:
+                key = await self.config.hubcap_key()
+                if key:
+                    for item in await self.hubcap_search(current, key, limit=25):
+                        if len(choices) >= 25:
+                            break
+                        add(str(item["appid"]), item["name"], "library")
+            except Exception:
+                pass
+
+        return choices[:25]
+
     @commands.hybrid_command(name="exeloc", description="List all .exe paths in the latest depot for a game")
+    @app_commands.describe(query="Pick a watched/cached game, or type a name or AppID")
+    @app_commands.autocomplete(query=_exeloc_autocomplete)
     async def exeloc(self, ctx: commands.Context, *, query: str):
         """List every .exe path in a game's depot.
 
