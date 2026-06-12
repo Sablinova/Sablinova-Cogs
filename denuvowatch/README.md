@@ -32,7 +32,10 @@ The cog auto-installs `beautifulsoup4` and `aiohttp` via Downloader.
 | `[p]denuvowatch interval <minutes>` | admin | Set scan interval (min 5) |
 | `[p]denuvowatch show` | admin | Show current config |
 | `[p]denuvowatch clear` | admin | Clear the entire watchlist |
-| `[p]denuvowatch hubcapkey [key]` | **owner** | Set/clear the HubCapManifest API key for `/exeloc` (omit to clear) |
+| `[p]denuvowatch hubcapkey add <key>` | **owner** | Add a HubCap API key (round-robined for more daily quota) |
+| `[p]denuvowatch hubcapkey remove <n\|key>` | **owner** | Remove a key (by list number or value) |
+| `[p]denuvowatch hubcapkey list` | **owner** | List keys (masked) with remaining quota |
+| `[p]denuvowatch hubcapkey clear` | **owner** | Remove all keys |
 | `[p]denuvowatch cacheall [force\|fresh]` | admin | Cache exe paths + file snapshots for the watchlist (`fresh` = pull all from HubCap for accurate diff baselines) |
 | `[p]denuvowatch cachestatus` | admin | Show how many games have cached exe data |
 | `[p]denuvowatch cacheclear` | admin | Clear the exe-path cache |
@@ -85,9 +88,11 @@ Depot file data comes from two sources, tried in order:
 
 1. **HubCapManifest** (`hubcapmanifest.com`) — an authenticated API that serves
    already-decrypted manifest bundles and can pull directly from Steam, so it
-   covers far more games (incl. brand-new releases). Requires an API key set by
-   the owner with `[p]denuvowatch hubcapkey <key>`. Each `/exeloc` lookup that
-   hits HubCap uses one of the key's daily downloads.
+   covers far more games (incl. brand-new releases). Requires one or more API
+   keys added by the owner with `[p]denuvowatch hubcapkey add <key>`. Each
+   `/exeloc` lookup that hits HubCap uses one daily download. **Multiple keys
+   are round-robined** — before each download the cog picks the key with the
+   most quota left and skips exhausted ones, so N keys ≈ N×25 downloads/day.
 2. **ManifestHub2** (`github.com/SSMGAlt/ManifestHub2`) — a free static GitHub
    mirror used as a fallback when no key is set or HubCap has no data. Some of
    its manifests have AES-encrypted filenames, which the cog decrypts using the
@@ -120,13 +125,15 @@ downloads. A fetch only happens when there's no cache or the build moved on.
 `[p]denuvowatch cachestatus` shows cache size and how many entries are stale
 (build moved); `[p]denuvowatch cacheclear` empties the cache.
 
-### Setting the HubCap key
+### Setting HubCap keys
 
-DM the bot (so the key isn't shown in a server) and run
-`[p]denuvowatch hubcapkey <key>`. If you run it in a server channel, the cog
-deletes your message automatically. The key is verified against HubCap before
-being saved and is stored in Red Config — never in the repo. Run
-`[p]denuvowatch hubcapkey` with no argument to clear it.
+DM the bot (so keys aren't shown in a server) and run
+`[p]denuvowatch hubcapkey add <key>` for each key. If you run it in a server
+channel, the cog deletes your message automatically. Each key is verified
+against HubCap before being saved and is stored in Red Config — never in the
+repo. Manage keys with `hubcapkey list` (masked, with remaining quota),
+`hubcapkey remove <number|key>`, and `hubcapkey clear`. Adding several keys
+multiplies your daily download quota via round-robin selection.
 
 ## How it works
 

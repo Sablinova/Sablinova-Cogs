@@ -173,7 +173,8 @@ DEFAULT_GLOBALS = {
     "mention": None,       # {"type": "user"|"role", "id": int} pinged on ALL updates
     "interval_minutes": 10,
     "admins": [],          # user IDs allowed to use owner-gated commands
-    "hubcap_key": None,    # HubCapManifest API key (primary /exeloc source)
+    "hubcap_key": None,    # legacy single key (migrated into hubcap_keys)
+    "hubcap_keys": [],     # list of HubCapManifest API keys (round-robined)
     # appid_str -> {"exes": [...], "build_id": str|None, "source": str, "cached_at": int}
     "exe_cache": {},
     # appid_str -> {"build_id": str|None, "files": {path: sha}} for build diffs
@@ -377,6 +378,54 @@ class DenuvoWatch(commands.Cog):
 
     # ─── HubCapManifest (authenticated API) ──────────────────────────────────
 
+    async def _get_hubcap_keys(self) -> list:
+        """Return the configured HubCap keys, migrating the legacy single key."""
+        keys = list(await self.config.hubcap_keys() or [])
+        legacy = await self.config.hubcap_key()
+        if legacy:
+            if legacy not in keys:
+                keys.append(legacy)
+                await self.config.hubcap_keys.set(keys)
+            await self.config.hubcap_key.set(None)
+        return keys
+
+    async def _pick_hubcap_key(self) -> Optional[str]:
+        """Pick the key with the most daily quota left; skip exhausted ones.
+
+        Prefers keys with a known positive remaining count (most first). Keys
+        whose remaining is unknown (network error) are used only as a fallback
+        when no key has known remaining. Returns None when every key is known
+        to be exhausted.
+        """
+        keys = await self._get_hubcap_keys()
+        if not keys:
+            return None
+        best_known = None       # (remaining, key) with remaining > 0
+        unknown_fallback = None
+        all_zero = True
+        for k in keys:
+            rem = await self._hubcap_remaining(k)
+            if rem is None:
+                if unknown_fallback is None:
+                    unknown_fallback = k
+                all_zero = False  # unknown isn't a confirmed zero
+                continue
+            if rem > 0:
+                all_zero = False
+                if best_known is None or rem > best_known[0]:
+                    best_known = (rem, k)
+        if best_known is not None:
+            return best_known[1]
+        if unknown_fallback is not None:
+            return unknown_fallback
+        # Every key returned a known 0 (all exhausted).
+        return None
+
+    async def _any_hubcap_key(self) -> Optional[str]:
+        """First configured key (for free endpoints like search/status)."""
+        keys = await self._get_hubcap_keys()
+        return keys[0] if keys else None
+
     async def hubcap_status(self, appid: int, key: str) -> Optional[dict]:
         """Free status check — does HubCap have a manifest for this app?"""
         try:
@@ -526,7 +575,7 @@ class DenuvoWatch(commands.Cog):
         """
         name, records = await self._records_manifesthub(appid)
         if not records and allow_hubcap:
-            key = await self.config.hubcap_key()
+            key = await self._pick_hubcap_key()
             if key:
                 hc_name, hc_records = await self._records_hubcap(appid, key)
                 if hc_records is not None:
@@ -542,7 +591,7 @@ class DenuvoWatch(commands.Cog):
         HubCap with force_update. Falls back to ManifestHub2 only when no key.
         Returns (name, {path:{sha,size}}) or (name, None).
         """
-        key = await self.config.hubcap_key()
+        key = await self._pick_hubcap_key()
         if key:
             hc_name, hc_records = await self._records_hubcap(appid, key, force_update=True)
             if hc_records is not None:
@@ -619,7 +668,7 @@ class DenuvoWatch(commands.Cog):
 
         # 2) HubCap only if the free source had nothing useful.
         if allow_hubcap:
-            key = await self.config.hubcap_key()
+            key = await self._pick_hubcap_key()
             if key:
                 hc_name, hc_exes = await self._exe_paths_hubcap(appid, key)
                 if hc_exes is not None:
@@ -1162,7 +1211,7 @@ class DenuvoWatch(commands.Cog):
         # 3) HubCap library search for broader matches (free; needs 3+ chars).
         if len(choices) < 25 and len(current) >= 3:
             try:
-                key = await self.config.hubcap_key()
+                key = await self._any_hubcap_key()
                 if key:
                     for item in await self.hubcap_search(current, key, limit=25):
                         if len(choices) >= 25:
@@ -1350,13 +1399,19 @@ class DenuvoWatch(commands.Cog):
         await ctx.send("🗑️ Watchlist cleared.")
 
     async def _hubcap_remaining(self, key: str) -> Optional[int]:
-        """Return remaining HubCap daily downloads, or None if unknown."""
+        """Return remaining HubCap daily downloads.
+
+        0 when the daily limit is reached (HTTP 429), None when truly unknown
+        (network/other error).
+        """
         try:
             async with self.session.get(
                 f"{HUBCAP_BASE}/user/stats",
                 headers={"Authorization": f"Bearer {key}"},
                 timeout=aiohttp.ClientTimeout(total=20),
             ) as r:
+                if r.status == 429:
+                    return 0  # daily limit reached
                 if r.status != 200:
                     return None
                 info = await r.json(content_type=None)
@@ -1391,8 +1446,7 @@ class DenuvoWatch(commands.Cog):
             await ctx.send("📭 Watchlist is empty.")
             return
 
-        key = await self.config.hubcap_key()
-        remaining = await self._hubcap_remaining(key) if key else 0
+        keys = await self._get_hubcap_keys()
         cache = await self.config.exe_cache()
 
         cached_fresh = 0
@@ -1424,17 +1478,16 @@ class DenuvoWatch(commands.Cog):
             records = None
             source = None
 
-            if fresh and key:
+            if fresh and keys:
                 # Always pull fresh from HubCap (accurate baseline).
-                if remaining is None or remaining > 0:
+                key = await self._pick_hubcap_key()
+                if key:
                     hc_name, hc_records = await self._records_hubcap(
                         appid, key, force_update=True
                     )
                     if hc_records is not None:
                         name, records, source = hc_name, hc_records, "HubCapManifest"
                         used_hubcap += 1
-                        if remaining is not None:
-                            remaining -= 1
                 else:
                     hubcap_skipped_quota += 1
             else:
@@ -1443,14 +1496,13 @@ class DenuvoWatch(commands.Cog):
                 source = "ManifestHub2" if records else None
 
                 # HubCap fallback only when free had nothing, key present, quota left.
-                if not records and key:
-                    if remaining is None or remaining > 0:
+                if not records and keys:
+                    key = await self._pick_hubcap_key()
+                    if key:
                         hc_name, hc_records = await self._records_hubcap(appid, key)
                         if hc_records is not None:
                             name, records, source = hc_name, hc_records, "HubCapManifest"
                             used_hubcap += 1
-                            if remaining is not None:
-                                remaining -= 1
                     else:
                         hubcap_skipped_quota += 1
 
@@ -1491,11 +1543,21 @@ class DenuvoWatch(commands.Cog):
             f"• HubCap downloads used: {used_hubcap}",
         ]
         if hubcap_skipped_quota:
-            lines.append(f"• ⚠️ Skipped (HubCap quota exhausted): {hubcap_skipped_quota} — kept existing cache")
+            lines.append(f"• ⚠️ Skipped (all HubCap keys exhausted): {hubcap_skipped_quota} — kept existing cache")
         if no_data:
             lines.append(f"• No depot data anywhere: {no_data}")
-        if remaining is not None:
-            lines.append(f"• HubCap remaining today: {remaining}")
+        # Total remaining across all keys.
+        total_remaining = 0
+        unknown = False
+        for k in keys:
+            rem = await self._hubcap_remaining(k)
+            if rem is None:
+                unknown = True
+            else:
+                total_remaining += rem
+        if keys:
+            suffix = "+" if unknown else ""
+            lines.append(f"• HubCap remaining today: {total_remaining}{suffix} across {len(keys)} key(s)")
         await status.edit(content="\n".join(lines))
 
     @denuvowatch.command(name="difftest")
@@ -1578,48 +1640,120 @@ class DenuvoWatch(commands.Cog):
         embed.add_field(name="Stale (build moved)", value=str(stale), inline=True)
         await ctx.send(embed=embed)
 
-    @denuvowatch.command(name="hubcapkey")
-    @commands.is_owner()
-    async def dw_hubcapkey(self, ctx: commands.Context, key: str = None):
-        """(Owner) Set the HubCapManifest API key used by /exeloc.
-
-        Run without an argument to clear it. DM the bot to avoid exposing the
-        key; if used in a server, the command message is deleted automatically.
-        """
-        # Best-effort: delete the message so the key isn't left in chat.
-        if ctx.guild is not None:
-            try:
-                await ctx.message.delete()
-            except Exception:
-                pass
-
-        if not key:
-            await self.config.hubcap_key.set(None)
-            await ctx.send("✅ HubCap API key cleared. `/exeloc` will use ManifestHub2 only.")
-            return
-
-        # Validate the key against the free stats endpoint before storing.
+    async def _validate_hubcap_key(self, key: str):
+        """Validate a key against the free stats endpoint. Returns info or None."""
         try:
             async with self.session.get(
                 f"{HUBCAP_BASE}/user/stats",
                 headers={"Authorization": f"Bearer {key}"},
                 timeout=aiohttp.ClientTimeout(total=20),
             ) as r:
-                ok = r.status == 200
-                info = await r.json(content_type=None) if ok else {}
+                if r.status != 200:
+                    return None
+                return await r.json(content_type=None)
         except Exception:
-            ok = False
-            info = {}
+            return None
 
-        if not ok:
+    @staticmethod
+    def _mask_key(key: str) -> str:
+        if len(key) <= 12:
+            return key[:4] + "…"
+        return f"{key[:8]}…{key[-4:]}"
+
+    @denuvowatch.group(name="hubcapkey", invoke_without_command=True)
+    @commands.is_owner()
+    async def dw_hubcapkey(self, ctx: commands.Context):
+        """(Owner) Manage HubCapManifest API keys (round-robined for quota).
+
+        Subcommands: add, remove, list, clear.
+        """
+        await ctx.send_help(ctx.command)
+
+    @dw_hubcapkey.command(name="add")
+    async def dw_hubcapkey_add(self, ctx: commands.Context, key: str):
+        """Add a HubCap API key. DM the bot to avoid exposing it."""
+        if ctx.guild is not None:
+            try:
+                await ctx.message.delete()
+            except Exception:
+                pass
+        info = await self._validate_hubcap_key(key)
+        if info is None:
             await ctx.send("❌ That key was rejected by HubCapManifest. Not saved.")
             return
-
-        await self.config.hubcap_key.set(key)
+        keys = await self._get_hubcap_keys()
+        if key in keys:
+            await ctx.send("ℹ️ That key is already saved.")
+            return
+        keys.append(key)
+        await self.config.hubcap_keys.set(keys)
         used = info.get("daily_usage")
         limit = info.get("daily_limit")
-        extra = f" (daily usage {used}/{limit})" if limit is not None else ""
-        await ctx.send(f"✅ HubCap API key saved and verified{extra}. `/exeloc` will use HubCap first.")
+        extra = f" (usage {used}/{limit})" if limit is not None else ""
+        await ctx.send(
+            f"✅ Key added{extra}. Now using **{len(keys)}** key(s) for `/exeloc`."
+        )
+
+    @dw_hubcapkey.command(name="remove", aliases=["rm", "del"])
+    async def dw_hubcapkey_remove(self, ctx: commands.Context, key_or_index: str):
+        """Remove a key by its list number (see `list`) or full value."""
+        if ctx.guild is not None:
+            try:
+                await ctx.message.delete()
+            except Exception:
+                pass
+        keys = await self._get_hubcap_keys()
+        if not keys:
+            await ctx.send("No keys configured.")
+            return
+        removed = None
+        if key_or_index.isdigit():
+            idx = int(key_or_index) - 1
+            if 0 <= idx < len(keys):
+                removed = keys.pop(idx)
+        elif key_or_index in keys:
+            keys.remove(key_or_index)
+            removed = key_or_index
+        if removed is None:
+            await ctx.send("❌ No matching key (use the number from `hubcapkey list`).")
+            return
+        await self.config.hubcap_keys.set(keys)
+        await ctx.send(f"🗑️ Removed key `{self._mask_key(removed)}`. {len(keys)} left.")
+
+    @dw_hubcapkey.command(name="list", aliases=["ls"])
+    async def dw_hubcapkey_list(self, ctx: commands.Context):
+        """List configured keys (masked) with remaining quota."""
+        keys = await self._get_hubcap_keys()
+        if not keys:
+            await ctx.send("No HubCap keys configured. Add one with `hubcapkey add <key>`.")
+            return
+        lines = []
+        total = 0
+        unknown = False
+        for i, k in enumerate(keys, 1):
+            info = await self._validate_hubcap_key(k)
+            if info is None:
+                lines.append(f"{i}. `{self._mask_key(k)}` — ❌ invalid/unreachable")
+                continue
+            used = info.get("daily_usage", 0)
+            limit = info.get("daily_limit", 0)
+            rem = max(0, (limit or 0) - (used or 0))
+            total += rem
+            lines.append(f"{i}. `{self._mask_key(k)}` — {rem} left ({used}/{limit})")
+        embed = discord.Embed(
+            title="🔑 HubCap Keys",
+            description="\n".join(lines),
+            color=discord.Color.blurple(),
+        )
+        embed.set_footer(text=f"Total remaining today: {total} across {len(keys)} key(s)")
+        await ctx.send(embed=embed)
+
+    @dw_hubcapkey.command(name="clear")
+    async def dw_hubcapkey_clear(self, ctx: commands.Context):
+        """Remove all HubCap keys."""
+        await self.config.hubcap_keys.set([])
+        await self.config.hubcap_key.set(None)
+        await ctx.send("✅ All HubCap keys cleared. `/exeloc` will use ManifestHub2 only.")
 
     @denuvowatch.command(name="import")
     async def dw_import(self, ctx: commands.Context, url: str = None):
