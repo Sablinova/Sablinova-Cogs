@@ -102,16 +102,17 @@ def _looks_like_path(name: str) -> bool:
     return ("/" in name) or ("\\" in name) or ("." in name)
 
 
-def parse_manifest_files(blob: bytes, depot_key: Optional[bytes] = None):
-    """Parse a raw Steam depot manifest blob into a list of (path, size).
+def parse_manifest_records(blob: bytes, depot_key: Optional[bytes] = None):
+    """Parse a raw Steam depot manifest blob into file records.
 
-    Self-contained: reads the ContentManifestPayload section and its repeated
-    FileMapping messages (filename=field 1, size=field 2, flags=field 4).
+    Returns a list of dicts: {"path": str, "size": int, "sha": str}.
+    Directories are skipped. FileMapping layout: filename=field 1, size=field 2,
+    flags=field 3, sha_content=field 4.
 
     Some manifests store filenames AES-encrypted (base64 text). The encrypted
-    flag isn't reliably present in the ManifestHub mirror, so when a
-    `depot_key` is available and a name doesn't look like a real path, this
-    attempts to decrypt it and uses the result if it looks valid.
+    flag isn't reliably present in the mirror, so when a `depot_key` is
+    available and a name doesn't look like a real path, this attempts to
+    decrypt it and uses the result if it looks valid.
     """
     import struct
 
@@ -122,20 +123,23 @@ def parse_manifest_files(blob: bytes, depot_key: Optional[bytes] = None):
         return []
     payload = blob[8:8 + length]
 
-    files = []
+    records = []
     for fn, wt, v in _iter_protobuf_fields(payload):
         if fn != 1 or wt != 2:  # field 1 = repeated FileMapping
             continue
         raw_name = None
         size = 0
         flags = 0
+        sha = b""
         for ffn, fwt, fv in _iter_protobuf_fields(v):
             if ffn == 1 and fwt == 2:
                 raw_name = fv
             elif ffn == 2 and fwt == 0:
                 size = fv
-            elif ffn == 4 and fwt == 0:
+            elif ffn == 3 and fwt == 0:
                 flags = fv
+            elif ffn == 4 and fwt == 2:
+                sha = fv
         if raw_name is None:
             continue
 
@@ -152,8 +156,15 @@ def parse_manifest_files(blob: bytes, depot_key: Optional[bytes] = None):
         # flag 0x40 = directory; skip those.
         if flags & 0x40:
             continue
-        files.append((name.replace("\\", "/"), size))
-    return files
+        records.append(
+            {"path": name.replace("\\", "/"), "size": size, "sha": sha.hex()}
+        )
+    return records
+
+
+def parse_manifest_files(blob: bytes, depot_key: Optional[bytes] = None):
+    """Back-compat: list of (path, size) for exe extraction."""
+    return [(r["path"], r["size"]) for r in parse_manifest_records(blob, depot_key)]
 
 DEFAULT_GLOBALS = {
     "games": {},          # appid_str -> {name, denuvo, build_id, build_time, header}
@@ -165,6 +176,8 @@ DEFAULT_GLOBALS = {
     "hubcap_key": None,    # HubCapManifest API key (primary /exeloc source)
     # appid_str -> {"exes": [...], "build_id": str|None, "source": str, "cached_at": int}
     "exe_cache": {},
+    # appid_str -> {"build_id": str|None, "files": {path: sha}} for build diffs
+    "file_snapshots": {},
 }
 
 
@@ -453,6 +466,83 @@ class DenuvoWatch(commands.Cog):
         exes.sort(key=str.lower)
         return name, exes
 
+    async def _records_manifesthub(self, appid: int):
+        """Return (name, [records]) of all files via ManifestHub2, or (None, None)."""
+        metadata = await self.mh_fetch_metadata(appid)
+        if metadata is None:
+            return None, None
+        name = metadata.get("name") or f"AppID {appid}"
+        records = []
+        for depot_id, gid, depot_key in self._public_depots(metadata):
+            blob = await self.mh_fetch_manifest_blob(appid, depot_id, gid)
+            if not blob:
+                continue
+            records.extend(parse_manifest_records(blob, depot_key))
+        return name, records
+
+    async def _records_hubcap(self, appid: int, key: str):
+        """Return (name, [records]) of all files via HubCap, or (None, None)."""
+        import io
+        import zipfile
+
+        status = await self.hubcap_status(appid, key)
+        if not status or status.get("status") != "available":
+            return None, None
+        name = status.get("game_name") or f"AppID {appid}"
+        try:
+            async with self.session.get(
+                f"{HUBCAP_BASE}/manifest/{appid}",
+                headers={"Authorization": f"Bearer {key}"},
+                timeout=aiohttp.ClientTimeout(total=60),
+            ) as r:
+                if r.status != 200:
+                    return None, None
+                data = await r.read()
+        except Exception:
+            log.exception("HubCap manifest download failed for %s", appid)
+            return None, None
+
+        records = []
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                for info in zf.infolist():
+                    if not info.filename.lower().endswith(".manifest"):
+                        continue
+                    records.extend(parse_manifest_records(zf.read(info)))
+        except Exception:
+            log.exception("HubCap manifest ZIP parse failed for %s", appid)
+            return None, None
+        return name, records
+
+    async def get_file_map(self, appid: int, allow_hubcap: bool = True):
+        """Return (name, {path: sha}) of all files, free source first then HubCap.
+
+        Returns (name, None) when no source has data.
+        """
+        name, records = await self._records_manifesthub(appid)
+        if not records and allow_hubcap:
+            key = await self.config.hubcap_key()
+            if key:
+                hc_name, hc_records = await self._records_hubcap(appid, key)
+                if hc_records is not None:
+                    name, records = hc_name, hc_records
+        if records is None:
+            return name, None
+        return name, {r["path"]: r["sha"] for r in records}
+
+    @staticmethod
+    def _diff_file_maps(old: dict, new: dict):
+        """Return (added, removed, modified) sorted path lists."""
+        old_paths = set(old)
+        new_paths = set(new)
+        added = sorted(new_paths - old_paths, key=str.lower)
+        removed = sorted(old_paths - new_paths, key=str.lower)
+        modified = sorted(
+            (p for p in (old_paths & new_paths) if old[p] != new[p]),
+            key=str.lower,
+        )
+        return added, removed, modified
+
     async def _fetch_exes_fresh(self, appid: int, allow_hubcap: bool = True):
         """Fetch exe paths live: ManifestHub2 (free) first, HubCap if empty.
 
@@ -542,7 +632,27 @@ class DenuvoWatch(commands.Cog):
         return embed
 
     @staticmethod
-    def build_depot_embed(appid: int, old_build: str, new_build: str, new: dict) -> discord.Embed:
+    def _format_diff_field(paths: list, max_items: int = 10, max_chars: int = 1000) -> str:
+        """Format a list of changed paths into a code block, trimmed to fit."""
+        if not paths:
+            return "—"
+        shown = []
+        used = 0
+        for p in paths[:max_items]:
+            line = p
+            if used + len(line) + 1 > max_chars:
+                break
+            shown.append(line)
+            used += len(line) + 1
+        body = "\n".join(shown)
+        remaining = len(paths) - len(shown)
+        text = f"```\n{body}\n```"
+        if remaining > 0:
+            text += f"…and {remaining} more"
+        return text
+
+    @staticmethod
+    def build_depot_embed(appid: int, old_build: str, new_build: str, new: dict, diff=None) -> discord.Embed:
         name = new.get("name", f"AppID {appid}")
         url = f"https://store.steampowered.com/app/{appid}/"
         embed = discord.Embed(
@@ -554,6 +664,37 @@ class DenuvoWatch(commands.Cog):
         embed.add_field(name="New Build ID", value=f"`{new_build}`", inline=True)
         if new.get("build_time"):
             embed.add_field(name="Build Pushed", value=f"<t:{new['build_time']}:R>", inline=True)
+
+        if diff is not None:
+            added, removed, modified = diff
+            embed.add_field(
+                name="Changes",
+                value=(
+                    f"🟢 {len(added)} added   "
+                    f"🔴 {len(removed)} removed   "
+                    f"🟡 {len(modified)} modified"
+                ),
+                inline=False,
+            )
+            if modified:
+                embed.add_field(
+                    name=f"🟡 Modified ({len(modified)})",
+                    value=DenuvoWatch._format_diff_field(modified),
+                    inline=False,
+                )
+            if added:
+                embed.add_field(
+                    name=f"🟢 Added ({len(added)})",
+                    value=DenuvoWatch._format_diff_field(added),
+                    inline=False,
+                )
+            if removed:
+                embed.add_field(
+                    name=f"🔴 Removed ({len(removed)})",
+                    value=DenuvoWatch._format_diff_field(removed),
+                    inline=False,
+                )
+
         if new.get("header"):
             embed.set_thumbnail(url=new["header"])
         embed.set_footer(text=f"AppID {appid} • DenuvoWatch")
@@ -591,6 +732,7 @@ class DenuvoWatch(commands.Cog):
                 notify_user = await self.config.notify_user()
                 mention = self._format_mention(await self.config.mention())
                 allowed = discord.AllowedMentions(users=True, roles=True)
+                snapshots = await self.config.file_snapshots()
                 log.info("Checking %d games…", len(games))
 
                 async def check_single(appid_str):
@@ -626,14 +768,32 @@ class DenuvoWatch(commands.Cog):
                     old_build = old.get("build_id")
                     new_build = new.get("build_id")
                     if old_build and new_build and old_build != new_build:
+                        # Compute a depot file diff vs. the stored snapshot.
+                        diff = None
+                        new_map = None
+                        try:
+                            _name, new_map = await self.get_file_map(appid)
+                        except Exception:
+                            log.exception("file map fetch failed for %s", appid_str)
+                        snap = snapshots.get(appid_str)
+                        if new_map is not None and snap and snap.get("files"):
+                            added, removed, modified = self._diff_file_maps(
+                                snap["files"], new_map
+                            )
+                            diff = (added, removed, modified)
+
                         pings = [p for p in (mention, f"<@{notify_user}>" if notify_user else None) if p]
                         content = " ".join(pings) if pings else None
                         await channel.send(
                             content=content,
-                            embed=self.build_depot_embed(appid, old_build, new_build, new),
+                            embed=self.build_depot_embed(appid, old_build, new_build, new, diff),
                             allowed_mentions=allowed,
                         )
                         changes = True
+
+                        # Save the new snapshot for the next diff.
+                        if new_map is not None:
+                            snapshots[appid_str] = {"build_id": new_build, "files": new_map}
 
                     games[appid_str] = {
                         "name": new["name"],
@@ -644,6 +804,7 @@ class DenuvoWatch(commands.Cog):
                     }
 
                 await self.config.games.set(games)
+                await self.config.file_snapshots.set(snapshots)
                 log.info("Check complete.")
             except Exception:
                 log.exception("check_games crashed")
@@ -1116,6 +1277,7 @@ class DenuvoWatch(commands.Cog):
         hubcap_skipped_quota = 0
         no_data = 0
 
+        snapshots = await self.config.file_snapshots()
         status = await ctx.send(f"🔄 Caching {len(games)} game(s)…")
 
         for i, (appid_str, info) in enumerate(games.items(), 1):
@@ -1129,33 +1291,43 @@ class DenuvoWatch(commands.Cog):
                 and entry is not None
                 and entry.get("build_id") == current_build
                 and entry.get("exes") is not None
+                and snapshots.get(appid_str, {}).get("build_id") == current_build
             ):
                 skipped_unchanged += 1
                 continue
 
-            # Free source first.
-            name, exes = await self._exe_paths_manifesthub(appid)
-            source = "ManifestHub2" if exes else None
+            # Fetch full file records once (free source first).
+            name, records = await self._records_manifesthub(appid)
+            source = "ManifestHub2" if records else None
 
             # HubCap fallback only when free had nothing, key present, quota left.
-            if not exes and key:
+            if not records and key:
                 if remaining is None or remaining > 0:
-                    hc_name, hc_exes = await self._exe_paths_hubcap(appid, key)
-                    if hc_exes is not None:
-                        name, exes, source = hc_name, hc_exes, "HubCapManifest"
+                    hc_name, hc_records = await self._records_hubcap(appid, key)
+                    if hc_records is not None:
+                        name, records, source = hc_name, hc_records, "HubCapManifest"
                         used_hubcap += 1
                         if remaining is not None:
                             remaining -= 1
                 else:
                     hubcap_skipped_quota += 1
 
-            if exes is not None and source:
+            if records is not None and source:
+                exes = sorted(
+                    {r["path"] for r in records if r["path"].lower().endswith(".exe")},
+                    key=str.lower,
+                )
                 cache[appid_str] = {
                     "name": name or info.get("name"),
                     "exes": exes,
                     "build_id": current_build,
                     "source": source,
                     "cached_at": int(datetime.now(timezone.utc).timestamp()),
+                }
+                # Seed/update the file snapshot used for future build diffs.
+                snapshots[appid_str] = {
+                    "build_id": current_build,
+                    "files": {r["path"]: r["sha"] for r in records},
                 }
                 cached_fresh += 1
             elif entry is None:
@@ -1168,6 +1340,7 @@ class DenuvoWatch(commands.Cog):
                     pass
 
         await self.config.exe_cache.set(cache)
+        await self.config.file_snapshots.set(snapshots)
 
         lines = [
             "✅ **Cache complete.**",
@@ -1185,9 +1358,10 @@ class DenuvoWatch(commands.Cog):
 
     @denuvowatch.command(name="cacheclear")
     async def dw_cacheclear(self, ctx: commands.Context):
-        """Clear the cached exe-path data for all games."""
+        """Clear the cached exe-path data and file snapshots for all games."""
         await self.config.exe_cache.set({})
-        await ctx.send("🗑️ Exe-path cache cleared.")
+        await self.config.file_snapshots.set({})
+        await ctx.send("🗑️ Exe-path cache and file snapshots cleared.")
 
     @denuvowatch.command(name="cachestatus")
     async def dw_cachestatus(self, ctx: commands.Context):
