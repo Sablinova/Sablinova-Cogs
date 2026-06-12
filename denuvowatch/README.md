@@ -19,19 +19,30 @@ The cog auto-installs `beautifulsoup4` and `aiohttp` via Downloader.
 
 | Command | Who | Description |
 | --- | --- | --- |
-| `/dadd <name or AppID>` | owner | Add a game (searches Steam if you pass a name) |
-| `/dremove <name or AppID>` | owner | Remove a game from the watchlist |
+| `/dadd <name or AppID>` | admin | Add a game (searches Steam if you pass a name) |
+| `/dremove <name or AppID>` | admin | Remove a game from the watchlist |
 | `/dlist` | anyone | Show all watched games with current Denuvo/build |
 | `/dcheck <name or AppID>` | anyone | Instantly check any game's current status |
-| `/dforcecheck` | owner | Manually trigger a full watchlist scan |
+| `/dforcecheck` | admin | Manually trigger a full watchlist scan |
 | `/dstatus` | anyone | Watchlist size + next scheduled check |
-| `[p]denuvowatch channel <channel>` | owner | Set alert channel |
-| `[p]denuvowatch mention [@user or @role]` | owner | Ping a user/role on **every** update (omit to clear) |
-| `[p]denuvowatch pinguser [user]` | owner | Set/clear an extra ping on build updates only (omit to clear) |
-| `[p]denuvowatch interval <minutes>` | owner | Set scan interval (min 5) |
-| `[p]denuvowatch show` | owner | Show current config |
-| `[p]denuvowatch clear` | owner | Clear the entire watchlist |
-| `[p]denuvowatch import [url]` | owner | Import games from an attached JSON file or a direct JSON URL |
+| `[p]denuvowatch channel <channel>` | admin | Set alert channel |
+| `[p]denuvowatch mention [@user or @role]` | admin | Ping a user/role on **every** update (omit to clear) |
+| `[p]denuvowatch pinguser [user]` | admin | Set/clear an extra ping on build updates only (omit to clear) |
+| `[p]denuvowatch interval <minutes>` | admin | Set scan interval (min 5) |
+| `[p]denuvowatch show` | admin | Show current config |
+| `[p]denuvowatch clear` | admin | Clear the entire watchlist |
+| `[p]denuvowatch import [url]` | admin | Import games from an attached JSON file or a direct JSON URL |
+| `[p]denuvowatch addadmin @user` | **owner** | Grant a user access to all admin commands |
+| `[p]denuvowatch removeadmin @user` | **owner** | Revoke a user's admin access |
+| `[p]denuvowatch admins` | **owner** | List users with admin access |
+
+### Permissions
+
+By default only the **bot owner** can use the admin-gated commands above. The
+owner can grant access to specific users with `[p]denuvowatch addadmin @user`.
+Granted admins can use everything *except* `addadmin` / `removeadmin` / `admins`
+themselves — so admins can't add more admins. Access is per-user only (no roles,
+no server-permission shortcuts).
 
 ### Importing a watchlist
 

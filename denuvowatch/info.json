@@ -2,7 +2,7 @@
     "name": "DenuvoWatch",
     "short": "Watch Steam games for Denuvo and build changes",
     "description": "Monitors a global watchlist of Steam games and posts an alert when Denuvo anti-tamper is added or removed, or when a game's public build (depot) is updated. Uses the Steam Store API plus a store-page scrape for Denuvo detection and the SteamCMD API for build IDs.",
-    "end_user_data_statement": "This cog stores a global watchlist of Steam AppIDs and their last-seen state (name, Denuvo status, build ID, build timestamp) via Red Config, plus a notification channel ID, an optional mention target (user or role ID), and an optional legacy ping user ID. It does not store any personal user data beyond Discord IDs supplied by the bot owner.",
+    "end_user_data_statement": "This cog stores a global watchlist of Steam AppIDs and their last-seen state (name, Denuvo status, build ID, build timestamp) via Red Config, plus a notification channel ID, an optional mention target (user or role ID), an optional legacy ping user ID, and a list of admin user IDs granted command access by the owner. It does not store any personal user data beyond Discord IDs supplied by the bot owner.",
     "install_msg": "DenuvoWatch installed. Set the alert channel with `[p]denuvowatch channel #channel`, then add games with `/dadd <name or AppID>`. Use `[p]denuvowatch interval <minutes>` to tune the check loop.",
     "author": ["Sablinova"],
     "required_cogs": {},

@@ -24,7 +24,23 @@ DEFAULT_GLOBALS = {
     "notify_user": None,   # legacy: pinged on build updates only
     "mention": None,       # {"type": "user"|"role", "id": int} pinged on ALL updates
     "interval_minutes": 15,
+    "admins": [],          # user IDs allowed to use owner-gated commands
 }
+
+
+def is_owner_or_admin():
+    """Allow the bot owner, or a user manually added via `addadmin`."""
+
+    async def predicate(ctx: commands.Context) -> bool:
+        if await ctx.bot.is_owner(ctx.author):
+            return True
+        cog = ctx.cog
+        if cog is None:
+            return False
+        admins = await cog.config.admins()
+        return ctx.author.id in admins
+
+    return commands.check(predicate)
 
 
 class DenuvoWatch(commands.Cog):
@@ -296,7 +312,7 @@ class DenuvoWatch(commands.Cog):
         return results[0]["appid"] if results else None
 
     @commands.hybrid_command(name="dadd", description="Add a Steam game to the watchlist by name or AppID")
-    @commands.is_owner()
+    @is_owner_or_admin()
     async def dadd(self, ctx: commands.Context, *, query: str):
         """Add a game to the watchlist (searches Steam if you pass a name)."""
         await ctx.defer()
@@ -378,7 +394,7 @@ class DenuvoWatch(commands.Cog):
         await send(embed=embed)
 
     @commands.hybrid_command(name="dremove", description="Remove a game from the watchlist")
-    @commands.is_owner()
+    @is_owner_or_admin()
     async def dremove(self, ctx: commands.Context, *, query: str):
         """Remove a game from the watchlist."""
         await ctx.defer()
@@ -481,8 +497,8 @@ class DenuvoWatch(commands.Cog):
         embed.timestamp = datetime.now(timezone.utc)
         await ctx.send(embed=embed)
 
-    @commands.hybrid_command(name="dforcecheck", description="Manually trigger a full watchlist scan (owner only)")
-    @commands.is_owner()
+    @commands.hybrid_command(name="dforcecheck", description="Manually trigger a full watchlist scan (admin only)")
+    @is_owner_or_admin()
     async def dforcecheck(self, ctx: commands.Context):
         """Manually trigger a full watchlist scan now."""
         await ctx.send("🔄 Running full watchlist check now…")
@@ -515,7 +531,7 @@ class DenuvoWatch(commands.Cog):
     # ─── Config commands (owner only) ────────────────────────────────────────
 
     @commands.group(name="denuvowatch", aliases=["dwatch"])
-    @commands.is_owner()
+    @is_owner_or_admin()
     async def denuvowatch(self, ctx: commands.Context):
         """DenuvoWatch configuration."""
 
@@ -579,6 +595,7 @@ class DenuvoWatch(commands.Cog):
         embed.add_field(name="Build-ping user", value=f"<@{user_id}>" if user_id else "none", inline=False)
         embed.add_field(name="Interval", value=f"{interval} minutes", inline=False)
         embed.add_field(name="Watchlist size", value=f"{len(games)}/{MAX_GAMES}", inline=False)
+        embed.add_field(name="Admins", value=str(len(await self.config.admins())), inline=False)
         await ctx.send(embed=embed)
 
     @denuvowatch.command(name="clear")
@@ -677,3 +694,52 @@ class DenuvoWatch(commands.Cog):
         if invalid:
             lines.append(f"• Ignored {invalid} invalid entr(y/ies).")
         await ctx.send("\n".join(lines))
+
+    # ─── Admin management (bot owner only) ───────────────────────────────────
+
+    @denuvowatch.command(name="addadmin")
+    @commands.is_owner()
+    async def dw_addadmin(self, ctx: commands.Context, user: discord.User):
+        """(Owner) Grant a user access to all DenuvoWatch admin commands."""
+        async with self.config.admins() as admins:
+            if user.id in admins:
+                await ctx.send(f"ℹ️ {user.mention} is already a DenuvoWatch admin.")
+                return
+            admins.append(user.id)
+        await ctx.send(
+            f"✅ {user.mention} can now use DenuvoWatch admin commands.",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    @denuvowatch.command(name="removeadmin", aliases=["deladmin"])
+    @commands.is_owner()
+    async def dw_removeadmin(self, ctx: commands.Context, user: discord.User):
+        """(Owner) Revoke a user's DenuvoWatch admin access."""
+        async with self.config.admins() as admins:
+            if user.id not in admins:
+                await ctx.send(f"ℹ️ {user.mention} is not a DenuvoWatch admin.")
+                return
+            admins.remove(user.id)
+        await ctx.send(
+            f"✅ Removed {user.mention} from DenuvoWatch admins.",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    @denuvowatch.command(name="admins", aliases=["listadmins"])
+    @commands.is_owner()
+    async def dw_admins(self, ctx: commands.Context):
+        """(Owner) List users with DenuvoWatch admin access."""
+        admins = await self.config.admins()
+        if not admins:
+            await ctx.send("No DenuvoWatch admins set. Only the bot owner has access.")
+            return
+        lines = []
+        for uid in admins:
+            user = self.bot.get_user(uid)
+            lines.append(f"• {user} (`{uid}`)" if user else f"• `{uid}`")
+        embed = discord.Embed(
+            title="🛡️ DenuvoWatch Admins",
+            description="\n".join(lines),
+            color=discord.Color.blurple(),
+        )
+        await ctx.send(embed=embed)
