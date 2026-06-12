@@ -23,7 +23,7 @@ DEFAULT_GLOBALS = {
     "notify_channel": None,
     "notify_user": None,   # legacy: pinged on build updates only
     "mention": None,       # {"type": "user"|"role", "id": int} pinged on ALL updates
-    "interval_minutes": 15,
+    "interval_minutes": 10,
     "admins": [],          # user IDs allowed to use owner-gated commands
 }
 
@@ -71,7 +71,7 @@ class DenuvoWatch(commands.Cog):
             async with self.session.get(
                 "https://store.steampowered.com/api/appdetails",
                 params={"appids": appid, "cc": "us", "l": "en"},
-                timeout=aiohttp.ClientTimeout(total=15),
+                timeout=aiohttp.ClientTimeout(total=10),
             ) as r:
                 r.raise_for_status()
                 payload = await r.json()
@@ -85,7 +85,7 @@ class DenuvoWatch(commands.Cog):
         try:
             async with self.session.get(
                 f"https://api.steamcmd.net/v1/info/{appid}",
-                timeout=aiohttp.ClientTimeout(total=15),
+                timeout=aiohttp.ClientTimeout(total=10),
             ) as r:
                 data = await r.json()
             depots = (
@@ -110,7 +110,7 @@ class DenuvoWatch(commands.Cog):
             async with self.session.get(
                 f"https://store.steampowered.com/app/{appid}/",
                 cookies={"birthtime": "0", "mature_content": "1"},
-                timeout=aiohttp.ClientTimeout(total=15),
+                timeout=aiohttp.ClientTimeout(total=10),
             ) as r:
                 text = await r.text()
             soup = BeautifulSoup(text, "html.parser")
@@ -123,18 +123,22 @@ class DenuvoWatch(commands.Cog):
             return True
         return await self._check_denuvo_scrape(appid)
 
-    async def search_steam(self, query: str) -> list:
+    async def search_steam(self, query: str, games_only: bool = False) -> list[dict]:
         try:
             async with self.session.get(
                 "https://store.steampowered.com/api/storesearch/",
                 params={"term": query, "cc": "us", "l": "en"},
-                timeout=aiohttp.ClientTimeout(total=15),
+                timeout=aiohttp.ClientTimeout(total=10),
             ) as r:
                 payload = await r.json()
-            return [
-                {"appid": i["id"], "name": i["name"]}
-                for i in payload.get("items", [])
-            ]
+            if games_only:
+                # Filter out obvious DLC/soundtrack/edition entries
+                dlc_keywords = ["dlc", "soundtrack", "ost", "pack", "bundle", "edition", "content", "season pass"]
+                items = [
+                    i for i in items
+                    if not any(kw in i.get("name", "").lower() for kw in dlc_keywords)
+                ]
+            return [{"appid": i["id"], "name": i["name"]} for i in payload.get("items", [])]
         except Exception:
             return []
 
@@ -288,7 +292,7 @@ class DenuvoWatch(commands.Cog):
                 log.exception("check_games crashed")
             return changes
 
-    @tasks.loop(minutes=15)
+    @tasks.loop(minutes=10)
     async def check_games(self):
         await self.check_games_internal()
 
@@ -326,7 +330,7 @@ class DenuvoWatch(commands.Cog):
                 return
             candidates = [{"appid": appid, "name": snapshot["name"]}]
         else:
-            candidates = (await self.search_steam(query))[:5]
+            candidates = (await self.search_steam(query, games_only=True))[:5]
             if not candidates:
                 await ctx.send("❌ No results found on Steam.")
                 return
