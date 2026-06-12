@@ -162,6 +162,8 @@ DEFAULT_GLOBALS = {
     "interval_minutes": 10,
     "admins": [],          # user IDs allowed to use owner-gated commands
     "hubcap_key": None,    # HubCapManifest API key (primary /exeloc source)
+    # appid_str -> {"exes": [...], "build_id": str|None, "source": str, "cached_at": int}
+    "exe_cache": {},
 }
 
 
@@ -428,20 +430,64 @@ class DenuvoWatch(commands.Cog):
         exes.sort(key=str.lower)
         return name, exes
 
-    async def get_exe_paths(self, appid: int):
-        """Resolve exe paths, HubCap first then ManifestHub2 fallback.
+    async def _fetch_exes_fresh(self, appid: int, allow_hubcap: bool = True):
+        """Fetch exe paths live: ManifestHub2 (free) first, HubCap if empty.
 
         Returns (name, exe_paths, source). exe_paths is None when no source
-        had data; source is 'HubCapManifest', 'ManifestHub2', or None.
+        had data. Honours the free-first order you asked for.
         """
-        key = await self.config.hubcap_key()
-        if key:
-            name, exes = await self._exe_paths_hubcap(appid, key)
-            if exes is not None:
-                return name, exes, "HubCapManifest"
+        # 1) Free source first.
         name, exes = await self._exe_paths_manifesthub(appid)
+        if exes:
+            return name, exes, "ManifestHub2"
+
+        # 2) HubCap only if the free source had nothing useful.
+        if allow_hubcap:
+            key = await self.config.hubcap_key()
+            if key:
+                hc_name, hc_exes = await self._exe_paths_hubcap(appid, key)
+                if hc_exes is not None:
+                    return hc_name, hc_exes, "HubCapManifest"
+
+        # Free source existed but had zero exes -> report that (empty list).
         if exes is not None:
             return name, exes, "ManifestHub2"
+        return name, None, None
+
+    async def get_exe_paths(self, appid: int, current_build: Optional[str] = None):
+        """Cache-first exe resolver.
+
+        Serves from the cache when present and the build is unchanged. Otherwise
+        fetches fresh (free source, then HubCap) and updates the cache, keyed by
+        build_id so a new build forces a refresh.
+
+        Returns (name, exe_paths, source). source may be 'cache',
+        'HubCapManifest', 'ManifestHub2', or None.
+        """
+        appid_str = str(appid)
+        cache = await self.config.exe_cache()
+        entry = cache.get(appid_str)
+
+        if entry is not None:
+            # Use cache unless we know the build moved on.
+            if current_build is None or entry.get("build_id") == current_build:
+                return entry.get("name"), list(entry.get("exes", [])), "cache"
+
+        name, exes, source = await self._fetch_exes_fresh(appid)
+        if exes is not None:
+            cache[appid_str] = {
+                "name": name,
+                "exes": exes,
+                "build_id": current_build,
+                "source": source,
+                "cached_at": int(datetime.now(timezone.utc).timestamp()),
+            }
+            await self.config.exe_cache.set(cache)
+            return name, exes, source
+
+        # Fetch failed; fall back to a stale cache entry if we have one.
+        if entry is not None:
+            return entry.get("name"), list(entry.get("exes", [])), "cache (stale)"
         return name, None, None
 
     # ─── Embed builders ─────────────────────────────────────────────────────
@@ -791,9 +837,10 @@ class DenuvoWatch(commands.Cog):
 
     @commands.hybrid_command(name="exeloc", description="List all .exe paths in the latest depot for a game")
     async def exeloc(self, ctx: commands.Context, *, query: str):
-        """List every .exe path in the latest depot of a game.
+        """List every .exe path in a game's depot.
 
-        Pass a Steam AppID or a game name. Data comes from ManifestHub2.
+        Pass a Steam AppID or a game name. Served from cache when the build is
+        unchanged; otherwise fetched (free source first, then HubCap).
         """
         await ctx.defer()
         games = await self.config.games()
@@ -802,7 +849,14 @@ class DenuvoWatch(commands.Cog):
             await ctx.send(f"❌ Couldn't resolve `{query}` to a Steam game.")
             return
 
-        name, exes, source = await self.get_exe_paths(appid)
+        # Determine current build for cache freshness: use stored value for a
+        # watched game, else fetch it live.
+        if str(appid) in games:
+            current_build = games[str(appid)].get("build_id")
+        else:
+            current_build, _ = await self.fetch_build_id(appid)
+
+        name, exes, source = await self.get_exe_paths(appid, current_build)
         if exes is None:
             await ctx.send(
                 f"❌ No depot data found for `{name or query}` (AppID `{appid}`)."
@@ -942,6 +996,142 @@ class DenuvoWatch(commands.Cog):
         """Clear the entire watchlist."""
         await self.config.games.set({})
         await ctx.send("🗑️ Watchlist cleared.")
+
+    async def _hubcap_remaining(self, key: str) -> Optional[int]:
+        """Return remaining HubCap daily downloads, or None if unknown."""
+        try:
+            async with self.session.get(
+                f"{HUBCAP_BASE}/user/stats",
+                headers={"Authorization": f"Bearer {key}"},
+                timeout=aiohttp.ClientTimeout(total=20),
+            ) as r:
+                if r.status != 200:
+                    return None
+                info = await r.json(content_type=None)
+            used = info.get("daily_usage")
+            limit = info.get("daily_limit")
+            if used is None or limit is None:
+                return None
+            return max(0, int(limit) - int(used))
+        except Exception:
+            return None
+
+    @denuvowatch.command(name="cacheall")
+    async def dw_cacheall(self, ctx: commands.Context, force: bool = False):
+        """Cache .exe paths for the whole watchlist.
+
+        Free source (ManifestHub2) is tried first; HubCap is only used when the
+        free source has nothing, and only while daily quota remains. Games whose
+        build hasn't changed since last cache are skipped unless `force` is set.
+
+        Usage: `[p]denuvowatch cacheall` or `[p]denuvowatch cacheall true`
+        """
+        games = await self.config.games()
+        if not games:
+            await ctx.send("📭 Watchlist is empty.")
+            return
+
+        key = await self.config.hubcap_key()
+        remaining = await self._hubcap_remaining(key) if key else 0
+        cache = await self.config.exe_cache()
+
+        cached_fresh = 0
+        skipped_unchanged = 0
+        used_hubcap = 0
+        hubcap_skipped_quota = 0
+        no_data = 0
+
+        status = await ctx.send(f"🔄 Caching {len(games)} game(s)…")
+
+        for i, (appid_str, info) in enumerate(games.items(), 1):
+            appid = int(appid_str)
+            current_build = info.get("build_id")
+            entry = cache.get(appid_str)
+
+            # Skip if already cached at this build and not forced.
+            if (
+                not force
+                and entry is not None
+                and entry.get("build_id") == current_build
+                and entry.get("exes") is not None
+            ):
+                skipped_unchanged += 1
+                continue
+
+            # Free source first.
+            name, exes = await self._exe_paths_manifesthub(appid)
+            source = "ManifestHub2" if exes else None
+
+            # HubCap fallback only when free had nothing, key present, quota left.
+            if not exes and key:
+                if remaining is None or remaining > 0:
+                    hc_name, hc_exes = await self._exe_paths_hubcap(appid, key)
+                    if hc_exes is not None:
+                        name, exes, source = hc_name, hc_exes, "HubCapManifest"
+                        used_hubcap += 1
+                        if remaining is not None:
+                            remaining -= 1
+                else:
+                    hubcap_skipped_quota += 1
+
+            if exes is not None and source:
+                cache[appid_str] = {
+                    "name": name or info.get("name"),
+                    "exes": exes,
+                    "build_id": current_build,
+                    "source": source,
+                    "cached_at": int(datetime.now(timezone.utc).timestamp()),
+                }
+                cached_fresh += 1
+            elif entry is None:
+                no_data += 1
+
+            if i % 5 == 0:
+                try:
+                    await status.edit(content=f"🔄 Caching… {i}/{len(games)} processed")
+                except Exception:
+                    pass
+
+        await self.config.exe_cache.set(cache)
+
+        lines = [
+            "✅ **Cache complete.**",
+            f"• Cached/updated: {cached_fresh}",
+            f"• Skipped (build unchanged): {skipped_unchanged}",
+            f"• HubCap downloads used: {used_hubcap}",
+        ]
+        if hubcap_skipped_quota:
+            lines.append(f"• ⚠️ Skipped (HubCap quota exhausted): {hubcap_skipped_quota} — kept existing cache")
+        if no_data:
+            lines.append(f"• No depot data anywhere: {no_data}")
+        if remaining is not None:
+            lines.append(f"• HubCap remaining today: {remaining}")
+        await status.edit(content="\n".join(lines))
+
+    @denuvowatch.command(name="cacheclear")
+    async def dw_cacheclear(self, ctx: commands.Context):
+        """Clear the cached exe-path data for all games."""
+        await self.config.exe_cache.set({})
+        await ctx.send("🗑️ Exe-path cache cleared.")
+
+    @denuvowatch.command(name="cachestatus")
+    async def dw_cachestatus(self, ctx: commands.Context):
+        """Show how many games have cached exe data."""
+        cache = await self.config.exe_cache()
+        games = await self.config.games()
+        if not cache:
+            await ctx.send("Cache is empty. Run `[p]denuvowatch cacheall`.")
+            return
+        stale = sum(
+            1
+            for a, e in cache.items()
+            if a in games and e.get("build_id") != games[a].get("build_id")
+        )
+        embed = discord.Embed(title="🗂️ Exe Cache", color=discord.Color.blurple())
+        embed.add_field(name="Cached games", value=str(len(cache)), inline=True)
+        embed.add_field(name="Watchlist", value=str(len(games)), inline=True)
+        embed.add_field(name="Stale (build moved)", value=str(stale), inline=True)
+        await ctx.send(embed=embed)
 
     @denuvowatch.command(name="hubcapkey")
     @commands.is_owner()

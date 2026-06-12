@@ -33,6 +33,9 @@ The cog auto-installs `beautifulsoup4` and `aiohttp` via Downloader.
 | `[p]denuvowatch show` | admin | Show current config |
 | `[p]denuvowatch clear` | admin | Clear the entire watchlist |
 | `[p]denuvowatch hubcapkey [key]` | **owner** | Set/clear the HubCapManifest API key for `/exeloc` (omit to clear) |
+| `[p]denuvowatch cacheall [force]` | admin | Cache exe paths for the whole watchlist (free source first, HubCap only if needed) |
+| `[p]denuvowatch cachestatus` | admin | Show how many games have cached exe data |
+| `[p]denuvowatch cacheclear` | admin | Clear the exe-path cache |
 | `[p]denuvowatch import [url]` | admin | Import games from an attached JSON file or a direct JSON URL |
 | `[p]denuvowatch addadmin @user` | **owner** | Grant a user access to all admin commands |
 | `[p]denuvowatch removeadmin @user` | **owner** | Revoke a user's admin access |
@@ -89,6 +92,24 @@ Depot file data comes from two sources, tried in order:
 The cog parses the raw Steam manifest protobuf itself — no SteamCMD or Steam
 account required. The embed footer shows which source answered. If neither
 source has the game, `/exeloc` reports no depot data.
+
+### Caching (saving HubCap quota)
+
+Exe lists are cached per game, keyed by the game's build ID. `/exeloc` serves
+from cache when the build is unchanged, so repeat lookups cost **zero** HubCap
+downloads. A fetch only happens when there's no cache or the build moved on.
+
+`[p]denuvowatch cacheall` pre-warms the whole watchlist:
+
+- Games whose build hasn't changed since last cache are **skipped** (free).
+- For the rest, **ManifestHub2 (free)** is tried first; **HubCap** is used only
+  when the free source has nothing, and only while daily quota remains.
+- If the HubCap daily limit is hit mid-run, remaining HubCap-only games are
+  skipped (their existing cache is kept) and reported in the summary.
+- Add `true` to force a re-cache of everything: `[p]denuvowatch cacheall true`.
+
+`[p]denuvowatch cachestatus` shows cache size and how many entries are stale
+(build moved); `[p]denuvowatch cacheclear` empties the cache.
 
 ### Setting the HubCap key
 
