@@ -18,6 +18,93 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 }
 
+# ManifestHub2 — static depot data mirror (one git branch per Steam AppID).
+MANIFESTHUB_OWNER = "SSMGAlt"
+MANIFESTHUB_REPO = "ManifestHub2"
+MANIFESTHUB_RAW = f"https://raw.githubusercontent.com/{MANIFESTHUB_OWNER}/{MANIFESTHUB_REPO}"
+
+# Steam depot manifest section magics (little-endian uint32).
+MANIFEST_PAYLOAD_MAGIC = 0x71F617D0
+
+
+def _read_varint(buf: bytes, i: int):
+    shift = 0
+    result = 0
+    while True:
+        b = buf[i]
+        i += 1
+        result |= (b & 0x7F) << shift
+        if not (b & 0x80):
+            break
+        shift += 7
+    return result, i
+
+
+def _iter_protobuf_fields(buf: bytes):
+    """Yield (field_number, wire_type, value) for a protobuf message."""
+    i = 0
+    n = len(buf)
+    while i < n:
+        key, i = _read_varint(buf, i)
+        fn = key >> 3
+        wt = key & 7
+        if wt == 0:  # varint
+            v, i = _read_varint(buf, i)
+            yield fn, wt, v
+        elif wt == 2:  # length-delimited
+            ln, i = _read_varint(buf, i)
+            v = buf[i:i + ln]
+            i += ln
+            yield fn, wt, v
+        elif wt == 5:  # 32-bit
+            v = buf[i:i + 4]
+            i += 4
+            yield fn, wt, v
+        elif wt == 1:  # 64-bit
+            v = buf[i:i + 8]
+            i += 8
+            yield fn, wt, v
+        else:
+            raise ValueError(f"unsupported protobuf wire type {wt}")
+
+
+def parse_manifest_files(blob: bytes):
+    """Parse a raw Steam depot manifest blob into a list of (path, size).
+
+    Self-contained: reads the ContentManifestPayload section and its repeated
+    FileMapping messages (filename=field 1, size=field 2). No external deps.
+    """
+    import struct
+
+    if len(blob) < 8:
+        return []
+    magic, length = struct.unpack_from("<II", blob, 0)
+    if magic != MANIFEST_PAYLOAD_MAGIC:
+        return []
+    payload = blob[8:8 + length]
+
+    files = []
+    for fn, wt, v in _iter_protobuf_fields(payload):
+        if fn != 1 or wt != 2:  # field 1 = repeated FileMapping
+            continue
+        name = None
+        size = 0
+        flags = 0
+        for ffn, fwt, fv in _iter_protobuf_fields(v):
+            if ffn == 1 and fwt == 2:
+                name = fv.decode("utf-8", "replace").rstrip("\x00")
+            elif ffn == 2 and fwt == 0:
+                size = fv
+            elif ffn == 4 and fwt == 0:
+                flags = fv
+        if name is None:
+            continue
+        # flag 0x40 = directory; skip those.
+        if flags & 0x40:
+            continue
+        files.append((name.replace("\\", "/"), size))
+    return files
+
 DEFAULT_GLOBALS = {
     "games": {},          # appid_str -> {name, denuvo, build_id, build_time, header}
     "notify_channel": None,
@@ -155,6 +242,68 @@ class DenuvoWatch(commands.Cog):
             "build_id": build_id,
             "build_time": build_time,
         }
+
+    # ─── ManifestHub2 (depot file listings) ──────────────────────────────────
+
+    async def mh_fetch_metadata(self, appid: int) -> Optional[dict]:
+        """Fetch {appid}.json from ManifestHub2. Returns dict or None (404)."""
+        url = f"{MANIFESTHUB_RAW}/{appid}/{appid}.json"
+        try:
+            async with self.session.get(
+                url, timeout=aiohttp.ClientTimeout(total=20)
+            ) as r:
+                if r.status == 404:
+                    return None
+                r.raise_for_status()
+                return await r.json(content_type=None)
+        except Exception:
+            log.exception("ManifestHub metadata fetch failed for %s", appid)
+            return None
+
+    async def mh_fetch_manifest_blob(self, appid: int, depot_id: str, gid: str) -> Optional[bytes]:
+        """Fetch a raw {depot}_{gid}.manifest blob from ManifestHub2."""
+        url = f"{MANIFESTHUB_RAW}/{appid}/{depot_id}_{gid}.manifest"
+        try:
+            async with self.session.get(
+                url, timeout=aiohttp.ClientTimeout(total=30)
+            ) as r:
+                if r.status == 404:
+                    return None
+                r.raise_for_status()
+                return await r.read()
+        except Exception:
+            log.exception("ManifestHub blob fetch failed for %s/%s_%s", appid, depot_id, gid)
+            return None
+
+    @staticmethod
+    def _public_depots(metadata: dict):
+        """Yield (depot_id_str, gid) for depots with a public manifest GID."""
+        depot_root = metadata.get("depot", {}) or {}
+        for key, val in depot_root.items():
+            if not str(key).isdigit() or not isinstance(val, dict):
+                continue
+            gid = (val.get("manifests", {}) or {}).get("public", {}).get("gid")
+            if gid:
+                yield str(key), str(gid)
+
+    async def get_exe_paths(self, appid: int):
+        """Return (name, exe_paths) for an app via ManifestHub2, or (name, None)."""
+        metadata = await self.mh_fetch_metadata(appid)
+        if metadata is None:
+            return None, None
+        name = metadata.get("name") or f"AppID {appid}"
+        exes = []
+        seen = set()
+        for depot_id, gid in self._public_depots(metadata):
+            blob = await self.mh_fetch_manifest_blob(appid, depot_id, gid)
+            if not blob:
+                continue
+            for path, _size in parse_manifest_files(blob):
+                if path.lower().endswith(".exe") and path not in seen:
+                    seen.add(path)
+                    exes.append(path)
+        exes.sort(key=str.lower)
+        return name, exes
 
     # ─── Embed builders ─────────────────────────────────────────────────────
 
@@ -499,6 +648,53 @@ class DenuvoWatch(commands.Cog):
             embed.set_thumbnail(url=snapshot["header"])
         embed.set_footer(text=f"AppID {appid} • Checked now")
         embed.timestamp = datetime.now(timezone.utc)
+        await ctx.send(embed=embed)
+
+    @commands.hybrid_command(name="exeloc", description="List all .exe paths in the latest depot for a game")
+    async def exeloc(self, ctx: commands.Context, *, query: str):
+        """List every .exe path in the latest depot of a game.
+
+        Pass a Steam AppID or a game name. Data comes from ManifestHub2.
+        """
+        await ctx.defer()
+        games = await self.config.games()
+        appid = await self._resolve_appid(query, games)
+        if appid is None:
+            await ctx.send(f"❌ Couldn't resolve `{query}` to a Steam game.")
+            return
+
+        name, exes = await self.get_exe_paths(appid)
+        if exes is None:
+            await ctx.send(
+                f"❌ No depot data found for `{name or query}` (AppID `{appid}`) on ManifestHub2."
+            )
+            return
+        if not exes:
+            await ctx.send(
+                f"⚠️ No `.exe` files found in the depot for **{name}** (AppID `{appid}`)."
+            )
+            return
+
+        listing = "\n".join(exes)
+        embed = discord.Embed(
+            title=f"🗂️ Executables — {name}",
+            url=f"https://store.steampowered.com/app/{appid}/",
+            color=discord.Color.blurple(),
+        )
+        # Description cap is 4096; trim if necessary and note how many were cut.
+        block = f"```\n{listing}\n```"
+        if len(block) > 4096:
+            shown = []
+            running = len("```\n\n```")
+            for line in exes:
+                if running + len(line) + 1 > 3900:
+                    break
+                shown.append(line)
+                running += len(line) + 1
+            cut = len(exes) - len(shown)
+            block = "```\n" + "\n".join(shown) + f"\n```\n…and {cut} more."
+        embed.description = block
+        embed.set_footer(text=f"AppID {appid} • {len(exes)} exe(s) • via ManifestHub2")
         await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="dforcecheck", description="Manually trigger a full watchlist scan (admin only)")

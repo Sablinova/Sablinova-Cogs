@@ -23,6 +23,7 @@ The cog auto-installs `beautifulsoup4` and `aiohttp` via Downloader.
 | `/dremove <name or AppID>` | admin | Remove a game from the watchlist |
 | `/dlist` | anyone | Show all watched games with current Denuvo/build |
 | `/dcheck <name or AppID>` | anyone | Instantly check any game's current status |
+| `/exeloc <name or AppID>` | anyone | List all `.exe` paths in the latest depot (via ManifestHub2) |
 | `/dforcecheck` | admin | Manually trigger a full watchlist scan |
 | `/dstatus` | anyone | Watchlist size + next scheduled check |
 | `[p]denuvowatch channel <channel>` | admin | Set alert channel |
@@ -60,6 +61,23 @@ to the 50-game cap, and a summary of added/skipped is reported.
 
 All `/d*` commands are hybrid, so they work as both slash commands and prefix
 commands (`[p]dadd`, etc.).
+
+## Executable lookup (`/exeloc`)
+
+`/exeloc <name or AppID>` lists every `.exe` path in a game's latest public
+depot, e.g.:
+
+```
+Engine/Binaries/Win64/CrashReportClient.exe
+Engine/Extras/Redist/en-us/UE4PrereqSetup_x64.exe
+P3R/Binaries/Win64/P3R.exe
+```
+
+Depot file data comes from **ManifestHub2**
+(`github.com/SSMGAlt/ManifestHub2`), which mirrors Steam depot manifests (one
+git branch per AppID). The cog parses the raw manifest protobuf itself — no
+SteamCMD, Steam account, or extra Python dependencies required. Games not
+present in ManifestHub2 will report no depot data.
 
 ## How it works
 
