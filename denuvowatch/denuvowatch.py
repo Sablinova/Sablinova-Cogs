@@ -1427,20 +1427,23 @@ class DenuvoWatch(commands.Cog):
     async def dw_cacheall(self, ctx: commands.Context, mode: str = ""):
         """Cache .exe paths and file snapshots for the whole watchlist.
 
-        Modes:
-          (none)  — free source first, HubCap only if free has nothing; skips
-                    games whose build hasn't changed since last cache.
-          force   — re-cache every game (ignore the unchanged-build skip).
-          fresh   — pull every game fresh from HubCap with force_update so the
-                    baseline matches the current build exactly. Most accurate
-                    for future build diffs, but uses one HubCap download per
-                    game (watch your daily quota).
+        Modes (all SKIP games already cached at the current build):
+          (none)      — free source first, HubCap only if free has nothing.
+          fresh       — for games that need caching, pull from HubCap with
+                        force_update (accurate baseline). Still skips games
+                        already cached at the current build, so re-running it
+                        only spends quota on what's left.
+          force       — re-cache every game (ignore the unchanged-build skip).
+          forcefresh  — force + fresh: re-pull everything from HubCap.
 
-        Usage: `[p]denuvowatch cacheall`, `... cacheall force`, `... cacheall fresh`
+        Usage: `[p]denuvowatch cacheall`, `... fresh`, `... force`, `... forcefresh`
         """
         mode = (mode or "").strip().lower()
-        force = mode in ("force", "fresh", "true")
-        fresh = mode == "fresh"
+        # `force` re-caches everything (ignore the unchanged-build skip).
+        # `fresh` uses HubCap force_update as the source but STILL skips games
+        # already cached at the current build. `forcefresh` does both.
+        force = mode in ("force", "true", "forcefresh")
+        fresh = mode in ("fresh", "forcefresh")
         games = await self.config.games()
         if not games:
             await ctx.send("📭 Watchlist is empty.")

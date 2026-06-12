@@ -115,12 +115,14 @@ downloads. A fetch only happens when there's no cache or the build moved on.
   when the free source has nothing, and only while daily quota remains.
 - If the HubCap daily limit is hit mid-run, remaining HubCap-only games are
   skipped (their existing cache is kept) and reported in the summary.
+- `[p]denuvowatch cacheall fresh` caches via HubCap with a forced refresh
+  (accurate baseline), but **still skips games already cached at the current
+  build** — so re-running it after hitting the daily limit only spends quota on
+  the games still missing. Use this when the free mirror is stale.
 - `[p]denuvowatch cacheall force` re-caches everything (ignores the
-  unchanged-build skip).
-- `[p]denuvowatch cacheall fresh` pulls **every** game from HubCap with a
-  forced refresh, so the stored baseline matches the current build exactly.
-  Use this when the free mirror is stale (e.g. a build just dropped). Costs one
-  HubCap download per game — mind your daily quota.
+  unchanged-build skip), still free-source first.
+- `[p]denuvowatch cacheall forcefresh` = force + fresh: re-pull every game from
+  HubCap. Costs one HubCap download per game — mind your daily quota.
 
 `[p]denuvowatch cachestatus` shows cache size and how many entries are stale
 (build moved); `[p]denuvowatch cacheclear` empties the cache.
