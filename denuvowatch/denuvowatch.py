@@ -1359,15 +1359,23 @@ class DenuvoWatch(commands.Cog):
             return None
 
     @denuvowatch.command(name="cacheall")
-    async def dw_cacheall(self, ctx: commands.Context, force: bool = False):
-        """Cache .exe paths for the whole watchlist.
+    async def dw_cacheall(self, ctx: commands.Context, mode: str = ""):
+        """Cache .exe paths and file snapshots for the whole watchlist.
 
-        Free source (ManifestHub2) is tried first; HubCap is only used when the
-        free source has nothing, and only while daily quota remains. Games whose
-        build hasn't changed since last cache are skipped unless `force` is set.
+        Modes:
+          (none)  — free source first, HubCap only if free has nothing; skips
+                    games whose build hasn't changed since last cache.
+          force   — re-cache every game (ignore the unchanged-build skip).
+          fresh   — pull every game fresh from HubCap with force_update so the
+                    baseline matches the current build exactly. Most accurate
+                    for future build diffs, but uses one HubCap download per
+                    game (watch your daily quota).
 
-        Usage: `[p]denuvowatch cacheall` or `[p]denuvowatch cacheall true`
+        Usage: `[p]denuvowatch cacheall`, `... cacheall force`, `... cacheall fresh`
         """
+        mode = (mode or "").strip().lower()
+        force = mode in ("force", "fresh", "true")
+        fresh = mode == "fresh"
         games = await self.config.games()
         if not games:
             await ctx.send("📭 Watchlist is empty.")
@@ -1402,14 +1410,16 @@ class DenuvoWatch(commands.Cog):
                 skipped_unchanged += 1
                 continue
 
-            # Fetch full file records once (free source first).
-            name, records = await self._records_manifesthub(appid)
-            source = "ManifestHub2" if records else None
+            name = None
+            records = None
+            source = None
 
-            # HubCap fallback only when free had nothing, key present, quota left.
-            if not records and key:
+            if fresh and key:
+                # Always pull fresh from HubCap (accurate baseline).
                 if remaining is None or remaining > 0:
-                    hc_name, hc_records = await self._records_hubcap(appid, key)
+                    hc_name, hc_records = await self._records_hubcap(
+                        appid, key, force_update=True
+                    )
                     if hc_records is not None:
                         name, records, source = hc_name, hc_records, "HubCapManifest"
                         used_hubcap += 1
@@ -1417,6 +1427,22 @@ class DenuvoWatch(commands.Cog):
                             remaining -= 1
                 else:
                     hubcap_skipped_quota += 1
+            else:
+                # Free source first.
+                name, records = await self._records_manifesthub(appid)
+                source = "ManifestHub2" if records else None
+
+                # HubCap fallback only when free had nothing, key present, quota left.
+                if not records and key:
+                    if remaining is None or remaining > 0:
+                        hc_name, hc_records = await self._records_hubcap(appid, key)
+                        if hc_records is not None:
+                            name, records, source = hc_name, hc_records, "HubCapManifest"
+                            used_hubcap += 1
+                            if remaining is not None:
+                                remaining -= 1
+                    else:
+                        hubcap_skipped_quota += 1
 
             if records is not None and source:
                 exes = sorted(

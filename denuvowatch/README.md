@@ -33,7 +33,7 @@ The cog auto-installs `beautifulsoup4` and `aiohttp` via Downloader.
 | `[p]denuvowatch show` | admin | Show current config |
 | `[p]denuvowatch clear` | admin | Clear the entire watchlist |
 | `[p]denuvowatch hubcapkey [key]` | **owner** | Set/clear the HubCapManifest API key for `/exeloc` (omit to clear) |
-| `[p]denuvowatch cacheall [force]` | admin | Cache exe paths for the whole watchlist (free source first, HubCap only if needed) |
+| `[p]denuvowatch cacheall [force\|fresh]` | admin | Cache exe paths + file snapshots for the watchlist (`fresh` = pull all from HubCap for accurate diff baselines) |
 | `[p]denuvowatch cachestatus` | admin | Show how many games have cached exe data |
 | `[p]denuvowatch cacheclear` | admin | Clear the exe-path cache |
 | `[p]denuvowatch difftest <game>` | admin | Preview a Build Updated embed with a simulated file diff (no data changed) |
@@ -110,7 +110,12 @@ downloads. A fetch only happens when there's no cache or the build moved on.
   when the free source has nothing, and only while daily quota remains.
 - If the HubCap daily limit is hit mid-run, remaining HubCap-only games are
   skipped (their existing cache is kept) and reported in the summary.
-- Add `true` to force a re-cache of everything: `[p]denuvowatch cacheall true`.
+- `[p]denuvowatch cacheall force` re-caches everything (ignores the
+  unchanged-build skip).
+- `[p]denuvowatch cacheall fresh` pulls **every** game from HubCap with a
+  forced refresh, so the stored baseline matches the current build exactly.
+  Use this when the free mirror is stale (e.g. a build just dropped). Costs one
+  HubCap download per game — mind your daily quota.
 
 `[p]denuvowatch cachestatus` shows cache size and how many entries are stale
 (build moved); `[p]denuvowatch cacheclear` empties the cache.
