@@ -143,6 +143,11 @@ being saved and is stored in Red Config — never in the repo. Run
   first-ever update for a game has no baseline to compare against). Snapshots
   cached before this update have no size data and will show sizes as `?` until
   the game is re-cached.
+- On a build change the new file list is fetched from **HubCap with a forced
+  refresh** (HubCap pulls live from Steam). The free ManifestHub2 mirror lags
+  by weeks/months and can't be trusted for a just-pushed build, so it's only
+  used for diffs when no HubCap key is set. A forced refresh uses one HubCap
+  daily download per build change.
 - If a mention is set via `[p]denuvowatch mention`, that user or role is pinged
   on **every** update (Denuvo added/removed and build updates). The legacy
   `pinguser` (user or role) adds an extra ping on build updates only.

@@ -480,8 +480,12 @@ class DenuvoWatch(commands.Cog):
             records.extend(parse_manifest_records(blob, depot_key))
         return name, records
 
-    async def _records_hubcap(self, appid: int, key: str):
-        """Return (name, [records]) of all files via HubCap, or (None, None)."""
+    async def _records_hubcap(self, appid: int, key: str, force_update: bool = False):
+        """Return (name, [records]) of all files via HubCap, or (None, None).
+
+        When force_update is True, HubCap regenerates the manifest from Steam
+        before serving (needed to get a freshly-pushed build's file list).
+        """
         import io
         import zipfile
 
@@ -489,11 +493,16 @@ class DenuvoWatch(commands.Cog):
         if not status or status.get("status") != "available":
             return None, None
         name = status.get("game_name") or f"AppID {appid}"
+        # If HubCap knows it's behind, force a refresh regardless.
+        if status.get("needs_update"):
+            force_update = True
+        params = {"force_update": "true"} if force_update else None
         try:
             async with self.session.get(
                 f"{HUBCAP_BASE}/manifest/{appid}",
+                params=params,
                 headers={"Authorization": f"Bearer {key}"},
-                timeout=aiohttp.ClientTimeout(total=60),
+                timeout=aiohttp.ClientTimeout(total=120),
             ) as r:
                 if r.status != 200:
                     return None, None
@@ -529,6 +538,23 @@ class DenuvoWatch(commands.Cog):
         if records is None:
             return name, None
         return name, {r["path"]: {"sha": r["sha"], "size": r["size"]} for r in records}
+
+    async def get_file_map_fresh(self, appid: int):
+        """Like get_file_map but prioritises an up-to-date source.
+
+        Used right after a build change: ManifestHub2 lags badly, so prefer
+        HubCap with force_update. Falls back to ManifestHub2 only when no key.
+        Returns (name, {path:{sha,size}}) or (name, None).
+        """
+        key = await self.config.hubcap_key()
+        if key:
+            hc_name, hc_records = await self._records_hubcap(appid, key, force_update=True)
+            if hc_records is not None:
+                return hc_name, {
+                    r["path"]: {"sha": r["sha"], "size": r["size"]} for r in hc_records
+                }
+        # No key (or HubCap failed): fall back to the free mirror.
+        return await self.get_file_map(appid)
 
     @staticmethod
     def _entry_sha(entry):
@@ -843,7 +869,7 @@ class DenuvoWatch(commands.Cog):
                         diff = None
                         new_map = None
                         try:
-                            _name, new_map = await self.get_file_map(appid)
+                            _name, new_map = await self.get_file_map_fresh(appid)
                         except Exception:
                             log.exception("file map fetch failed for %s", appid_str)
                         snap = snapshots.get(appid_str)
