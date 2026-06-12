@@ -133,12 +133,15 @@ being saved and is stored in Red Config — never in the repo. Run
 - State (name, Denuvo status, build ID, build timestamp, header image) is stored
   globally via Red `Config` and persists across restarts.
 - On each scan, any change triggers an embed in the configured alert channel.
-- **Build Updated embeds include a depot file diff** — counts plus truncated
-  lists of added / removed / modified files — when a previous file snapshot
-  exists for that game. The diff compares the new depot manifest against the
-  snapshot stored at the last build. Run `[p]denuvowatch cacheall` once to seed
-  snapshots so the *next* build update can be diffed (the first-ever update for
-  a game has no baseline to compare against).
+- **Build Updated embeds include a depot file diff** — counts, a total size
+  change, plus truncated lists of added / removed / modified files **with file
+  sizes** (modified files show `old → new, +delta`) — when a previous file
+  snapshot exists for that game. The diff compares the new depot manifest
+  against the snapshot stored at the last build. Run `[p]denuvowatch cacheall`
+  once to seed snapshots so the *next* build update can be diffed (the
+  first-ever update for a game has no baseline to compare against). Snapshots
+  cached before this update have no size data and will show sizes as `?` until
+  the game is re-cached.
 - If a mention is set via `[p]denuvowatch mention`, that user or role is pinged
   on **every** update (Denuvo added/removed and build updates). The legacy
   `pinguser` adds an extra ping on build updates only.

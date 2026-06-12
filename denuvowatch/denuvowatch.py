@@ -515,7 +515,7 @@ class DenuvoWatch(commands.Cog):
         return name, records
 
     async def get_file_map(self, appid: int, allow_hubcap: bool = True):
-        """Return (name, {path: sha}) of all files, free source first then HubCap.
+        """Return (name, {path: {sha, size}}) of all files, free source first.
 
         Returns (name, None) when no source has data.
         """
@@ -528,20 +528,61 @@ class DenuvoWatch(commands.Cog):
                     name, records = hc_name, hc_records
         if records is None:
             return name, None
-        return name, {r["path"]: r["sha"] for r in records}
+        return name, {r["path"]: {"sha": r["sha"], "size": r["size"]} for r in records}
 
     @staticmethod
-    def _diff_file_maps(old: dict, new: dict):
-        """Return (added, removed, modified) sorted path lists."""
+    def _entry_sha(entry):
+        """Read sha from a snapshot entry (supports legacy sha-string format)."""
+        if isinstance(entry, dict):
+            return entry.get("sha")
+        return entry  # legacy: value was the sha string itself
+
+    @staticmethod
+    def _entry_size(entry):
+        """Read size from a snapshot entry, or None for legacy entries."""
+        if isinstance(entry, dict):
+            return entry.get("size")
+        return None
+
+    @classmethod
+    def _diff_file_maps(cls, old: dict, new: dict):
+        """Diff two file maps.
+
+        Returns (added, removed, modified, size_delta) where:
+          - added/removed: list of (path, size)
+          - modified: list of (path, old_size, new_size)
+          - size_delta: total byte change (new total - old total over changed files)
+        Handles both new {path:{sha,size}} and legacy {path: sha} formats.
+        """
         old_paths = set(old)
         new_paths = set(new)
-        added = sorted(new_paths - old_paths, key=str.lower)
-        removed = sorted(old_paths - new_paths, key=str.lower)
-        modified = sorted(
-            (p for p in (old_paths & new_paths) if old[p] != new[p]),
-            key=str.lower,
+
+        added = sorted(
+            ((p, cls._entry_size(new[p])) for p in (new_paths - old_paths)),
+            key=lambda t: t[0].lower(),
         )
-        return added, removed, modified
+        removed = sorted(
+            ((p, cls._entry_size(old[p])) for p in (old_paths - new_paths)),
+            key=lambda t: t[0].lower(),
+        )
+        modified = sorted(
+            (
+                (p, cls._entry_size(old[p]), cls._entry_size(new[p]))
+                for p in (old_paths & new_paths)
+                if cls._entry_sha(old[p]) != cls._entry_sha(new[p])
+            ),
+            key=lambda t: t[0].lower(),
+        )
+
+        size_delta = 0
+        for _p, s in added:
+            size_delta += s or 0
+        for _p, s in removed:
+            size_delta -= s or 0
+        for _p, os, ns in modified:
+            size_delta += (ns or 0) - (os or 0)
+
+        return added, removed, modified, size_delta
 
     async def _fetch_exes_fresh(self, appid: int, allow_hubcap: bool = True):
         """Fetch exe paths live: ManifestHub2 (free) first, HubCap if empty.
@@ -632,20 +673,35 @@ class DenuvoWatch(commands.Cog):
         return embed
 
     @staticmethod
-    def _format_diff_field(paths: list, max_items: int = 10, max_chars: int = 1000) -> str:
-        """Format a list of changed paths into a code block, trimmed to fit."""
-        if not paths:
+    def _human_size(num, signed: bool = False) -> str:
+        """Format a byte count like '349.29 MiB'. None -> '?'."""
+        if num is None:
+            return "?"
+        sign = ""
+        if signed:
+            sign = "+" if num >= 0 else "-"
+        n = abs(num)
+        for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+            if n < 1024 or unit == "TiB":
+                if unit == "B":
+                    return f"{sign}{int(n)} {unit}"
+                return f"{sign}{n:.2f} {unit}"
+            n /= 1024
+
+    @classmethod
+    def _format_diff_lines(cls, lines: list, max_items: int = 10, max_chars: int = 1000) -> str:
+        """Pack pre-rendered lines into a code block, trimmed to fit."""
+        if not lines:
             return "—"
         shown = []
         used = 0
-        for p in paths[:max_items]:
-            line = p
+        for line in lines[:max_items]:
             if used + len(line) + 1 > max_chars:
                 break
             shown.append(line)
             used += len(line) + 1
         body = "\n".join(shown)
-        remaining = len(paths) - len(shown)
+        remaining = len(lines) - len(shown)
         text = f"```\n{body}\n```"
         if remaining > 0:
             text += f"…and {remaining} more"
@@ -666,32 +722,40 @@ class DenuvoWatch(commands.Cog):
             embed.add_field(name="Build Pushed", value=f"<t:{new['build_time']}:R>", inline=True)
 
         if diff is not None:
-            added, removed, modified = diff
+            added, removed, modified, size_delta = diff
             embed.add_field(
                 name="Changes",
                 value=(
                     f"🟢 {len(added)} added   "
                     f"🔴 {len(removed)} removed   "
-                    f"🟡 {len(modified)} modified"
+                    f"🟡 {len(modified)} modified\n"
+                    f"📦 Total size change: **{DenuvoWatch._human_size(size_delta, signed=True)}**"
                 ),
                 inline=False,
             )
             if modified:
+                lines = [
+                    f"{p}  ({DenuvoWatch._human_size(os)} → {DenuvoWatch._human_size(ns)}, "
+                    f"{DenuvoWatch._human_size((ns or 0) - (os or 0), signed=True)})"
+                    for p, os, ns in modified
+                ]
                 embed.add_field(
                     name=f"🟡 Modified ({len(modified)})",
-                    value=DenuvoWatch._format_diff_field(modified),
+                    value=DenuvoWatch._format_diff_lines(lines),
                     inline=False,
                 )
             if added:
+                lines = [f"{p}  ({DenuvoWatch._human_size(s)})" for p, s in added]
                 embed.add_field(
                     name=f"🟢 Added ({len(added)})",
-                    value=DenuvoWatch._format_diff_field(added),
+                    value=DenuvoWatch._format_diff_lines(lines),
                     inline=False,
                 )
             if removed:
+                lines = [f"{p}  ({DenuvoWatch._human_size(s)})" for p, s in removed]
                 embed.add_field(
                     name=f"🔴 Removed ({len(removed)})",
-                    value=DenuvoWatch._format_diff_field(removed),
+                    value=DenuvoWatch._format_diff_lines(lines),
                     inline=False,
                 )
 
@@ -777,10 +841,7 @@ class DenuvoWatch(commands.Cog):
                             log.exception("file map fetch failed for %s", appid_str)
                         snap = snapshots.get(appid_str)
                         if new_map is not None and snap and snap.get("files"):
-                            added, removed, modified = self._diff_file_maps(
-                                snap["files"], new_map
-                            )
-                            diff = (added, removed, modified)
+                            diff = self._diff_file_maps(snap["files"], new_map)
 
                         pings = [p for p in (mention, f"<@{notify_user}>" if notify_user else None) if p]
                         content = " ".join(pings) if pings else None
@@ -1327,7 +1388,7 @@ class DenuvoWatch(commands.Cog):
                 # Seed/update the file snapshot used for future build diffs.
                 snapshots[appid_str] = {
                     "build_id": current_build,
-                    "files": {r["path"]: r["sha"] for r in records},
+                    "files": {r["path"]: {"sha": r["sha"], "size": r["size"]} for r in records},
                 }
                 cached_fresh += 1
             elif entry is None:
