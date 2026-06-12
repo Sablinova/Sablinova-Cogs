@@ -68,11 +68,46 @@ def _iter_protobuf_fields(buf: bytes):
             raise ValueError(f"unsupported protobuf wire type {wt}")
 
 
-def parse_manifest_files(blob: bytes):
+def _decrypt_filename(enc_b64: bytes, key: bytes) -> str:
+    """Decrypt a Steam-encrypted manifest filename.
+
+    Format: base64( AES-ECB(IV)[16] + AES-CBC(payload) ), PKCS7-padded, with
+    the first 16 bytes being the ECB-encrypted IV. Requires the 32-byte AES
+    depot key. Raises on failure.
+    """
+    import base64
+
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    data = base64.b64decode(enc_b64)
+    iv = Cipher(algorithms.AES(key), modes.ECB()).decryptor().update(data[:16])
+    body = Cipher(algorithms.AES(key), modes.CBC(iv)).decryptor().update(data[16:])
+    pad = body[-1]
+    if 1 <= pad <= 16:
+        body = body[:-pad]
+    return body.rstrip(b"\x00").decode("utf-8", "replace")
+
+
+def _looks_like_path(name: str) -> bool:
+    """Heuristic: does this look like a real (decrypted) file path?"""
+    if not name:
+        return False
+    # Real paths are printable and almost always contain a separator or a dot.
+    if not all(32 <= ord(c) < 127 or ord(c) > 160 for c in name):
+        return False
+    return ("/" in name) or ("\\" in name) or ("." in name)
+
+
+def parse_manifest_files(blob: bytes, depot_key: Optional[bytes] = None):
     """Parse a raw Steam depot manifest blob into a list of (path, size).
 
     Self-contained: reads the ContentManifestPayload section and its repeated
-    FileMapping messages (filename=field 1, size=field 2). No external deps.
+    FileMapping messages (filename=field 1, size=field 2, flags=field 4).
+
+    Some manifests store filenames AES-encrypted (base64 text). The encrypted
+    flag isn't reliably present in the ManifestHub mirror, so when a
+    `depot_key` is available and a name doesn't look like a real path, this
+    attempts to decrypt it and uses the result if it looks valid.
     """
     import struct
 
@@ -87,18 +122,29 @@ def parse_manifest_files(blob: bytes):
     for fn, wt, v in _iter_protobuf_fields(payload):
         if fn != 1 or wt != 2:  # field 1 = repeated FileMapping
             continue
-        name = None
+        raw_name = None
         size = 0
         flags = 0
         for ffn, fwt, fv in _iter_protobuf_fields(v):
             if ffn == 1 and fwt == 2:
-                name = fv.decode("utf-8", "replace").rstrip("\x00")
+                raw_name = fv
             elif ffn == 2 and fwt == 0:
                 size = fv
             elif ffn == 4 and fwt == 0:
                 flags = fv
-        if name is None:
+        if raw_name is None:
             continue
+
+        name = raw_name.decode("utf-8", "replace").rstrip("\x00")
+        # If it doesn't look like a path and we have a key, try to decrypt.
+        if not _looks_like_path(name) and depot_key:
+            try:
+                decrypted = _decrypt_filename(raw_name.decode("ascii"), depot_key)
+                if _looks_like_path(decrypted):
+                    name = decrypted
+            except Exception:
+                pass
+
         # flag 0x40 = directory; skip those.
         if flags & 0x40:
             continue
@@ -277,14 +323,22 @@ class DenuvoWatch(commands.Cog):
 
     @staticmethod
     def _public_depots(metadata: dict):
-        """Yield (depot_id_str, gid) for depots with a public manifest GID."""
+        """Yield (depot_id_str, gid, depot_key_bytes_or_None) for public depots."""
         depot_root = metadata.get("depot", {}) or {}
         for key, val in depot_root.items():
             if not str(key).isdigit() or not isinstance(val, dict):
                 continue
             gid = (val.get("manifests", {}) or {}).get("public", {}).get("gid")
-            if gid:
-                yield str(key), str(gid)
+            if not gid:
+                continue
+            keyhex = val.get("decryptionkey")
+            depot_key = None
+            if isinstance(keyhex, str) and len(keyhex) == 64:
+                try:
+                    depot_key = bytes.fromhex(keyhex)
+                except ValueError:
+                    depot_key = None
+            yield str(key), str(gid), depot_key
 
     async def get_exe_paths(self, appid: int):
         """Return (name, exe_paths) for an app via ManifestHub2, or (name, None)."""
@@ -294,11 +348,11 @@ class DenuvoWatch(commands.Cog):
         name = metadata.get("name") or f"AppID {appid}"
         exes = []
         seen = set()
-        for depot_id, gid in self._public_depots(metadata):
+        for depot_id, gid, depot_key in self._public_depots(metadata):
             blob = await self.mh_fetch_manifest_blob(appid, depot_id, gid)
             if not blob:
                 continue
-            for path, _size in parse_manifest_files(blob):
+            for path, _size in parse_manifest_files(blob, depot_key):
                 if path.lower().endswith(".exe") and path not in seen:
                     seen.add(path)
                     exes.append(path)

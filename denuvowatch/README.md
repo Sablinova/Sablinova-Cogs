@@ -76,8 +76,10 @@ P3R/Binaries/Win64/P3R.exe
 Depot file data comes from **ManifestHub2**
 (`github.com/SSMGAlt/ManifestHub2`), which mirrors Steam depot manifests (one
 git branch per AppID). The cog parses the raw manifest protobuf itself — no
-SteamCMD, Steam account, or extra Python dependencies required. Games not
-present in ManifestHub2 will report no depot data.
+SteamCMD or Steam account required. Some games store their manifest filenames
+AES-encrypted; the cog decrypts those automatically using the depot key from
+ManifestHub2 (via the `cryptography` library). Games not present in
+ManifestHub2 will report no depot data.
 
 ## How it works
 
