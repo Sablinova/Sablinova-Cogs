@@ -276,7 +276,7 @@ class DenuvoWatch(commands.Cog):
             return True
         return await self._check_denuvo_scrape(appid)
 
-    async def search_steam(self, query: str, games_only: bool = False) -> list[dict]:
+    async def search_steam(self, query: str) -> list:
         try:
             async with self.session.get(
                 "https://store.steampowered.com/api/storesearch/",
@@ -284,14 +284,10 @@ class DenuvoWatch(commands.Cog):
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as r:
                 payload = await r.json()
-            if games_only:
-                # Filter out obvious DLC/soundtrack/edition entries
-                dlc_keywords = ["dlc", "soundtrack", "ost", "pack", "bundle", "edition", "content", "season pass"]
-                items = [
-                    i for i in items
-                    if not any(kw in i.get("name", "").lower() for kw in dlc_keywords)
-                ]
-            return [{"appid": i["id"], "name": i["name"]} for i in payload.get("items", [])]
+            return [
+                {"appid": i["id"], "name": i["name"]}
+                for i in payload.get("items", [])
+            ]
         except Exception:
             return []
 
@@ -719,7 +715,7 @@ class DenuvoWatch(commands.Cog):
         embed.add_field(name="Old Build ID", value=f"`{old_build}`", inline=True)
         embed.add_field(name="New Build ID", value=f"`{new_build}`", inline=True)
         if new.get("build_time"):
-            embed.add_field(name="Build Pushed", value=f"<t:{new['build_time']}:R>", inline=True)
+            embed.add_field(name="Build Pushed", value=f"<t:{new['build_time']}:f>", inline=True)
 
         if diff is not None:
             added, removed, modified, size_delta = diff
@@ -916,10 +912,24 @@ class DenuvoWatch(commands.Cog):
                 return
             candidates = [{"appid": appid, "name": snapshot["name"]}]
         else:
-            candidates = (await self.search_steam(query, games_only=True))[:5]
-            if not candidates:
+            raw_candidates = await self.search_steam(query)[:10]
+            if not raw_candidates:
                 await ctx.send("❌ No results found on Steam.")
                 return
+
+            if len(raw_candidates) == 1:
+                candidates = raw_candidates
+            else:
+                candidates = []
+                for c in raw_candidates:
+                    details = await asyncio.to_thread(self.fetch_app_details, c["appid"])
+                    if details.get("type") == "game":
+                        candidates.append(c)
+                    if len(candidates) >= 5:
+                        break
+                if not candidates:
+                    await ctx.send("❌ No games found (all results were DLC/other).")
+                    return
 
         if len(candidates) == 1:
             await self._add_appid(ctx, candidates[0]["appid"])
@@ -1080,7 +1090,7 @@ class DenuvoWatch(commands.Cog):
         embed.add_field(name="Build ID", value=f"`{snapshot['build_id']}`" if snapshot["build_id"] else "Unknown", inline=True)
         embed.add_field(name="Watchlist", value="👁️ Watching" if in_watchlist else "➕ Use /dadd", inline=True)
         if snapshot.get("build_time"):
-            embed.add_field(name="Build Pushed", value=f"<t:{snapshot['build_time']}:R>", inline=True)
+            embed.add_field(name="Build Pushed", value=f"<t:{snapshot['build_time']}:f>", inline=True)
         if snapshot.get("header"):
             embed.set_thumbnail(url=snapshot["header"])
         embed.set_footer(text=f"AppID {appid} • Checked now")
