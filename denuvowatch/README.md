@@ -32,6 +32,7 @@ The cog auto-installs `beautifulsoup4` and `aiohttp` via Downloader.
 | `[p]denuvowatch interval <minutes>` | admin | Set scan interval (min 5) |
 | `[p]denuvowatch show` | admin | Show current config |
 | `[p]denuvowatch clear` | admin | Clear the entire watchlist |
+| `[p]denuvowatch hubcapkey [key]` | **owner** | Set/clear the HubCapManifest API key for `/exeloc` (omit to clear) |
 | `[p]denuvowatch import [url]` | admin | Import games from an attached JSON file or a direct JSON URL |
 | `[p]denuvowatch addadmin @user` | **owner** | Grant a user access to all admin commands |
 | `[p]denuvowatch removeadmin @user` | **owner** | Revoke a user's admin access |
@@ -73,13 +74,29 @@ Engine/Extras/Redist/en-us/UE4PrereqSetup_x64.exe
 P3R/Binaries/Win64/P3R.exe
 ```
 
-Depot file data comes from **ManifestHub2**
-(`github.com/SSMGAlt/ManifestHub2`), which mirrors Steam depot manifests (one
-git branch per AppID). The cog parses the raw manifest protobuf itself — no
-SteamCMD or Steam account required. Some games store their manifest filenames
-AES-encrypted; the cog decrypts those automatically using the depot key from
-ManifestHub2 (via the `cryptography` library). Games not present in
-ManifestHub2 will report no depot data.
+Depot file data comes from two sources, tried in order:
+
+1. **HubCapManifest** (`hubcapmanifest.com`) — an authenticated API that serves
+   already-decrypted manifest bundles and can pull directly from Steam, so it
+   covers far more games (incl. brand-new releases). Requires an API key set by
+   the owner with `[p]denuvowatch hubcapkey <key>`. Each `/exeloc` lookup that
+   hits HubCap uses one of the key's daily downloads.
+2. **ManifestHub2** (`github.com/SSMGAlt/ManifestHub2`) — a free static GitHub
+   mirror used as a fallback when no key is set or HubCap has no data. Some of
+   its manifests have AES-encrypted filenames, which the cog decrypts using the
+   depot key (via the `cryptography` library).
+
+The cog parses the raw Steam manifest protobuf itself — no SteamCMD or Steam
+account required. The embed footer shows which source answered. If neither
+source has the game, `/exeloc` reports no depot data.
+
+### Setting the HubCap key
+
+DM the bot (so the key isn't shown in a server) and run
+`[p]denuvowatch hubcapkey <key>`. If you run it in a server channel, the cog
+deletes your message automatically. The key is verified against HubCap before
+being saved and is stored in Red Config — never in the repo. Run
+`[p]denuvowatch hubcapkey` with no argument to clear it.
 
 ## How it works
 

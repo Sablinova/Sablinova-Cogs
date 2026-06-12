@@ -23,6 +23,9 @@ MANIFESTHUB_OWNER = "SSMGAlt"
 MANIFESTHUB_REPO = "ManifestHub2"
 MANIFESTHUB_RAW = f"https://raw.githubusercontent.com/{MANIFESTHUB_OWNER}/{MANIFESTHUB_REPO}"
 
+# HubCapManifest — authenticated API; serves decrypted manifest bundles.
+HUBCAP_BASE = "https://hubcapmanifest.com/api/v1"
+
 # Steam depot manifest section magics (little-endian uint32).
 MANIFEST_PAYLOAD_MAGIC = 0x71F617D0
 
@@ -158,6 +161,7 @@ DEFAULT_GLOBALS = {
     "mention": None,       # {"type": "user"|"role", "id": int} pinged on ALL updates
     "interval_minutes": 10,
     "admins": [],          # user IDs allowed to use owner-gated commands
+    "hubcap_key": None,    # HubCapManifest API key (primary /exeloc source)
 }
 
 
@@ -340,8 +344,8 @@ class DenuvoWatch(commands.Cog):
                     depot_key = None
             yield str(key), str(gid), depot_key
 
-    async def get_exe_paths(self, appid: int):
-        """Return (name, exe_paths) for an app via ManifestHub2, or (name, None)."""
+    async def _exe_paths_manifesthub(self, appid: int):
+        """Return (name, exe_paths) for an app via ManifestHub2, or (None, None)."""
         metadata = await self.mh_fetch_metadata(appid)
         if metadata is None:
             return None, None
@@ -358,6 +362,87 @@ class DenuvoWatch(commands.Cog):
                     exes.append(path)
         exes.sort(key=str.lower)
         return name, exes
+
+    # ─── HubCapManifest (authenticated API) ──────────────────────────────────
+
+    async def hubcap_status(self, appid: int, key: str) -> Optional[dict]:
+        """Free status check — does HubCap have a manifest for this app?"""
+        try:
+            async with self.session.get(
+                f"{HUBCAP_BASE}/status/{appid}",
+                headers={"Authorization": f"Bearer {key}"},
+                timeout=aiohttp.ClientTimeout(total=20),
+            ) as r:
+                if r.status != 200:
+                    return None
+                return await r.json(content_type=None)
+        except Exception:
+            log.exception("HubCap status failed for %s", appid)
+            return None
+
+    async def _exe_paths_hubcap(self, appid: int, key: str):
+        """Return (name, exe_paths) via HubCap manifest ZIP, or (None, None).
+
+        Costs one daily download. Returns (None, None) when HubCap has no
+        manifest or the request fails, so the caller can fall back.
+        """
+        import io
+        import zipfile
+
+        status = await self.hubcap_status(appid, key)
+        if not status or status.get("status") != "available":
+            return None, None
+        name = status.get("game_name") or f"AppID {appid}"
+
+        try:
+            async with self.session.get(
+                f"{HUBCAP_BASE}/manifest/{appid}",
+                headers={"Authorization": f"Bearer {key}"},
+                timeout=aiohttp.ClientTimeout(total=60),
+            ) as r:
+                if r.status != 200:
+                    log.warning("HubCap manifest %s -> HTTP %s", appid, r.status)
+                    return None, None
+                data = await r.read()
+        except Exception:
+            log.exception("HubCap manifest download failed for %s", appid)
+            return None, None
+
+        exes = []
+        seen = set()
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                for info in zf.infolist():
+                    if not info.filename.lower().endswith(".manifest"):
+                        continue
+                    blob = zf.read(info)
+                    # HubCap serves decrypted manifests; no depot key needed.
+                    for path, _size in parse_manifest_files(blob):
+                        if path.lower().endswith(".exe") and path not in seen:
+                            seen.add(path)
+                            exes.append(path)
+        except Exception:
+            log.exception("HubCap manifest ZIP parse failed for %s", appid)
+            return None, None
+
+        exes.sort(key=str.lower)
+        return name, exes
+
+    async def get_exe_paths(self, appid: int):
+        """Resolve exe paths, HubCap first then ManifestHub2 fallback.
+
+        Returns (name, exe_paths, source). exe_paths is None when no source
+        had data; source is 'HubCapManifest', 'ManifestHub2', or None.
+        """
+        key = await self.config.hubcap_key()
+        if key:
+            name, exes = await self._exe_paths_hubcap(appid, key)
+            if exes is not None:
+                return name, exes, "HubCapManifest"
+        name, exes = await self._exe_paths_manifesthub(appid)
+        if exes is not None:
+            return name, exes, "ManifestHub2"
+        return name, None, None
 
     # ─── Embed builders ─────────────────────────────────────────────────────
 
@@ -717,10 +802,10 @@ class DenuvoWatch(commands.Cog):
             await ctx.send(f"❌ Couldn't resolve `{query}` to a Steam game.")
             return
 
-        name, exes = await self.get_exe_paths(appid)
+        name, exes, source = await self.get_exe_paths(appid)
         if exes is None:
             await ctx.send(
-                f"❌ No depot data found for `{name or query}` (AppID `{appid}`) on ManifestHub2."
+                f"❌ No depot data found for `{name or query}` (AppID `{appid}`)."
             )
             return
         if not exes:
@@ -748,7 +833,7 @@ class DenuvoWatch(commands.Cog):
             cut = len(exes) - len(shown)
             block = "```\n" + "\n".join(shown) + f"\n```\n…and {cut} more."
         embed.description = block
-        embed.set_footer(text=f"AppID {appid} • {len(exes)} exe(s) • via ManifestHub2")
+        embed.set_footer(text=f"AppID {appid} • {len(exes)} exe(s) • via {source}")
         await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="dforcecheck", description="Manually trigger a full watchlist scan (admin only)")
@@ -857,6 +942,49 @@ class DenuvoWatch(commands.Cog):
         """Clear the entire watchlist."""
         await self.config.games.set({})
         await ctx.send("🗑️ Watchlist cleared.")
+
+    @denuvowatch.command(name="hubcapkey")
+    @commands.is_owner()
+    async def dw_hubcapkey(self, ctx: commands.Context, key: str = None):
+        """(Owner) Set the HubCapManifest API key used by /exeloc.
+
+        Run without an argument to clear it. DM the bot to avoid exposing the
+        key; if used in a server, the command message is deleted automatically.
+        """
+        # Best-effort: delete the message so the key isn't left in chat.
+        if ctx.guild is not None:
+            try:
+                await ctx.message.delete()
+            except Exception:
+                pass
+
+        if not key:
+            await self.config.hubcap_key.set(None)
+            await ctx.send("✅ HubCap API key cleared. `/exeloc` will use ManifestHub2 only.")
+            return
+
+        # Validate the key against the free stats endpoint before storing.
+        try:
+            async with self.session.get(
+                f"{HUBCAP_BASE}/user/stats",
+                headers={"Authorization": f"Bearer {key}"},
+                timeout=aiohttp.ClientTimeout(total=20),
+            ) as r:
+                ok = r.status == 200
+                info = await r.json(content_type=None) if ok else {}
+        except Exception:
+            ok = False
+            info = {}
+
+        if not ok:
+            await ctx.send("❌ That key was rejected by HubCapManifest. Not saved.")
+            return
+
+        await self.config.hubcap_key.set(key)
+        used = info.get("daily_usage")
+        limit = info.get("daily_limit")
+        extra = f" (daily usage {used}/{limit})" if limit is not None else ""
+        await ctx.send(f"✅ HubCap API key saved and verified{extra}. `/exeloc` will use HubCap first.")
 
     @denuvowatch.command(name="import")
     async def dw_import(self, ctx: commands.Context, url: str = None):
