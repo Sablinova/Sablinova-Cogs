@@ -10,7 +10,7 @@ global watchlist of Steam games and posts an alert when:
 
 1. Load the cog: `[p]load denuvowatch`
 2. Set the alert channel: `[p]denuvowatch channel #channel`
-3. (Optional) Ping a user on build updates: `[p]denuvowatch pinguser @user`
+3. (Optional) Ping a user/role on build updates: `[p]denuvowatch pinguser @user-or-role`
 4. Add games: `/dadd <name or AppID>`
 
 The cog auto-installs `beautifulsoup4` and `aiohttp` via Downloader.
@@ -28,7 +28,7 @@ The cog auto-installs `beautifulsoup4` and `aiohttp` via Downloader.
 | `/dstatus` | anyone | Watchlist size + next scheduled check |
 | `[p]denuvowatch channel <channel>` | admin | Set alert channel |
 | `[p]denuvowatch mention [@user or @role]` | admin | Ping a user/role on **every** update (omit to clear) |
-| `[p]denuvowatch pinguser [user]` | admin | Set/clear an extra ping on build updates only (omit to clear) |
+| `[p]denuvowatch pinguser [@user/@role]` | admin | Set/clear an extra ping on build updates only (omit to clear) |
 | `[p]denuvowatch interval <minutes>` | admin | Set scan interval (min 5) |
 | `[p]denuvowatch show` | admin | Show current config |
 | `[p]denuvowatch clear` | admin | Clear the entire watchlist |
@@ -144,7 +144,7 @@ being saved and is stored in Red Config — never in the repo. Run
   the game is re-cached.
 - If a mention is set via `[p]denuvowatch mention`, that user or role is pinged
   on **every** update (Denuvo added/removed and build updates). The legacy
-  `pinguser` adds an extra ping on build updates only.
+  `pinguser` (user or role) adds an extra ping on build updates only.
 
 ## Storage
 

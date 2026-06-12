@@ -768,9 +768,16 @@ class DenuvoWatch(commands.Cog):
     # ─── Background check ────────────────────────────────────────────────────
 
     @staticmethod
-    def _format_mention(mention: Optional[dict]) -> Optional[str]:
-        """Turn a stored mention dict into a pingable string, or None."""
-        if not mention or not mention.get("id"):
+    def _format_mention(mention) -> Optional[str]:
+        """Turn a stored mention into a pingable string, or None.
+
+        Accepts a {'type','id'} dict or a bare user-ID int (legacy notify_user).
+        """
+        if not mention:
+            return None
+        if isinstance(mention, int):  # legacy: bare user id
+            return f"<@{mention}>"
+        if not mention.get("id"):
             return None
         if mention.get("type") == "role":
             return f"<@&{mention['id']}>"
@@ -793,7 +800,7 @@ class DenuvoWatch(commands.Cog):
                 if not games:
                     return False
 
-                notify_user = await self.config.notify_user()
+                notify_user = self._format_mention(await self.config.notify_user())
                 mention = self._format_mention(await self.config.mention())
                 allowed = discord.AllowedMentions(users=True, roles=True)
                 snapshots = await self.config.file_snapshots()
@@ -843,7 +850,7 @@ class DenuvoWatch(commands.Cog):
                         if new_map is not None and snap and snap.get("files"):
                             diff = self._diff_file_maps(snap["files"], new_map)
 
-                        pings = [p for p in (mention, f"<@{notify_user}>" if notify_user else None) if p]
+                        pings = [p for p in (mention, notify_user) if p]
                         content = " ".join(pings) if pings else None
                         await channel.send(
                             content=content,
@@ -1232,13 +1239,25 @@ class DenuvoWatch(commands.Cog):
         await ctx.send(f"✅ Alerts will be posted in {channel.mention}.")
 
     @denuvowatch.command(name="pinguser")
-    async def dw_pinguser(self, ctx: commands.Context, user: discord.User = None):
-        """Set (or clear) the user pinged on build updates. Omit to clear."""
-        await self.config.notify_user.set(user.id if user else None)
-        if user:
-            await ctx.send(f"✅ Build updates will ping {user.mention}.")
-        else:
+    async def dw_pinguser(
+        self,
+        ctx: commands.Context,
+        target: Optional[Union[discord.Member, discord.Role]] = None,
+    ):
+        """Set (or clear) the user/role pinged on build updates only.
+
+        Run without an argument to clear it.
+        """
+        if target is None:
+            await self.config.notify_user.set(None)
             await ctx.send("✅ Build-update ping cleared.")
+            return
+        mtype = "role" if isinstance(target, discord.Role) else "user"
+        await self.config.notify_user.set({"type": mtype, "id": target.id})
+        await ctx.send(
+            f"✅ Build updates will ping {target.mention}.",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
     @denuvowatch.command(name="mention")
     async def dw_mention(
@@ -1275,14 +1294,14 @@ class DenuvoWatch(commands.Cog):
     async def dw_show(self, ctx: commands.Context):
         """Show the current configuration."""
         channel_id = await self.config.notify_channel()
-        user_id = await self.config.notify_user()
+        pinguser = self._format_mention(await self.config.notify_user())
         mention = self._format_mention(await self.config.mention())
         interval = await self.config.interval_minutes()
         games = await self.config.games()
         embed = discord.Embed(title="⚙️ DenuvoWatch Config", color=discord.Color.blurple())
         embed.add_field(name="Alert channel", value=f"<#{channel_id}>" if channel_id else "❌ not set", inline=False)
         embed.add_field(name="Update mention", value=mention or "none", inline=False)
-        embed.add_field(name="Build-ping user", value=f"<@{user_id}>" if user_id else "none", inline=False)
+        embed.add_field(name="Build-ping (build only)", value=pinguser or "none", inline=False)
         embed.add_field(name="Interval", value=f"{interval} minutes", inline=False)
         embed.add_field(name="Watchlist size", value=f"{len(games)}/{MAX_GAMES}", inline=False)
         embed.add_field(name="Admins", value=str(len(await self.config.admins())), inline=False)
