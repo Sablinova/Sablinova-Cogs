@@ -1436,6 +1436,60 @@ class DenuvoWatch(commands.Cog):
             lines.append(f"• HubCap remaining today: {remaining}")
         await status.edit(content="\n".join(lines))
 
+    @denuvowatch.command(name="difftest")
+    async def dw_difftest(self, ctx: commands.Context, *, query: str):
+        """Preview a Build Updated embed with a SIMULATED depot diff.
+
+        Fetches a game's current files, fakes a "previous" snapshot by changing
+        a few of them, and posts the real Build Updated embed so you can see how
+        the file diff (added/removed/modified + sizes) renders. Does not change
+        any stored data.
+        """
+        async with ctx.typing():
+            games = await self.config.games()
+            appid = await self._resolve_appid(query, games)
+            if appid is None:
+                await ctx.send(f"❌ Couldn't resolve `{query}` to a Steam game.")
+                return
+            name, new_map = await self.get_file_map(appid)
+        if not new_map:
+            await ctx.send(f"❌ No depot data found for `{name or query}` (AppID `{appid}`).")
+            return
+
+        # Build a fake "old" snapshot from the current map:
+        #  - drop a couple files  -> they appear ADDED in new
+        #  - keep some only in old -> appear REMOVED
+        #  - change a hash+size   -> appear MODIFIED
+        paths = list(new_map.keys())
+        old_map = dict(new_map)
+
+        added_preview = paths[:2]              # present in new, remove from old
+        for p in added_preview:
+            old_map.pop(p, None)
+
+        # Fake removed: invent old-only entries.
+        for i in range(2):
+            old_map[f"_removed_sample_{i}/old_file_{i}.bin"] = {
+                "sha": "f" * 40,
+                "size": 5_000_000 * (i + 1),
+            }
+
+        # Fake modified: change sha + size of a couple existing files.
+        modified_preview = [p for p in paths[2:4]]
+        for p in modified_preview:
+            cur = new_map[p]
+            cur_size = cur.get("size", 0) if isinstance(cur, dict) else 0
+            old_map[p] = {"sha": "0" * 40, "size": max(0, cur_size - 7_000_000)}
+
+        diff = self._diff_file_maps(old_map, new_map)
+        new_info = {
+            "name": name,
+            "build_time": int(datetime.now(timezone.utc).timestamp()),
+            "header": "",
+        }
+        embed = self.build_depot_embed(appid, "OLD_TEST", "NEW_TEST", new_info, diff)
+        await ctx.send(content="🧪 **Simulated diff preview** (no data changed):", embed=embed)
+
     @denuvowatch.command(name="cacheclear")
     async def dw_cacheclear(self, ctx: commands.Context):
         """Clear the cached exe-path data and file snapshots for all games."""

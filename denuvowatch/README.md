@@ -36,6 +36,7 @@ The cog auto-installs `beautifulsoup4` and `aiohttp` via Downloader.
 | `[p]denuvowatch cacheall [force]` | admin | Cache exe paths for the whole watchlist (free source first, HubCap only if needed) |
 | `[p]denuvowatch cachestatus` | admin | Show how many games have cached exe data |
 | `[p]denuvowatch cacheclear` | admin | Clear the exe-path cache |
+| `[p]denuvowatch difftest <game>` | admin | Preview a Build Updated embed with a simulated file diff (no data changed) |
 | `[p]denuvowatch import [url]` | admin | Import games from an attached JSON file or a direct JSON URL |
 | `[p]denuvowatch addadmin @user` | **owner** | Grant a user access to all admin commands |
 | `[p]denuvowatch removeadmin @user` | **owner** | Revoke a user's admin access |
