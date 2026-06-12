@@ -30,6 +30,10 @@ HUBCAP_BASE = "https://hubcapmanifest.com/api/v1"
 # Steam depot manifest section magics (little-endian uint32).
 MANIFEST_PAYLOAD_MAGIC = 0x71F617D0
 
+# If a build diff has more than this many total changes, list it in an
+# attached .txt instead of inline embed fields.
+DIFF_INLINE_LIMIT = 25
+
 
 def _read_varint(buf: bytes, i: int):
     shift = 0
@@ -778,6 +782,45 @@ class DenuvoWatch(commands.Cog):
             text += f"…and {remaining} more"
         return text
 
+    @classmethod
+    def _build_diff_txt(cls, name: str, appid: int, old_build: str, new_build: str, diff) -> str:
+        """Render the full diff as a plain-text report for a .txt attachment."""
+        added, removed, modified, size_delta = diff
+        out = []
+        out.append(f"{name} (AppID {appid}) — Build Updated")
+        out.append(f"Old build: {old_build}   New build: {new_build}")
+        out.append(
+            f"Changes: {len(added)} added, {len(removed)} removed, "
+            f"{len(modified)} modified"
+        )
+        out.append(f"Total size change: {cls._human_size(size_delta, signed=True)}")
+        out.append("")
+
+        if modified:
+            out.append(f"=== MODIFIED ({len(modified)}) ===")
+            for p, os, ns in modified:
+                out.append(
+                    f"  {p}  ({cls._human_size(os)} -> {cls._human_size(ns)}, "
+                    f"{cls._human_size((ns or 0) - (os or 0), signed=True)})"
+                )
+            out.append("")
+        if added:
+            out.append(f"=== ADDED ({len(added)}) ===")
+            for p, s in added:
+                out.append(f"  {p}  ({cls._human_size(s)})")
+            out.append("")
+        if removed:
+            out.append(f"=== REMOVED ({len(removed)}) ===")
+            for p, s in removed:
+                out.append(f"  {p}  ({cls._human_size(s)})")
+            out.append("")
+        return "\n".join(out)
+
+    @staticmethod
+    def _diff_is_big(diff) -> bool:
+        added, removed, modified, _ = diff
+        return (len(added) + len(removed) + len(modified)) > DIFF_INLINE_LIMIT
+
     @staticmethod
     def build_depot_embed(appid: int, old_build: str, new_build: str, new: dict, diff=None) -> discord.Embed:
         name = new.get("name", f"AppID {appid}")
@@ -794,6 +837,8 @@ class DenuvoWatch(commands.Cog):
 
         if diff is not None:
             added, removed, modified, size_delta = diff
+            total_changes = len(added) + len(removed) + len(modified)
+            big = total_changes > DIFF_INLINE_LIMIT
             embed.add_field(
                 name="Changes",
                 value=(
@@ -801,34 +846,36 @@ class DenuvoWatch(commands.Cog):
                     f"🔴 {len(removed)} removed   "
                     f"🟡 {len(modified)} modified\n"
                     f"📦 Total size change: **{DenuvoWatch._human_size(size_delta, signed=True)}**"
+                    + ("\n📄 Full file list attached as a `.txt`." if big else "")
                 ),
                 inline=False,
             )
-            if modified:
-                lines = [
-                    f"{p}  ({DenuvoWatch._human_size(os)} → {DenuvoWatch._human_size(ns)}, "
-                    f"{DenuvoWatch._human_size((ns or 0) - (os or 0), signed=True)})"
-                    for p, os, ns in modified
-                ]
-                embed.add_field(
-                    name=f"🟡 Modified ({len(modified)})",
-                    value=DenuvoWatch._format_diff_lines(lines),
-                    inline=False,
-                )
-            if added:
-                lines = [f"{p}  ({DenuvoWatch._human_size(s)})" for p, s in added]
-                embed.add_field(
-                    name=f"🟢 Added ({len(added)})",
-                    value=DenuvoWatch._format_diff_lines(lines),
-                    inline=False,
-                )
-            if removed:
-                lines = [f"{p}  ({DenuvoWatch._human_size(s)})" for p, s in removed]
-                embed.add_field(
-                    name=f"🔴 Removed ({len(removed)})",
-                    value=DenuvoWatch._format_diff_lines(lines),
-                    inline=False,
-                )
+            if not big:
+                if modified:
+                    lines = [
+                        f"{p}  ({DenuvoWatch._human_size(os)} → {DenuvoWatch._human_size(ns)}, "
+                        f"{DenuvoWatch._human_size((ns or 0) - (os or 0), signed=True)})"
+                        for p, os, ns in modified
+                    ]
+                    embed.add_field(
+                        name=f"🟡 Modified ({len(modified)})",
+                        value=DenuvoWatch._format_diff_lines(lines),
+                        inline=False,
+                    )
+                if added:
+                    lines = [f"{p}  ({DenuvoWatch._human_size(s)})" for p, s in added]
+                    embed.add_field(
+                        name=f"🟢 Added ({len(added)})",
+                        value=DenuvoWatch._format_diff_lines(lines),
+                        inline=False,
+                    )
+                if removed:
+                    lines = [f"{p}  ({DenuvoWatch._human_size(s)})" for p, s in removed]
+                    embed.add_field(
+                        name=f"🔴 Removed ({len(removed)})",
+                        value=DenuvoWatch._format_diff_lines(lines),
+                        inline=False,
+                    )
 
         if new.get("header"):
             embed.set_thumbnail(url=new["header"])
@@ -923,9 +970,23 @@ class DenuvoWatch(commands.Cog):
 
                         pings = [p for p in (mention, notify_user) if p]
                         content = " ".join(pings) if pings else None
+                        embed = self.build_depot_embed(appid, old_build, new_build, new, diff)
+                        file = None
+                        if diff is not None and self._diff_is_big(diff):
+                            import io
+
+                            txt = self._build_diff_txt(
+                                new.get("name", f"AppID {appid}"),
+                                appid, old_build, new_build, diff,
+                            )
+                            file = discord.File(
+                                io.BytesIO(txt.encode("utf-8")),
+                                filename=f"depot_diff_{appid}_{new_build}.txt",
+                            )
                         await channel.send(
                             content=content,
-                            embed=self.build_depot_embed(appid, old_build, new_build, new, diff),
+                            embed=embed,
+                            file=file,
                             allowed_mentions=allowed,
                         )
                         changes = True
@@ -1615,7 +1676,20 @@ class DenuvoWatch(commands.Cog):
             "header": "",
         }
         embed = self.build_depot_embed(appid, "OLD_TEST", "NEW_TEST", new_info, diff)
-        await ctx.send(content="🧪 **Simulated diff preview** (no data changed):", embed=embed)
+        file = None
+        if self._diff_is_big(diff):
+            import io
+
+            txt = self._build_diff_txt(name, appid, "OLD_TEST", "NEW_TEST", diff)
+            file = discord.File(
+                io.BytesIO(txt.encode("utf-8")),
+                filename=f"depot_diff_{appid}_preview.txt",
+            )
+        await ctx.send(
+            content="🧪 **Simulated diff preview** (no data changed):",
+            embed=embed,
+            file=file,
+        )
 
     @denuvowatch.command(name="cacheclear")
     async def dw_cacheclear(self, ctx: commands.Context):

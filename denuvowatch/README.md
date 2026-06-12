@@ -149,9 +149,11 @@ multiplies your daily download quota via round-robin selection.
   globally via Red `Config` and persists across restarts.
 - On each scan, any change triggers an embed in the configured alert channel.
 - **Build Updated embeds include a depot file diff** — counts, a total size
-  change, plus truncated lists of added / removed / modified files **with file
-  sizes** (modified files show `old → new, +delta`) — when a previous file
-  snapshot exists for that game. The diff compares the new depot manifest
+  change, plus lists of added / removed / modified files **with file sizes**
+  (modified files show `old → new, +delta`) — when a previous file snapshot
+  exists for that game. Small diffs are shown inline; large diffs (more than
+  ~25 total changes) collapse to the summary and the full file-by-file list is
+  attached as a `.txt`. The diff compares the new depot manifest
   against the snapshot stored at the last build. Run `[p]denuvowatch cacheall`
   once to seed snapshots so the *next* build update can be diffed (the
   first-ever update for a game has no baseline to compare against). Snapshots
