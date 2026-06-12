@@ -588,26 +588,55 @@ class DenuvoWatch(commands.Cog):
         await ctx.send("🗑️ Watchlist cleared.")
 
     @denuvowatch.command(name="import")
-    async def dw_import(self, ctx: commands.Context):
-        """Import games from an attached JSON file into the watchlist.
+    async def dw_import(self, ctx: commands.Context, url: str = None):
+        """Import games into the watchlist from a JSON file or URL.
 
-        Attach a `steam_data.json`-style file. Accepts either
-        `{"games": {appid: {...}}}` or a bare `{appid: {...}}` mapping.
+        Either attach a `steam_data.json`-style file, or pass a direct/raw
+        JSON link, e.g. `[p]denuvowatch import https://.../steam_data.json`.
+        Accepts `{"games": {appid: {...}}}` or a bare `{appid: {...}}` mapping.
         Existing entries are kept; new games are added up to the cap.
         """
-        if not ctx.message.attachments:
+        raw = None
+
+        if url:
+            url = url.strip("<>")
+            if not url.lower().startswith(("http://", "https://")):
+                await ctx.send("❌ That doesn't look like a valid URL.")
+                return
+            try:
+                async with self.session.get(
+                    url, timeout=aiohttp.ClientTimeout(total=20)
+                ) as r:
+                    r.raise_for_status()
+                    raw = await r.read()
+            except Exception as e:
+                await ctx.send(f"❌ Couldn't download the file: `{e}`")
+                return
+        elif ctx.message.attachments:
+            try:
+                raw = await ctx.message.attachments[0].read()
+            except Exception as e:
+                await ctx.send(f"❌ Couldn't read the attached file: `{e}`")
+                return
+        else:
             await ctx.send(
-                "❌ Attach a JSON file to this command "
+                "❌ Attach a JSON file or pass a direct JSON URL "
                 "(`{\"games\": {...}}` or a bare `{appid: {...}}` mapping)."
             )
             return
 
-        attachment = ctx.message.attachments[0]
         try:
-            raw = await attachment.read()
-            payload = json.loads(raw.decode("utf-8"))
+            text = raw.decode("utf-8").lstrip()
+            if text[:1] not in ("{", "["):
+                await ctx.send(
+                    "❌ The source didn't return JSON (got HTML/other). "
+                    "Use a **raw** JSON link, e.g. a Discord CDN attachment URL "
+                    "or a `raw.githubusercontent.com` link — not a GitHub page link."
+                )
+                return
+            payload = json.loads(text)
         except Exception as e:
-            await ctx.send(f"❌ Couldn't read/parse the attached file: `{e}`")
+            await ctx.send(f"❌ Couldn't parse the JSON: `{e}`")
             return
 
         incoming = payload.get("games", payload) if isinstance(payload, dict) else None
