@@ -987,7 +987,7 @@ class DenuvoWatch(commands.Cog):
                 return
             candidates = [{"appid": appid, "name": snapshot["name"]}]
         else:
-            raw_candidates = await self.search_steam(query)[:10]
+            raw_candidates = (await self.search_steam(query))[:10]
             if not raw_candidates:
                 await ctx.send("❌ No results found on Steam.")
                 return
@@ -997,7 +997,7 @@ class DenuvoWatch(commands.Cog):
             else:
                 candidates = []
                 for c in raw_candidates:
-                    details = await asyncio.to_thread(self.fetch_app_details, c["appid"])
+                    details = await self.fetch_app_details(c["appid"])
                     if details.get("type") == "game":
                         candidates.append(c)
                     if len(candidates) >= 5:
