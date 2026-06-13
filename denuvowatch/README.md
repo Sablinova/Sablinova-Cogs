@@ -40,6 +40,7 @@ The cog auto-installs `beautifulsoup4` and `aiohttp` via Downloader.
 | `[p]denuvowatch cachestatus` | admin | Show how many games have cached exe data |
 | `[p]denuvowatch cacheclear` | admin | Clear the exe-path cache |
 | `[p]denuvowatch difftest <game>` | admin | Preview a Build Updated embed with a simulated file diff (no data changed) |
+| `[p]denuvowatch lastdiff <game>` | admin | Replay the last real build diff (previous build → current) |
 | `[p]denuvowatch import [url]` | admin | Import games from an attached JSON file or a direct JSON URL |
 | `[p]denuvowatch addadmin @user` | **owner** | Grant a user access to all admin commands |
 | `[p]denuvowatch removeadmin @user` | **owner** | Revoke a user's admin access |
@@ -169,6 +170,10 @@ multiplies your daily download quota via round-robin selection.
   by weeks/months and can't be trusted for a just-pushed build, so it's only
   used for diffs when no HubCap key is set. A forced refresh uses one HubCap
   daily download per build change.
+- Each snapshot also keeps the **previous build's** file list, so
+  `[p]denuvowatch lastdiff <game>` can replay the most recent real build diff at
+  any time (available once a game has had a build update recorded with this
+  version of the cog).
 - If a mention is set via `[p]denuvowatch mention`, that user or role is pinged
   on **every** update (Denuvo added/removed and build updates). The legacy
   `pinguser` (user or role) adds an extra ping on build updates only.

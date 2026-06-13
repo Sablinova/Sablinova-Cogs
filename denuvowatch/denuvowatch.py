@@ -1045,9 +1045,16 @@ class DenuvoWatch(commands.Cog):
                         )
                         changes = True
 
-                        # Save the new snapshot for the next diff.
+                        # Save the new snapshot, keeping the previous build's
+                        # files so the last real diff can be replayed later.
                         if new_map is not None:
-                            snapshots[appid_str] = {"build_id": new_build, "files": new_map}
+                            old_snap = snapshots.get(appid_str) or {}
+                            snapshots[appid_str] = {
+                                "build_id": new_build,
+                                "files": new_map,
+                                "prev_build_id": old_snap.get("build_id"),
+                                "prev_files": old_snap.get("files"),
+                            }
 
                     games[appid_str] = {
                         "name": new["name"],
@@ -1741,6 +1748,51 @@ class DenuvoWatch(commands.Cog):
             )
         await ctx.send(
             content="🧪 **Simulated diff preview** (no data changed):",
+            embed=embed,
+            file=file,
+        )
+
+    @denuvowatch.command(name="lastdiff")
+    async def dw_lastdiff(self, ctx: commands.Context, *, query: str):
+        """Replay the last real build diff for a game (prev build → current).
+
+        Uses the stored previous-build snapshot, so it only works for games
+        that have had a build update recorded since this feature was added.
+        """
+        games = await self.config.games()
+        appid = await self._resolve_appid(query, games)
+        if appid is None:
+            await ctx.send(f"❌ Couldn't resolve `{query}` to a Steam game.")
+            return
+
+        snapshots = await self.config.file_snapshots()
+        snap = snapshots.get(str(appid))
+        if not snap or not snap.get("prev_files"):
+            await ctx.send(
+                "ℹ️ No previous-build snapshot stored for that game yet, so there's "
+                "no real diff to replay. It'll be available after the game's next "
+                "build update. Use `[p]denuvowatch difftest` for a simulated preview."
+            )
+            return
+
+        old_build = snap.get("prev_build_id") or "previous"
+        new_build = snap.get("build_id") or "current"
+        diff = self._diff_file_maps(snap["prev_files"], snap["files"])
+
+        name = (games.get(str(appid), {}) or {}).get("name") or f"AppID {appid}"
+        new_info = {"name": name, "build_time": None, "header": ""}
+        embed = self.build_depot_embed(appid, old_build, new_build, new_info, diff)
+        file = None
+        if self._diff_is_big(diff):
+            import io
+
+            txt = self._build_diff_txt(name, appid, old_build, new_build, diff)
+            file = discord.File(
+                io.BytesIO(txt.encode("utf-8")),
+                filename=f"depot_diff_{appid}_{new_build}.txt",
+            )
+        await ctx.send(
+            content="🕑 **Replay of last build diff:**",
             embed=embed,
             file=file,
         )
