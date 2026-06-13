@@ -151,9 +151,14 @@ multiplies your daily download quota via round-robin selection.
 - **Build Updated embeds include a depot file diff** — counts, a total size
   change, plus lists of added / removed / modified files **with file sizes**
   (modified files show `old → new, +delta`) — when a previous file snapshot
-  exists for that game. Small diffs are shown inline; large diffs (more than
-  ~25 total changes) collapse to the summary and the full file-by-file list is
-  attached as a `.txt`. The diff compares the new depot manifest
+  exists for that game. Small diffs are shown inline; large diffs collapse to
+  the summary and the full file-by-file list is attached as a `.txt`.
+- **Content-hashed asset bundles** (e.g. Unity `…<hex>.bundle` / `.resource`)
+  re-hash their filenames every build, which would otherwise flood the diff with
+  add/remove churn. These are **collapsed** into a single
+  "🎁 N asset bundles re-hashed" line, while meaningful named files (exes, dlls,
+  data) are still listed individually. The attached `.txt` always contains the
+  complete list. The diff compares the new depot manifest
   against the snapshot stored at the last build. Run `[p]denuvowatch cacheall`
   once to seed snapshots so the *next* build update can be diffed (the
   first-ever update for a game has no baseline to compare against). Snapshots

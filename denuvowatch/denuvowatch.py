@@ -822,6 +822,46 @@ class DenuvoWatch(commands.Cog):
         return (len(added) + len(removed) + len(modified)) > DIFF_INLINE_LIMIT
 
     @staticmethod
+    def _is_hashed_bundle(path: str) -> bool:
+        """True for content-hashed asset bundles (e.g. Unity '00a1b2….bundle').
+
+        These get a fresh hash in their filename on every build, so they show
+        as add+remove churn rather than meaningful named changes.
+        """
+        import re
+
+        base = path.rsplit("/", 1)[-1]
+        low = base.lower()
+        # Common hashed-asset extensions.
+        if not low.endswith((".bundle", ".resource", ".ress", ".pak")):
+            # Also catch hashed loose files like 'a1b2c3...d4' with no ext.
+            stem = base
+            ext = ""
+        else:
+            stem, _, ext = base.rpartition(".")
+        # A long hex run anywhere in the stem => almost certainly a content hash.
+        return bool(re.search(r"[0-9a-f]{16,}", stem.lower()))
+
+    @classmethod
+    def _split_bundles(cls, items, keyfn):
+        """Split diff entries into (named_entries, bundle_count, bundle_bytes).
+
+        keyfn(entry) -> (path, size_for_delta). Bundles are collapsed; named
+        files are returned as-is for normal display.
+        """
+        named = []
+        bundle_count = 0
+        bundle_bytes = 0
+        for entry in items:
+            path, size = keyfn(entry)
+            if cls._is_hashed_bundle(path):
+                bundle_count += 1
+                bundle_bytes += size or 0
+            else:
+                named.append(entry)
+        return named, bundle_count, bundle_bytes
+
+    @staticmethod
     def build_depot_embed(appid: int, old_build: str, new_build: str, new: dict, diff=None) -> discord.Embed:
         name = new.get("name", f"AppID {appid}")
         url = f"https://store.steampowered.com/app/{appid}/"
@@ -837,42 +877,56 @@ class DenuvoWatch(commands.Cog):
 
         if diff is not None:
             added, removed, modified, size_delta = diff
-            total_changes = len(added) + len(removed) + len(modified)
-            big = total_changes > DIFF_INLINE_LIMIT
-            embed.add_field(
-                name="Changes",
-                value=(
-                    f"🟢 {len(added)} added   "
-                    f"🔴 {len(removed)} removed   "
-                    f"🟡 {len(modified)} modified\n"
-                    f"📦 Total size change: **{DenuvoWatch._human_size(size_delta, signed=True)}**"
-                    + ("\n📄 Full file list attached as a `.txt`." if big else "")
-                ),
-                inline=False,
+
+            # Collapse content-hashed asset bundles (Unity etc.) into a summary;
+            # keep meaningful named files (exes, dlls, data) listed separately.
+            add_named, add_b, add_bb = DenuvoWatch._split_bundles(added, lambda e: (e[0], e[1]))
+            rem_named, rem_b, rem_bb = DenuvoWatch._split_bundles(removed, lambda e: (e[0], e[1]))
+            mod_named, mod_b, mod_bb = DenuvoWatch._split_bundles(modified, lambda e: (e[0], e[2]))
+
+            summary = (
+                f"🟢 {len(added)} added   "
+                f"🔴 {len(removed)} removed   "
+                f"🟡 {len(modified)} modified\n"
+                f"📦 Total size change: **{DenuvoWatch._human_size(size_delta, signed=True)}**"
             )
+            total_bundles = add_b + rem_b + mod_b
+            if total_bundles:
+                summary += (
+                    f"\n🎁 {total_bundles} asset bundle(s) re-hashed "
+                    f"(added {add_b}, removed {rem_b}, modified {mod_b})"
+                )
+
+            # "big" is decided by the count of NAMED files (bundles are collapsed).
+            named_total = len(add_named) + len(rem_named) + len(mod_named)
+            big = named_total > DIFF_INLINE_LIMIT
+            if big:
+                summary += "\n📄 Full file list attached as a `.txt`."
+            embed.add_field(name="Changes", value=summary, inline=False)
+
             if not big:
-                if modified:
+                if mod_named:
                     lines = [
                         f"{p}  ({DenuvoWatch._human_size(os)} → {DenuvoWatch._human_size(ns)}, "
                         f"{DenuvoWatch._human_size((ns or 0) - (os or 0), signed=True)})"
-                        for p, os, ns in modified
+                        for p, os, ns in mod_named
                     ]
                     embed.add_field(
-                        name=f"🟡 Modified ({len(modified)})",
+                        name=f"🟡 Modified files ({len(mod_named)})",
                         value=DenuvoWatch._format_diff_lines(lines),
                         inline=False,
                     )
-                if added:
-                    lines = [f"{p}  ({DenuvoWatch._human_size(s)})" for p, s in added]
+                if add_named:
+                    lines = [f"{p}  ({DenuvoWatch._human_size(s)})" for p, s in add_named]
                     embed.add_field(
-                        name=f"🟢 Added ({len(added)})",
+                        name=f"🟢 Added files ({len(add_named)})",
                         value=DenuvoWatch._format_diff_lines(lines),
                         inline=False,
                     )
-                if removed:
-                    lines = [f"{p}  ({DenuvoWatch._human_size(s)})" for p, s in removed]
+                if rem_named:
+                    lines = [f"{p}  ({DenuvoWatch._human_size(s)})" for p, s in rem_named]
                     embed.add_field(
-                        name=f"🔴 Removed ({len(removed)})",
+                        name=f"🔴 Removed files ({len(rem_named)})",
                         value=DenuvoWatch._format_diff_lines(lines),
                         inline=False,
                     )
