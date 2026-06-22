@@ -63,6 +63,60 @@ class Guide(commands.Cog):
             )
         )
 
+    @guide_group.command(name="edit")
+    async def guide_edit(
+        self, ctx: commands.Context, keyword: str, name: str = None, *, url: str = None
+    ) -> None:
+        """Edit an existing guide link's name or URL.
+
+        Leave a parameter as `None` or skip it if you don't want to change it.
+
+        **Usage:**
+        `[p]guide edit <keyword> [new_name] [new_url]`
+
+        **Examples:**
+        `[p]guide edit re9 None https://youtu.be/new-link` (Updates only URL)
+        `[p]guide edit re9 "Resident Evil IX" None` (Updates only Name)
+        `[p]guide edit re9 "Resident Evil IX" https://youtu.be/new-link` (Updates both)
+        """
+        keyword = keyword.lower().strip()
+        
+        async with self.config.guides() as guides:
+            if keyword not in guides:
+                await ctx.send(f"❌ No guide found with the keyword `{keyword}`. Use `[p]guide add` instead.")
+                return
+
+            current_data = guides[keyword]
+            old_name = current_data["name"]
+            old_url = current_data["url"]
+
+            # Parse and clean updates, fall back to old values if specified as 'None' or omitted
+            new_name = name.strip() if (name and name.lower() != "none") else old_name
+            new_url = url.strip() if (url and url.lower() != "none") else old_url
+
+            # Update the configuration
+            guides[keyword] = {"name": new_name, "url": new_url}
+
+        # Build a clean changes summary description
+        changes = []
+        if new_name != old_name:
+            changes.append(f"• **Name:** `{old_name}` ➔ **{new_name}**")
+        if new_url != old_url:
+            changes.append(f"• **URL:** {old_url} ➔ {new_url}")
+
+        if not changes:
+            await ctx.send("ℹ️ No changes were made.")
+            return
+
+        description = f"✅ Updated guide for keyword: `{keyword}`\n\n" + "\n".join(changes)
+        
+        await ctx.send(
+            embed=discord.Embed(
+                description=description,
+                color=discord.Color.orange(),
+            )
+        )
+        
     @guide_group.command(name="remove")
     async def guide_remove(self, ctx: commands.Context, *, keyword: str) -> None:
         """Remove a guide link by keyword or name.
