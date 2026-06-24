@@ -42,10 +42,8 @@ class GuideListView(discord.ui.View):
         await interaction.response.edit_message(embed=self.make_embed(self.current_page), view=self)
 
     async def on_timeout(self):
-        for item in self.children:
-            item.disabled = True
         if self.message:
-            await self.message.edit(view=self)
+            await self.message.edit(view=None)
 
 class Guide(commands.Cog):
     """Sends game-specific guide links based on ticket channel name."""
@@ -58,6 +56,7 @@ class Guide(commands.Cog):
         self.config.register_global(
             guides={},  # keyword -> {"name": str, "url": str}
         )
+        self._guides_cache: dict | None = None
 
     # ── Admin prefix commands ────────────────────────────────────────────────
 
@@ -84,8 +83,9 @@ class Guide(commands.Cog):
         Wrap multi-word keywords or names in quotes.
         """
         keyword = keyword.lower().strip()
-        async with self.config.guides() as guides:
-            guides[keyword] = {"name": name.strip(), "url": url.strip()}
+        guides = await self._get_guides()
+        guides[keyword] = {"name": name.strip(), "url": url.strip()}
+        await self._save_guides(guides)
 
         await ctx.send(
             embed=discord.Embed(
@@ -112,21 +112,22 @@ class Guide(commands.Cog):
         """
         keyword = keyword.lower().strip()
         
-        async with self.config.guides() as guides:
-            if keyword not in guides:
-                await ctx.send(f"❌ No guide found with the keyword `{keyword}`. Use `[p]guide add` instead.")
-                return
+        guides = await self._get_guides()
+        if keyword not in guides:
+            await ctx.send(f"❌ No guide found with the keyword `{keyword}`. Use `[p]guide add` instead.")
+            return
 
-            current_data = guides[keyword]
-            old_name = current_data["name"]
-            old_url = current_data["url"]
+        current_data = guides[keyword]
+        old_name = current_data["name"]
+        old_url = current_data["url"]
 
-            # Parse and clean updates, fall back to old values if specified as 'None' or omitted
-            new_name = name.strip() if (name and name.lower() != "none") else old_name
-            new_url = url.strip() if (url and url.lower() != "none") else old_url
+        # Parse and clean updates, fall back to old values if specified as 'None' or omitted
+        new_name = name.strip() if (name and name.lower() != "none") else old_name
+        new_url = url.strip() if (url and url.lower() != "none") else old_url
 
-            # Update the configuration
-            guides[keyword] = {"name": new_name, "url": new_url}
+        # Update the configuration
+        guides[keyword] = {"name": new_name, "url": new_url}
+        await self._save_guides(guides)
 
         # Build a clean changes summary description
         changes = []
@@ -156,32 +157,34 @@ class Guide(commands.Cog):
         `[p]guide remove <keyword or name>`
         """
         keyword = keyword.lower().strip()
-        async with self.config.guides() as guides:
-            # Exact keyword match
-            if keyword in guides:
-                name = guides[keyword]["name"]
-                del guides[keyword]
-                await ctx.send(f"✅ Removed guide for **{name}** (`{keyword}`).")
-                return
+        guides = await self._get_guides()
+        # Exact keyword match
+        if keyword in guides:
+            name = guides[keyword]["name"]
+            del guides[keyword]
+            await self._save_guides(guides)
+            await ctx.send(f"✅ Removed guide for **{name}** (`{keyword}`).")
+            return
 
-            # Match by name
-            matched = None
-            for k, data in guides.items():
-                if keyword == data["name"].lower():
-                    matched = k
-                    break
+        # Match by name
+        matched = None
+        for k, data in guides.items():
+            if keyword == data["name"].lower():
+                matched = k
+                break
 
-            if matched:
-                name = guides[matched]["name"]
-                del guides[matched]
-                await ctx.send(f"✅ Removed guide for **{name}** (`{matched}`).")
-            else:
-                await ctx.send(f"❌ No guide found matching `{keyword}`.")
+        if matched:
+            name = guides[matched]["name"]
+            del guides[matched]
+            await self._save_guides(guides)
+            await ctx.send(f"✅ Removed guide for **{name}** (`{matched}`).")
+        else:
+            await ctx.send(f"❌ No guide found matching `{keyword}`.")
 
     @guide_group.command(name="list")
     async def guide_list(self, ctx: commands.Context) -> None:
         """List all configured guide links."""
-        guides = await self.config.guides()
+        guides = await self._get_guides()
 
         if not guides:
             await ctx.send("No guides configured. Use `[p]guide add` to add one.")
@@ -223,6 +226,15 @@ class Guide(commands.Cog):
         view.message = await ctx.send(embed=make_embed(0), view=view)
 
     # ── Matching logic ───────────────────────────────────────────────────────
+
+    async def _get_guides(self) -> dict:
+        if self._guides_cache is None:
+            self._guides_cache = await self.config.guides()
+        return self._guides_cache
+
+    async def _save_guides(self, guides: dict) -> None:
+        self._guides_cache = guides
+        await self.config.set("guides", guides)
 
     def _find_guide(
         self, game_name: str, guides: dict
@@ -312,7 +324,7 @@ class Guide(commands.Cog):
         self, interaction: discord.Interaction, current: str
     ) -> list[app_commands.Choice[str]]:
         """Autocomplete for the game parameter on /guide."""
-        guides = await self.config.guides()
+        guides = await self._get_guides()
         current_lower = current.strip().lower()
 
         if current_lower:
@@ -342,7 +354,7 @@ class Guide(commands.Cog):
         self, interaction: discord.Interaction, game: str = None
     ) -> None:
         """Send a guide link based on the ticket channel name."""
-        guides = await self.config.guides()
+        guides = await self._get_guides()
 
         if not guides:
             await interaction.response.send_message(
