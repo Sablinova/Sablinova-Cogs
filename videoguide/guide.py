@@ -163,25 +163,21 @@ class Guide(commands.Cog):
 
         lines = []
         for keyword, data in sorted(guides.items(), key=lambda x: x[1]["name"]):
-            display = f"**{data['name']}** — kw: `{keyword}`"
-            lines.append((display, data["url"]))
+            lines.append(f"**{data['name']}** — kw: `{keyword}`\n{data['url']}")
 
         chunk = []
-        chunk_len = 0
         field_num = 1
-        for display, url in lines:
-            line = f"{display}\n{url}"
-            if chunk_len + len(display) + 1 > 1000:
+        for line in lines:
+            projected = "\n\n".join(chunk + [line])
+            if chunk and len(projected) > 1024:
                 embed.add_field(
                     name=f"Games ({field_num})",
                     value="\n\n".join(chunk),
                     inline=False,
                 )
                 chunk = []
-                chunk_len = 0
                 field_num += 1
             chunk.append(line)
-            chunk_len += len(display) + 1
 
         if chunk:
             embed.add_field(
