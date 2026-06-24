@@ -15,6 +15,37 @@ from redbot.core.bot import Red
 
 log = logging.getLogger("red.sablinova.guide")
 
+class GuideListView(discord.ui.View):
+    def __init__(self, pages: list, make_embed, total_pages: int):
+        super().__init__(timeout=60)
+        self.pages = pages
+        self.make_embed = make_embed
+        self.total_pages = total_pages
+        self.current_page = 0
+        self.message = None
+        self._update_buttons()
+
+    def _update_buttons(self):
+        self.prev_button.disabled = self.current_page == 0
+        self.next_button.disabled = self.current_page == self.total_pages - 1
+
+    @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary)
+    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_page -= 1
+        self._update_buttons()
+        await interaction.response.edit_message(embed=self.make_embed(self.current_page), view=self)
+
+    @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_page += 1
+        self._update_buttons()
+        await interaction.response.edit_message(embed=self.make_embed(self.current_page), view=self)
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            await self.message.edit(view=self)
 
 class Guide(commands.Cog):
     """Sends game-specific guide links based on ticket channel name."""
@@ -156,38 +187,40 @@ class Guide(commands.Cog):
             await ctx.send("No guides configured. Use `[p]guide add` to add one.")
             return
 
-        embed = discord.Embed(
-            title="📖 Configured Guides",
-            color=discord.Color.blue(),
-        )
-
         lines = []
         for keyword, data in sorted(guides.items(), key=lambda x: x[1]["name"]):
             lines.append(f"**{data['name']}** — kw: `{keyword}`\n{data['url']}")
 
+        # Build pages
+        pages = []
         chunk = []
-        field_num = 1
         for line in lines:
             projected = "\n\n".join(chunk + [line])
             if chunk and len(projected) > 1024:
-                embed.add_field(
-                    name=f"Games ({field_num})",
-                    value="\n\n".join(chunk),
-                    inline=False,
-                )
+                pages.append("\n\n".join(chunk))
                 chunk = []
-                field_num += 1
             chunk.append(line)
-
         if chunk:
-            embed.add_field(
-                name=f"Games ({field_num})" if field_num > 1 else "Games",
-                value="\n\n".join(chunk),
-                inline=False,
-            )
+            pages.append("\n\n".join(chunk))
 
-        embed.set_footer(text=f"{len(guides)} guide(s) total")
-        await ctx.send(embed=embed)
+        total_pages = len(pages)
+
+        def make_embed(page_index: int) -> discord.Embed:
+            embed = discord.Embed(
+                title="📖 Configured Guides",
+                description=pages[page_index],
+                color=discord.Color.blue(),
+            )
+            embed.set_footer(text=f"Page {page_index + 1}/{total_pages} • {len(guides)} guide(s) total")
+            return embed
+
+        if total_pages == 1:
+            await ctx.send(embed=make_embed(0))
+            return
+
+        # Send with navigation buttons
+        view = GuideListView(pages, make_embed, total_pages)
+        view.message = await ctx.send(embed=make_embed(0), view=view)
 
     # ── Matching logic ───────────────────────────────────────────────────────
 
