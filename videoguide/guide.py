@@ -163,14 +163,15 @@ class Guide(commands.Cog):
 
         lines = []
         for keyword, data in sorted(guides.items(), key=lambda x: x[1]["name"]):
-            lines.append(f"**{data['name']}** — kw: `{keyword}`\n{data['url']}")
+            display = f"**{data['name']}** — kw: `{keyword}`"
+            lines.append((display, data["url"]))
 
-        # Discord embed field value limit is 1024 chars; chunk if needed
         chunk = []
         chunk_len = 0
         field_num = 1
-        for line in lines:
-            if chunk_len + len(line) + 1 > 1000:
+        for display, url in lines:
+            line = f"{display}\n{url}"
+            if chunk_len + len(display) + 1 > 1000:
                 embed.add_field(
                     name=f"Games ({field_num})",
                     value="\n\n".join(chunk),
@@ -180,7 +181,7 @@ class Guide(commands.Cog):
                 chunk_len = 0
                 field_num += 1
             chunk.append(line)
-            chunk_len += len(line) + 1
+            chunk_len += len(display) + 1
 
         if chunk:
             embed.add_field(
@@ -191,30 +192,6 @@ class Guide(commands.Cog):
 
         embed.set_footer(text=f"{len(guides)} guide(s) total")
         await ctx.send(embed=embed)
-
-    @guide_group.command(name="test")
-    async def guide_test(self, ctx: commands.Context, *, keyword: str) -> None:
-        """Test what the /guide command would send for a given keyword.
-
-        **Usage:**
-        `[p]guide test <keyword or game name>`
-        """
-        guides = await self.config.guides()
-        match = self._find_guide(keyword.lower(), guides)
-
-        if match:
-            keyword_key, data = match
-            await ctx.send(
-                embed=discord.Embed(
-                    description=(
-                        f"**Match:** {data['name']} (`{keyword_key}`)\n"
-                        f"**URL:** {data['url']}"
-                    ),
-                    color=discord.Color.green(),
-                )
-            )
-        else:
-            await ctx.send(f"❌ No guide found matching `{keyword}`.")
 
     # ── Matching logic ───────────────────────────────────────────────────────
 
