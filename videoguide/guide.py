@@ -7,7 +7,7 @@ Mirrors the /saveinst game matching system.
 
 import logging
 from pathlib import Path
-
+import asyncio
 import discord
 from discord import app_commands
 from redbot.core import Config, commands
@@ -95,59 +95,97 @@ class Guide(commands.Cog):
         )
 
     @guide_group.command(name="edit")
-    async def guide_edit(
-        self, ctx: commands.Context, keyword: str, name: str = None, *, url: str = None
-    ) -> None:
-        """Edit an existing guide link's name or URL.
-
-        Leave a parameter as `None` or skip it if you don't want to change it.
+    async def guide_edit(self, ctx: commands.Context, *, keyword: str) -> None:
+        """Interactive wizard to edit an existing guide link.
 
         **Usage:**
-        `[p]guide edit <keyword> [new_name] [new_url]`
-
-        **Examples:**
-        `[p]guide edit re9 None https://youtu.be/new-link` (Updates only URL)
-        `[p]guide edit re9 "Resident Evil IX" None` (Updates only Name)
-        `[p]guide edit re9 "Resident Evil IX" https://youtu.be/new-link` (Updates both)
+        `[p]guide edit <keyword or name>`
         """
         keyword = keyword.lower().strip()
-        
+
         guides = await self._get_guides()
-        if keyword not in guides:
-            await ctx.send(f"❌ No guide found with the keyword `{keyword}`. Use `[p]guide add` instead.")
+
+        # Match by keyword or name
+        matched_key = None
+        if keyword in guides:
+            matched_key = keyword
+        else:
+            for k, data in guides.items():
+                if keyword == data["name"].lower():
+                    matched_key = k
+                    break
+
+        if not matched_key:
+            await ctx.send(f"❌ No guide found matching `{keyword}`. Use `[p]guide add` instead.")
             return
 
-        current_data = guides[keyword]
-        old_name = current_data["name"]
-        old_url = current_data["url"]
+        data = guides[matched_key]
+        current_keyword = matched_key
 
-        # Parse and clean updates, fall back to old values if specified as 'None' or omitted
-        new_name = name.strip() if (name and name.lower() != "none") else old_name
-        new_url = url.strip() if (url and url.lower() != "none") else old_url
+        def check(m):
+            return m.author == ctx.author and m.channel == ctx.channel
 
-        # Update the configuration
-        guides[keyword] = {"name": new_name, "url": new_url}
-        await self._save_guides(guides)
-
-        # Build a clean changes summary description
-        changes = []
-        if new_name != old_name:
-            changes.append(f"• **Name:** `{old_name}` ➔ **{new_name}**")
-        if new_url != old_url:
-            changes.append(f"• **URL:** {old_url} ➔ {new_url}")
-
-        if not changes:
-            await ctx.send("ℹ️ No changes were made.")
-            return
-
-        description = f"✅ Updated guide for keyword: `{keyword}`\n\n" + "\n".join(changes)
-        
-        await ctx.send(
-            embed=discord.Embed(
-                description=description,
-                color=discord.Color.orange(),
+        while True:
+            embed = discord.Embed(
+                title=f"Editing Guide: {data['name']}",
+                description="Type the **number** of the field you want to edit, or type `cancel` to exit and save.",
+                color=discord.Color.blurple(),
             )
-        )
+            embed.add_field(name="1. Keyword", value=f"`{current_keyword}`", inline=False)
+            embed.add_field(name="2. Display Name", value=f"**{data['name']}**", inline=False)
+            embed.add_field(name="3. URL", value=data["url"], inline=False)
+            await ctx.send(embed=embed)
+
+            try:
+                msg = await ctx.bot.wait_for("message", check=check, timeout=120)
+                choice = msg.content.strip().lower()
+
+                if choice == "cancel":
+                    await ctx.send(f"✅ Exited editor for **{data['name']}**.")
+                    break
+
+                elif choice == "1":
+                    await ctx.send("Enter the new **Keyword**:")
+                    kw_msg = await ctx.bot.wait_for("message", check=check, timeout=120)
+                    if kw_msg.content.lower() == "cancel":
+                        continue
+                    new_kw = kw_msg.content.strip().lower()
+                    if new_kw in guides and new_kw != current_keyword:
+                        await ctx.send(f"❌ A guide with keyword `{new_kw}` already exists.")
+                        continue
+                    # Re-insert under new key
+                    del guides[current_keyword]
+                    guides[new_kw] = data
+                    current_keyword = new_kw
+                    await self._save_guides(guides)
+                    await ctx.send(f"✅ Keyword updated to `{current_keyword}`.")
+
+                elif choice == "2":
+                    await ctx.send("Enter the new **Display Name**:")
+                    name_msg = await ctx.bot.wait_for("message", check=check, timeout=120)
+                    if name_msg.content.lower() == "cancel":
+                        continue
+                    data["name"] = name_msg.content.strip()
+                    guides[current_keyword] = data
+                    await self._save_guides(guides)
+                    await ctx.send(f"✅ Display Name updated to **{data['name']}**.")
+
+                elif choice == "3":
+                    await ctx.send("Enter the new **URL**:")
+                    url_msg = await ctx.bot.wait_for("message", check=check, timeout=120)
+                    if url_msg.content.lower() == "cancel":
+                        continue
+                    data["url"] = url_msg.content.strip()
+                    guides[current_keyword] = data
+                    await self._save_guides(guides)
+                    await ctx.send(f"✅ URL updated.")
+
+                else:
+                    await ctx.send("Invalid choice. Type 1, 2, 3, or `cancel`.")
+
+            except asyncio.TimeoutError:
+                await ctx.send("Editor timed out. Any changes made before this were saved.")
+                break
         
     @guide_group.command(name="remove")
     async def guide_remove(self, ctx: commands.Context, *, keyword: str) -> None:
