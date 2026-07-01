@@ -6,14 +6,17 @@ Mirrors the /saveinst game matching system.
 """
 
 import logging
-from pathlib import Path
 import asyncio
+import json
+import io
+
 import discord
 from discord import app_commands
 from redbot.core import Config, commands
 from redbot.core.bot import Red
 
 log = logging.getLogger("red.sablinova.guide")
+
 
 class GuideListView(discord.ui.View):
     def __init__(self, pages: list, make_embed, total_pages: int):
@@ -45,6 +48,7 @@ class GuideListView(discord.ui.View):
         if self.message:
             await self.message.edit(view=None)
 
+
 class Guide(commands.Cog):
     """Sends game-specific guide links based on ticket channel name."""
 
@@ -54,9 +58,20 @@ class Guide(commands.Cog):
             self, identifier=7743901265, force_registration=True
         )
         self.config.register_global(
-            guides={},  # keyword -> {"name": str, "url": str}
+            guides={},  # keyword -> {"name": str, "url": str, "aliases": [str]}
         )
         self._guides_cache: dict | None = None
+
+    # ── Cache helpers ────────────────────────────────────────────────────────
+
+    async def _get_guides(self) -> dict:
+        if self._guides_cache is None:
+            self._guides_cache = await self.config.guides()
+        return self._guides_cache
+
+    async def _save_guides(self, guides: dict) -> None:
+        self._guides_cache = guides
+        await self.config.set("guides", guides)
 
     # ── Admin prefix commands ────────────────────────────────────────────────
 
@@ -84,7 +99,7 @@ class Guide(commands.Cog):
         """
         keyword = keyword.lower().strip()
         guides = await self._get_guides()
-        guides[keyword] = {"name": name.strip(), "url": url.strip()}
+        guides[keyword] = {"name": name.strip(), "url": url.strip(), "aliases": []}
         await self._save_guides(guides)
 
         await ctx.send(
@@ -102,18 +117,10 @@ class Guide(commands.Cog):
         `[p]guide edit <keyword or name>`
         """
         keyword = keyword.lower().strip()
-
         guides = await self._get_guides()
 
-        # Match by keyword or name
-        matched_key = None
-        if keyword in guides:
-            matched_key = keyword
-        else:
-            for k, data in guides.items():
-                if keyword == data["name"].lower():
-                    matched_key = k
-                    break
+        # Match by keyword, alias, or name
+        matched_key = self._resolve_key(keyword, guides)
 
         if not matched_key:
             await ctx.send(f"❌ No guide found matching `{keyword}`. Use `[p]guide add` instead.")
@@ -126,6 +133,9 @@ class Guide(commands.Cog):
             return m.author == ctx.author and m.channel == ctx.channel
 
         while True:
+            aliases = data.get("aliases", [])
+            alias_display = ", ".join(f"`{a}`" for a in aliases) if aliases else "None"
+
             embed = discord.Embed(
                 title=f"Editing Guide: {data['name']}",
                 description="Type the **number** of the field you want to edit, or type `cancel` to exit and save.",
@@ -134,6 +144,7 @@ class Guide(commands.Cog):
             embed.add_field(name="1. Keyword", value=f"`{current_keyword}`", inline=False)
             embed.add_field(name="2. Display Name", value=f"**{data['name']}**", inline=False)
             embed.add_field(name="3. URL", value=data["url"], inline=False)
+            embed.add_field(name="4. Aliases", value=alias_display, inline=False)
             await ctx.send(embed=embed)
 
             try:
@@ -153,7 +164,6 @@ class Guide(commands.Cog):
                     if new_kw in guides and new_kw != current_keyword:
                         await ctx.send(f"❌ A guide with keyword `{new_kw}` already exists.")
                         continue
-                    # Re-insert under new key
                     del guides[current_keyword]
                     guides[new_kw] = data
                     current_keyword = new_kw
@@ -180,42 +190,71 @@ class Guide(commands.Cog):
                     await self._save_guides(guides)
                     await ctx.send(f"✅ URL updated.")
 
+                elif choice == "4":
+                    current_aliases = data.get("aliases", [])
+                    alias_display = ", ".join(f"`{a}`" for a in current_aliases) if current_aliases else "None"
+                    await ctx.send(
+                        f"Current aliases: {alias_display}\n\n"
+                        "`add <alias>` — add an alias\n"
+                        "`remove <alias>` — remove an alias\n"
+                        "`cancel` — go back"
+                    )
+                    alias_msg = await ctx.bot.wait_for("message", check=check, timeout=120)
+                    alias_input = alias_msg.content.strip().lower()
+
+                    if alias_input == "cancel":
+                        continue
+                    elif alias_input.startswith("add "):
+                        new_alias = alias_input[4:].strip()
+                        # Check alias isn't already a keyword or alias elsewhere
+                        conflict = self._resolve_key(new_alias, guides)
+                        if conflict and conflict != current_keyword:
+                            await ctx.send(f"❌ `{new_alias}` is already used by **{guides[conflict]['name']}**.")
+                        elif new_alias in current_aliases:
+                            await ctx.send(f"❌ `{new_alias}` is already an alias for this guide.")
+                        else:
+                            current_aliases.append(new_alias)
+                            data["aliases"] = current_aliases
+                            guides[current_keyword] = data
+                            await self._save_guides(guides)
+                            await ctx.send(f"✅ Alias `{new_alias}` added.")
+                    elif alias_input.startswith("remove "):
+                        rem_alias = alias_input[7:].strip()
+                        if rem_alias not in current_aliases:
+                            await ctx.send(f"❌ `{rem_alias}` is not an alias for this guide.")
+                        else:
+                            current_aliases.remove(rem_alias)
+                            data["aliases"] = current_aliases
+                            guides[current_keyword] = data
+                            await self._save_guides(guides)
+                            await ctx.send(f"✅ Alias `{rem_alias}` removed.")
+                    else:
+                        await ctx.send("Invalid input. Use `add <alias>`, `remove <alias>`, or `cancel`.")
+
                 else:
-                    await ctx.send("Invalid choice. Type 1, 2, 3, or `cancel`.")
+                    await ctx.send("Invalid choice. Type 1, 2, 3, 4, or `cancel`.")
 
             except asyncio.TimeoutError:
                 await ctx.send("Editor timed out. Any changes made before this were saved.")
                 break
-        
+
     @guide_group.command(name="remove")
     async def guide_remove(self, ctx: commands.Context, *, keyword: str) -> None:
-        """Remove a guide link by keyword or name.
+        """Remove a guide link by keyword, alias, or name.
 
         **Usage:**
-        `[p]guide remove <keyword or name>`
+        `[p]guide remove <keyword, alias, or name>`
         """
         keyword = keyword.lower().strip()
         guides = await self._get_guides()
-        # Exact keyword match
-        if keyword in guides:
-            name = guides[keyword]["name"]
-            del guides[keyword]
-            await self._save_guides(guides)
-            await ctx.send(f"✅ Removed guide for **{name}** (`{keyword}`).")
-            return
 
-        # Match by name
-        matched = None
-        for k, data in guides.items():
-            if keyword == data["name"].lower():
-                matched = k
-                break
+        matched_key = self._resolve_key(keyword, guides)
 
-        if matched:
-            name = guides[matched]["name"]
-            del guides[matched]
+        if matched_key:
+            name = guides[matched_key]["name"]
+            del guides[matched_key]
             await self._save_guides(guides)
-            await ctx.send(f"✅ Removed guide for **{name}** (`{matched}`).")
+            await ctx.send(f"✅ Removed guide for **{name}** (`{matched_key}`).")
         else:
             await ctx.send(f"❌ No guide found matching `{keyword}`.")
 
@@ -230,7 +269,9 @@ class Guide(commands.Cog):
 
         lines = []
         for keyword, data in sorted(guides.items(), key=lambda x: x[1]["name"]):
-            lines.append(f"**{data['name']}** — kw: `{keyword}`\n{data['url']}")
+            aliases = data.get("aliases", [])
+            alias_str = f" • aliases: {', '.join(f'`{a}`' for a in aliases)}" if aliases else ""
+            lines.append(f"**{data['name']}** — kw: `{keyword}`{alias_str}\n{data['url']}")
 
         # Build pages
         pages = []
@@ -259,20 +300,99 @@ class Guide(commands.Cog):
             await ctx.send(embed=make_embed(0))
             return
 
-        # Send with navigation buttons
         view = GuideListView(pages, make_embed, total_pages)
         view.message = await ctx.send(embed=make_embed(0), view=view)
 
+    @guide_group.command(name="export")
+    async def guide_export(self, ctx: commands.Context) -> None:
+        """Export all guides to a JSON file.
+
+        **Usage:**
+        `[p]guide export`
+        """
+        guides = await self._get_guides()
+
+        if not guides:
+            await ctx.send("No guides configured to export.")
+            return
+
+        data = json.dumps(guides, indent=2, ensure_ascii=False)
+        file = discord.File(
+            fp=io.BytesIO(data.encode("utf-8")),
+            filename="guides_export.json",
+        )
+        await ctx.send("📦 Here's your guides export:", file=file)
+
+    @guide_group.command(name="import")
+    async def guide_import(self, ctx: commands.Context, merge: bool = False) -> None:
+        """Import guides from a JSON file attachment.
+
+        Attach a JSON file exported via `[p]guide export`.
+        By default this **replaces** all guides. Pass `merge` to merge instead.
+
+        **Usage:**
+        `[p]guide import` — replaces all existing guides
+        `[p]guide import merge` — merges with existing guides (imported entries overwrite on conflict)
+        """
+        if not ctx.message.attachments:
+            await ctx.send("❌ Please attach a JSON file to import.")
+            return
+
+        attachment = ctx.message.attachments[0]
+        if not attachment.filename.endswith(".json"):
+            await ctx.send("❌ Attachment must be a `.json` file.")
+            return
+
+        try:
+            raw = await attachment.read()
+            imported = json.loads(raw.decode("utf-8"))
+        except Exception as e:
+            await ctx.send(f"❌ Failed to parse JSON: {e}")
+            return
+
+        if not isinstance(imported, dict):
+            await ctx.send("❌ Invalid format. Expected a JSON object.")
+            return
+
+        # Validate entries
+        invalid = []
+        for k, v in imported.items():
+            if not isinstance(v, dict) or "name" not in v or "url" not in v:
+                invalid.append(k)
+
+        if invalid:
+            await ctx.send(f"❌ Invalid entries found: {', '.join(f'`{k}`' for k in invalid)}\nAborted.")
+            return
+
+        # Ensure aliases key exists on all imported entries
+        for k in imported:
+            imported[k].setdefault("aliases", [])
+
+        if merge:
+            guides = await self._get_guides()
+            guides.update(imported)
+            await self._save_guides(guides)
+            await ctx.send(f"✅ Merged **{len(imported)}** guide(s) into existing config.")
+        else:
+            await self._save_guides(imported)
+            await ctx.send(f"✅ Imported **{len(imported)}** guide(s). All previous guides replaced.")
+
     # ── Matching logic ───────────────────────────────────────────────────────
 
-    async def _get_guides(self) -> dict:
-        if self._guides_cache is None:
-            self._guides_cache = await self.config.guides()
-        return self._guides_cache
-
-    async def _save_guides(self, guides: dict) -> None:
-        self._guides_cache = guides
-        await self.config.set("guides", guides)
+    def _resolve_key(self, query: str, guides: dict) -> str | None:
+        """Resolve a query (keyword, alias, or name) to a guide key."""
+        # Exact keyword match
+        if query in guides:
+            return query
+        # Alias match
+        for k, data in guides.items():
+            if query in data.get("aliases", []):
+                return k
+        # Name match
+        for k, data in guides.items():
+            if query == data["name"].lower():
+                return k
+        return None
 
     def _find_guide(
         self, game_name: str, guides: dict
@@ -280,41 +400,38 @@ class Guide(commands.Cog):
         """Find the best matching guide for a game name string.
 
         Uses the same three-phase matching as /saveinst:
-        Phase 1 — exact match on keyword or name
+        Phase 1 — exact match on keyword, alias, or name
         Phase 2 — substring match (longest first)
         Phase 3 — word overlap scoring (min score 1)
         """
         if not guides:
             return None
 
-        targets = [
-            {
+        targets = []
+        for k, data in guides.items():
+            targets.append({
                 "key": k,
                 "name": data["name"].lower(),
+                "aliases": [a.lower() for a in data.get("aliases", [])],
                 "data": data,
-            }
-            for k, data in guides.items()
-        ]
+            })
 
-        # Phase 1: Exact match
+        # Phase 1: Exact match on keyword, alias, or name
         for t in targets:
-            if game_name == t["key"] or game_name == t["name"]:
+            if game_name == t["key"] or game_name == t["name"] or game_name in t["aliases"]:
                 return t["key"], t["data"]
 
-        # Phase 2: Substring match — longest key/name first to avoid
-        # short entries stealing matches from longer ones
+        # Phase 2: Substring match — longest key/name/alias first
         targets_by_len = sorted(
             targets,
-            key=lambda x: max(len(x["key"]), len(x["name"])),
+            key=lambda x: max(len(x["key"]), len(x["name"]), max((len(a) for a in x["aliases"]), default=0)),
             reverse=True,
         )
         for t in targets_by_len:
-            if t["key"] in game_name or t["name"] in game_name:
-                return t["key"], t["data"]
-            if len(game_name) > 4 and (
-                game_name in t["key"] or game_name in t["name"]
-            ):
-                return t["key"], t["data"]
+            candidates = [t["key"], t["name"]] + t["aliases"]
+            for c in candidates:
+                if c in game_name or (len(game_name) > 4 and game_name in c):
+                    return t["key"], t["data"]
 
         # Phase 3: Word overlap scoring — require at least 1 match
         game_words = {
@@ -325,13 +442,10 @@ class Guide(commands.Cog):
         best_score = 0
         best_match = None
         for t in targets:
+            all_text = f"{t['key']} {t['name']} {' '.join(t['aliases'])}"
             t_words = {
                 w
-                for w in t["key"].replace(":", " ").replace("-", " ").split()
-                if len(w) >= 3
-            } | {
-                w
-                for w in t["name"].replace(":", " ").replace("-", " ").split()
+                for w in all_text.replace(":", " ").replace("-", " ").split()
                 if len(w) >= 3
             }
             overlap = len(game_words & t_words)
@@ -369,7 +483,9 @@ class Guide(commands.Cog):
             filtered = [
                 (k, data["name"])
                 for k, data in guides.items()
-                if current_lower in k or current_lower in data["name"].lower()
+                if current_lower in k
+                or current_lower in data["name"].lower()
+                or any(current_lower in a for a in data.get("aliases", []))
             ]
         else:
             filtered = [(k, data["name"]) for k, data in guides.items()]
