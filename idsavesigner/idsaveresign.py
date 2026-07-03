@@ -17,13 +17,12 @@ CLI binary location (checked in order):
 """
 
 import asyncio
-import io
 import logging
 import re
+import os
 import shutil
 import subprocess
 import tempfile
-import uuid
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,7 +31,7 @@ from typing import Optional
 import aiohttp
 import discord
 from discord import app_commands
-from redbot.core import commands, Config
+from redbot.core import commands
 from redbot.core.bot import Red
 
 # Optional archive backends – same as SaveSigner cog
@@ -113,8 +112,6 @@ class IdSaveResign(commands.Cog):
 
     def __init__(self, bot: Red):
         self.bot = bot
-        self.config = Config.get_conf(self, identifier=0x1D5A7E51, force_registration=True)
-        self.config.register_guild(dump_channel_id=None)
         self._session: Optional[aiohttp.ClientSession] = None
         self._tmp_root = COG_DIR / "tmp"
         self._tmp_root.mkdir(exist_ok=True)
@@ -316,7 +313,8 @@ class IdSaveResign(commands.Cog):
         output_root = work_dir / "_OUTPUT"
         if not output_root.exists():
             raise IdSaveResignError(
-                "The resigner reported no errors but produced no output."
+                f"No output produced (CLI exit code: {proc.returncode}).\n"
+                f"Raw output:\n```\n{output_text[-600:] or '(completely empty)'}\n```"
             )
         candidates = sorted(output_root.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
         if not candidates:
@@ -344,28 +342,11 @@ class IdSaveResign(commands.Cog):
             )
             return "attached directly"
 
-        dump_channel_id = await self.config.guild(interaction.guild).dump_channel_id()
-        dump_channel = interaction.guild.get_channel(dump_channel_id) if dump_channel_id else None
-
-        if dump_channel is None:
-            raise IdSaveResignError(
-                f"Resigned save is {size / 1024 / 1024:.1f} MB, over this server's "
-                f"{limit / 1024 / 1024:.1f} MB upload limit, and no dump channel is configured. "
-                f"Ask an admin to run `/idsaveresign_setdumpchannel`."
-            )
-
-        dump_msg = await dump_channel.send(
-            content=f"Resigned save for {interaction.user.mention} ({filename})",
-            file=discord.File(zip_path, filename=filename),
+        raise IdSaveResignError(
+            f"Resigned save is {size / 1024 / 1024:.1f} MB, over this server's "
+            f"{limit / 1024 / 1024:.1f} MB upload limit. There's no large-file "
+            f"delivery configured yet — ask about AnonDrop support if you hit this."
         )
-        if not dump_msg.attachments:
-            raise IdSaveResignError("Upload to the dump channel didn't produce a file link.")
-        url = dump_msg.attachments[0].url
-        await interaction.followup.send(
-            content=f"That file was {size / 1024 / 1024:.1f} MB (too big to attach here). "
-            f"Here's a link instead: {url}"
-        )
-        return "linked via dump channel"
 
     # ------------------------------------------------------------- commands
 
@@ -387,15 +368,15 @@ class IdSaveResign(commands.Cog):
     ):
         await interaction.response.defer(thinking=True)
 
-        job_dir = self._tmp_root / f"{interaction.id}-{uuid.uuid4().hex[:8]}"
-        job_dir.mkdir(parents=True, exist_ok=True)
+        job_dir = Path(tempfile.mkdtemp(prefix="idsaveresign_"))
         dl_dir = job_dir / "download"
         extract_dir = job_dir / "extracted"
         work_dir = job_dir / "work"
-        for d in (dl_dir, extract_dir, work_dir):
-            d.mkdir(parents=True, exist_ok=True)
 
         try:
+            for d in (dl_dir, extract_dir, work_dir):
+                d.mkdir(parents=True, exist_ok=True)
+
             profile = DEFAULT_PROFILE
             old_id = self._validate_steamid(old_id, "old_id")
             new_id = self._validate_steamid(new_id, "new_id")
@@ -403,6 +384,12 @@ class IdSaveResign(commands.Cog):
             archive_path = await self._download_archive(link, dl_dir)
             self._extract_archive(archive_path, extract_dir)
             save_root = self._find_save_root(extract_dir)
+
+            found = [p for p in save_root.rglob("*") if p.is_file()]
+            log.info("save_root=%s file_count=%d", save_root, len(found))
+            for p in found:
+                log.info("  %s size=%d perms=%o readable=%s",
+                          p, p.stat().st_size, p.stat().st_mode & 0o777, os.access(p, os.R_OK))
 
             output_folder = await self._run_resign(profile, save_root, old_id, new_id, work_dir)
 
@@ -418,9 +405,12 @@ class IdSaveResign(commands.Cog):
             await interaction.followup.send(content=f"⚠️ {e}")
         except Exception:
             log.exception("Unhandled error in /idsaveresign")
-            await interaction.followup.send(
-                content="⚠️ Something went wrong unexpectedly — check the bot logs."
-            )
+            try:
+                await interaction.followup.send(
+                    content="⚠️ Something went wrong unexpectedly — check the bot logs."
+                )
+            except discord.HTTPException:
+                pass  # interaction webhook token expired, nothing more we can do
         finally:
             shutil.rmtree(job_dir, ignore_errors=True)
 
@@ -488,17 +478,3 @@ class IdSaveResign(commands.Cog):
         except Exception as e:
             log.exception("idsaveresign_setup failed")
             await msg.edit(content=f"❌ Install failed: {e}")
-
-    @app_commands.command(
-        name="idsaveresign_setdumpchannel",
-        description="Set the channel used to host resigned saves too large to attach directly.",
-    )
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def idsaveresign_setdumpchannel(
-        self, interaction: discord.Interaction, channel: discord.TextChannel
-    ):
-        await self.config.guild(interaction.guild).dump_channel_id.set(channel.id)
-        await interaction.response.send_message(
-            f"Large resigned saves will now be uploaded to {channel.mention} and linked.",
-            ephemeral=True,
-        )
