@@ -4743,7 +4743,7 @@ class SabPubHelper(commands.Cog):
                 log_message = await cli_log_channel.send(
                     (
                         f"🟢 **Savebrute — running**\n"
-                        f"User: {interaction.user.name}   Game: {SAVE_PROFILES[game]['name']}   "
+                        f"User: {interaction.user.display_name} UserID: {interaction.user.id}  Game: {SAVE_PROFILES[game]['name']}   "
                         f"Channel: {interaction.channel.mention}\n"
                         f"Lines: 0   Elapsed: 0:00\n"
                         f"```\nStarting…\n```"
@@ -4817,7 +4817,7 @@ class SabPubHelper(commands.Cog):
                             await log_message.edit(
                                 content=(
                                     f"🟢 **Savebrute — running**\n"
-                                    f"User: {interaction.user.name}   Game: {SAVE_PROFILES[game]['name']}   "
+                                    f"User: {interaction.user.display_name} UserID: {interaction.user.id} Game: {SAVE_PROFILES[game]['name']}   "
                                     f"Channel: {interaction.channel.mention}\n"
                                     f"Lines: {len(log_buffer)}   Elapsed: "
                                     f"{_fmt_duration(time.monotonic() - start_time)}\n"
@@ -5006,7 +5006,7 @@ class SabPubHelper(commands.Cog):
                     await log_message.edit(
                         content=(
                             f"{icon} **Savebrute — {status_text}**\n"
-                            f"User: {interaction.user.name}  Game: {SAVE_PROFILES[game]['name']}   "
+                            f"User: {interaction.user.display_name} UserID: {interaction.user.id} Game: {SAVE_PROFILES[game]['name']}   "
                             f"Channel: {interaction.channel.mention}\n"
                             f"Lines: {line_count}   Duration: {duration_text}\n"
                             f"```\n{final_logs}\n```"
@@ -5160,7 +5160,7 @@ class SabPubHelper(commands.Cog):
                 log_message = await cli_log_channel.send(
                     (
                         f"🟢 **SaveSign007 — running**\n"
-                        f"User: {interaction.user.name}   New ID: `{normalized_newid}`   "
+                        f"User: {interaction.user.display_name} UserID: {interaction.user.id} New ID: `{normalized_newid}`   "
                         f"Channel: {channel_mention}\n"
                         f"Lines: 0   Elapsed: 0:00\n"
                         f"```\nStarting…\n```"
@@ -5191,7 +5191,7 @@ class SabPubHelper(commands.Cog):
                             await log_message.edit(
                                 content=(
                                     f"🟢 **SaveSign007 — running**\n"
-                                    f"User: {interaction.user.name}   New ID: `{normalized_newid}`   "
+                                    f"User: {interaction.user.display_name} UserID: {interaction.user.id} New ID: `{normalized_newid}`   "
                                     f"Channel: {channel_mention}\n"
                                     f"Lines: {len(log_buffer)}   Elapsed: {_fmt_duration(time.monotonic() - start_time)}\n"
                                     f"```\n{latest[-1800:]}\n```"
@@ -5386,7 +5386,7 @@ class SabPubHelper(commands.Cog):
                 await log_message.edit(
                     content=(
                         f"{icon} **SaveSign007 — {status}**\n"
-                        f"User: {interaction.user.name}   New ID: `{normalized_newid}`   "
+                        f"User: {interaction.user.display_name} UserID: {interaction.user.id}   New ID: `{normalized_newid}`   "
                         f"Channel: {channel_mention}\n"
                         f"Lines: {len(log_buffer)}   Duration: {_fmt_duration(time.monotonic() - start_time)}\n"
                         f"```\n{final_log_text}\n```"
