@@ -113,6 +113,7 @@ class IdSaveResign(commands.Cog):
     def __init__(self, bot: Red):
         self.bot = bot
         self._session: Optional[aiohttp.ClientSession] = None
+        self._cli_lock = asyncio.Lock()
         self._tmp_root = COG_DIR / "tmp"
         self._tmp_root.mkdir(exist_ok=True)
 
@@ -284,43 +285,58 @@ class IdSaveResign(commands.Cog):
             "-q",
         ]
 
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            cwd=work_dir,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=CLI_TIMEOUT_SECONDS
+        output_root = cli_path.parent / "_OUTPUT"
+
+        async with self._cli_lock:
+            # Clear out any stale output from a previous run before we start —
+            # the CLI always writes here regardless of cwd, so this is the only
+            # way to know for certain that whatever appears afterward is ours.
+            shutil.rmtree(output_root, ignore_errors=True)
+
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=work_dir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
             )
-        except asyncio.TimeoutError:
-            proc.kill()
-            raise IdSaveResignError("The resigner process timed out.")
-
-        output_text = stdout.decode(errors="replace")
-        error_lines = [ln for ln in output_text.splitlines() if "[Error]" in ln]
-
-        if error_lines:
-            reason = error_lines[0].split(": ", 2)[-1]
-            if "AuthenticationTagMismatch" in reason or "AuthenticationTag" in output_text:
-                raise IdSaveResignError(
-                    "Re-sign failed: the **old SteamID64 doesn't match these save files** "
-                    "(authentication tag mismatch). Double check `old_id`."
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(), timeout=CLI_TIMEOUT_SECONDS
                 )
-            raise IdSaveResignError(f"Re-sign failed:\n```\n{reason[:500]}\n```")
+            except asyncio.TimeoutError:
+                proc.kill()
+                raise IdSaveResignError("The resigner process timed out.")
 
-        output_root = work_dir / "_OUTPUT"
-        if not output_root.exists():
-            raise IdSaveResignError(
-                f"No output produced (CLI exit code: {proc.returncode}).\n"
-                f"Raw output:\n```\n{output_text[-600:] or '(completely empty)'}\n```"
-            )
-        candidates = sorted(output_root.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
-        if not candidates:
-            raise IdSaveResignError("Resigner produced an empty output folder.")
-        return candidates[0]
+            output_text = stdout.decode(errors="replace")
+            error_lines = [ln for ln in output_text.splitlines() if "[Error]" in ln]
 
+            if error_lines:
+                reason = error_lines[0].split(": ", 2)[-1]
+                if "AuthenticationTagMismatch" in reason or "AuthenticationTag" in output_text:
+                    raise IdSaveResignError(
+                        "Re-sign failed: the **old SteamID64 doesn't match these save files** "
+                        "(authentication tag mismatch). Double check `old_id`."
+                    )
+                raise IdSaveResignError(f"Re-sign failed:\n```\n{reason[:500]}\n```")
+
+            if not output_root.exists():
+                raise IdSaveResignError(
+                    f"No output produced (CLI exit code: {proc.returncode}).\n"
+                    f"Raw output:\n```\n{output_text[-600:] or '(completely empty)'}\n```"
+                )
+            candidates = sorted(output_root.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
+            if not candidates:
+                raise IdSaveResignError("Resigner produced an empty output folder.")
+
+            result_dir = candidates[0]
+            # Copy the result into our own job_dir (which gets cleaned up on the way
+            # out of idsaveresign()) and clear the shared _OUTPUT immediately so
+            # nothing lingers for the next job to trip over.
+            copied = work_dir / "result"
+            shutil.copytree(result_dir, copied)
+            shutil.rmtree(output_root, ignore_errors=True)
+            return copied
+    
     @staticmethod
     def _zip_dir(src_dir: Path, out_path: Path) -> Path:
         with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
