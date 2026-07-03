@@ -1,0 +1,11 @@
+{
+    "author": ["DarKnight"],
+    "min_bot_version": "3.5.0",
+    "description": "Re-signs idTech 7/8 SaveData files (e.g. DOOM: The Dark Ages) between SteamID64s via a slash command, wrapping mi5hmash's id-savedata-resigner-cli.",
+    "hidden": false,
+    "install_msg": "idsaveresign loaded. Requires .NET 10 runtime on the host (`apt install dotnet-runtime-10.0`) for the bundled resigner binary, and `p7zip-full` if you want .rar upload support.",
+    "short": "Re-sign DOOM: The Dark Ages saves between SteamIDs via slash command.",
+    "tags": ["doom", "steam", "saves", "resign", "idtech"],
+    "requirements": ["aiohttp"],
+    "type": "COG"
+}
