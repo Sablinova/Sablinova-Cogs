@@ -452,17 +452,26 @@ class IdSaveResign(commands.Cog):
                     with zipfile.ZipFile(zip_path) as zf:
                         zf.extractall(tmpdir_path / "cli")
 
-                    # Find all candidates, recursively, no matter what subfolder they're in
-                    candidates = list((tmpdir_path / "cli").rglob("id-savedata-resigner-cli*"))
+                    # 1. Grab ALL files recursively so we can filter them case-insensitively
+                    all_files = list((tmpdir_path / "cli").rglob("*"))
+                    
+                    # 2. Filter for files that contain our keyword (case-insensitive)
+                    candidates = [
+                        p for p in all_files 
+                        if p.is_file() and "idsavedataresigner" in p.name.lower()
+                    ]
+
                     # Prefer the linux binary, drop .exe / mac files
                     cli_binary = None
                     for p in candidates:
-                        if p.is_file() and p.suffix != ".exe" and "osx" not in p.name.lower() and "mac" not in p.name.lower():
+                        # Adjusted the exclusion filters slightly for safety
+                        if p.suffix != ".exe" and "osx" not in p.name.lower() and "mac" not in p.name.lower():
                             cli_binary = p
                             break
-                    # fallback: first non-.exe file that starts with the name
-                    if not cli_binary:
-                        cli_binary = next((p for p in candidates if p.is_file() and p.name.startswith("id-savedata-resigner-cli")), None)
+                            
+                    # fallback: first file that fits the basic description
+                    if not cli_binary and candidates:
+                        cli_binary = candidates[0]
 
                     if not cli_binary:
                         return await msg.edit(content=f"❌ CLI binary not found in archive. Found: {', '.join(str(p.relative_to(tmpdir_path)) for p in candidates) or 'nothing'}")
