@@ -70,14 +70,14 @@ MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024  # 100 MB cap on the incoming archive
 CLI_TIMEOUT_SECONDS = 120
 
 SAVE_PLACEMENT_MSG = (
-    "**Where to put the resigned save (SteamID `{new_id}`):**\n"
-    "Windows (Steam Cloud folder): `Steam\\userdata\\{new_id}\\{appid}\\remote\\`\n"
-    "Windows (local save folder): `%USERPROFILE%\\Saved Games\\id Software\\{save_folder}\\base\\savegame\\`\n"
-    "Linux/Steam Deck (cloud folder): `~/.steam/steam/userdata/{new_id}/{appid}/remote/`\n"
-    "Linux/Steam Deck (Proton prefix): `~/.local/share/Steam/steamapps/compatdata/{appid}/pfx/"
-    "drive_c/users/steamuser/Saved Games/id Software/{save_folder}/base/savegame/`\n\n"
-    "Back up whatever's already there first, and disable Steam Cloud sync for the game "
-    "before you drop the new files in, or Cloud can overwrite them on next launch."
+    "### 📂 Installation Instructions\n"
+    "**1.** Press `Win + R`, paste the path below, and hit **Enter**:\n"
+    "```cmd\n"
+    "%AppData%\\GSE Saves\\3017860\\remote\\\n"
+    "```\n"
+    "**2.** Extract the attached `.zip` — copy all folder inside into above folder, replacing old folders.\n"
+    "**3.** Launch the game normally!\n\n"
+    "-# 🐧 **Linux / Steam Deck:** `~/.local/share/crucible-launcher/Prefix/doom_the_dark_agesprefix/drive_c/users/steamuser/AppData/Roaming/GSE Saves/3017860/remote/`\n"
 )
 
 
@@ -110,9 +110,6 @@ class IdSaveResignError(Exception):
 
 class IdSaveResign(commands.Cog):
     """Re-sign idTech 7/8 SaveData files between SteamID64s (currently: DOOM: The Dark Ages)."""
-
-    __author__ = "Aryaman"
-    __version__ = "1.1.1"
 
     def __init__(self, bot: Red):
         self.bot = bot
@@ -483,7 +480,3 @@ class IdSaveResign(commands.Cog):
             f"Large resigned saves will now be uploaded to {channel.mention} and linked.",
             ephemeral=True,
         )
-
-
-async def setup(bot: Red):
-    await bot.add_cog(IdSaveResign(bot))
