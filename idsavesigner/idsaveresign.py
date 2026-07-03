@@ -451,9 +451,22 @@ class IdSaveResign(commands.Cog):
                     zip_path.write_bytes(cli_data)
                     with zipfile.ZipFile(zip_path) as zf:
                         zf.extractall(tmpdir_path / "cli")
-                    cli_binary = next((tmpdir_path / "cli").rglob("id-savedata-resigner-cli*"), None)
-                    if not cli_binary or not cli_binary.is_file():
-                        return await msg.edit(content="❌ CLI binary not found in archive")
+
+                    # Find all candidates, recursively, no matter what subfolder they're in
+                    candidates = list((tmpdir_path / "cli").rglob("id-savedata-resigner-cli*"))
+                    # Prefer the linux binary, drop .exe / mac files
+                    cli_binary = None
+                    for p in candidates:
+                        if p.is_file() and p.suffix != ".exe" and "osx" not in p.name.lower() and "mac" not in p.name.lower():
+                            cli_binary = p
+                            break
+                    # fallback: first non-.exe file that starts with the name
+                    if not cli_binary:
+                        cli_binary = next((p for p in candidates if p.is_file() and p.name.startswith("id-savedata-resigner-cli")), None)
+
+                    if not cli_binary:
+                        return await msg.edit(content=f"❌ CLI binary not found in archive. Found: {', '.join(str(p.relative_to(tmpdir_path)) for p in candidates) or 'nothing'}")
+
                     shutil.copy(cli_binary, target_cli)
             else:
                 with open(target_cli, "wb") as f:
