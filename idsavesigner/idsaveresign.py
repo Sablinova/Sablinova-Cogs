@@ -360,19 +360,25 @@ class IdSaveResign(commands.Cog):
         return path
 
     async def _deliver(
-        self, interaction: discord.Interaction, zip_path: Path, filename: str, status_content: str
+        self,
+        interaction: discord.Interaction,
+        zip_path: Path,
+        filename: str,
+        status_content: str,
+        inst: str,
     ) -> bool:
         """
-        Mirrors pubhelper.py's savesign delivery pattern: try a direct Discord
-        attachment, and only fall back to AnonDrop if Discord itself rejects it
-        (HTTPException, e.g. 413 too large) rather than pre-checking size.
+        Mirrors pubhelper.py's send_final_message pattern: file + placement
+        instructions go out together in one message, not as separate sends.
+        Falls back to AnonDrop if Discord rejects the attachment (413).
         Returns True if the file was actually delivered somewhere.
         """
         zip_bytes = zip_path.read_bytes()
 
         try:
             await interaction.followup.send(
-                file=discord.File(io.BytesIO(zip_bytes), filename=filename)
+                content=inst,
+                file=discord.File(io.BytesIO(zip_bytes), filename=filename),
             )
             return True
         except discord.HTTPException as e:
@@ -407,7 +413,7 @@ class IdSaveResign(commands.Cog):
 
         if anon_url:
             await interaction.edit_original_response(content=status_content)
-            await interaction.followup.send(f"📎 {anon_url}{nitro_note}")
+            await interaction.followup.send(f"{inst}\n📎 {anon_url}{nitro_note}")
             return True
 
         await interaction.followup.send(
@@ -504,15 +510,12 @@ class IdSaveResign(commands.Cog):
             out_zip = self._zip_dir(output_folder, job_dir / f"{profile.key}_{new_id}.zip")
 
             success_msg = f"✅ **Re-sign Complete!**\n\nOriginal ID: `{old_id}` → New ID: `{new_id}`"
-            await interaction.followup.send(content=success_msg)
+            await interaction.edit_original_response(content=success_msg)
 
-            delivered = await self._deliver(interaction, out_zip, out_zip.name, success_msg)
-
-            if delivered:
-                placement = SAVE_PLACEMENT_MSG.format(
-                    new_id=new_id, appid=profile.appid, save_folder=profile.save_folder
-                )
-                await interaction.followup.send(content=placement)
+            placement = SAVE_PLACEMENT_MSG.format(
+                new_id=new_id, appid=profile.appid, save_folder=profile.save_folder
+            )
+            await self._deliver(interaction, out_zip, out_zip.name, success_msg, placement)
 
         except IdSaveResignError as e:
             await interaction.followup.send(content=f"⚠️ {e}")
