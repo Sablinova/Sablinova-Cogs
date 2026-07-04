@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import tempfile
 import zipfile
+import io
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -31,7 +32,7 @@ from typing import Optional
 import aiohttp
 import discord
 from discord import app_commands
-from redbot.core import commands
+from redbot.core import commands, Config
 from redbot.core.bot import Red
 
 # Optional archive backends – same as SaveSigner cog
@@ -53,9 +54,7 @@ COG_DIR = Path(__file__).parent
 def _find_cli() -> Optional[Path]:
     candidates = [
         COG_DIR / "tools" / "id-savedata-resigner-cli",
-        COG_DIR / "tools" / "id-savedata-resigner",
         COG_DIR / "bin" / "id-savedata-resigner-cli",
-        COG_DIR / "bin" / "id-savedata-resigner",
     ]
     for p in candidates:
         if p.exists() and p.is_file():
@@ -67,6 +66,7 @@ CLI_PATH = _find_cli()
 STEAMID64_RE = re.compile(r"^\d{17}$")
 MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024  # 100 MB cap on the incoming archive
 CLI_TIMEOUT_SECONDS = 120
+ANONDROP_CHUNK_SIZE = 8 * 1024 * 1024  # 8 MB, matches the reference client
 
 SAVE_PLACEMENT_MSG = (
     "### 📂 Installation Instructions\n"
@@ -112,6 +112,8 @@ class IdSaveResign(commands.Cog):
 
     def __init__(self, bot: Red):
         self.bot = bot
+        self.config = Config.get_conf(self, identifier=0x1D5A7E51, force_registration=True)
+        self.config.register_global(anondrop_key=None)
         self._session: Optional[aiohttp.ClientSession] = None
         self._cli_lock = asyncio.Lock()
         self._tmp_root = COG_DIR / "tmp"
@@ -335,7 +337,7 @@ class IdSaveResign(commands.Cog):
             copied = work_dir / "result"
             shutil.copytree(result_dir, copied)
             shutil.rmtree(output_root, ignore_errors=True)
-            return copied
+            return self._strip_newid_wrapper(copied)
     
     @staticmethod
     def _zip_dir(src_dir: Path, out_path: Path) -> Path:
@@ -344,25 +346,115 @@ class IdSaveResign(commands.Cog):
                 if file.is_file():
                     zf.write(file, file.relative_to(src_dir))
         return out_path
+    
+    @staticmethod
+    def _strip_newid_wrapper(path: Path) -> Path:
+        """
+        The resigner wraps its output in a <new_id>/ folder. Strip exactly
+        that one level so the zip's root is the actual save structure
+        (e.g. Game-AutoSave1/, Profile/) instead of new_id/Game-AutoSave1/...
+        """
+        entries = list(path.iterdir())
+        if len(entries) == 1 and entries[0].is_dir():
+            return entries[0]
+        return path
 
     async def _deliver(
-        self, interaction: discord.Interaction, zip_path: Path, filename: str
-    ) -> str:
-        size = zip_path.stat().st_size
-        limit = interaction.guild.filesize_limit if interaction.guild else 8 * 1024 * 1024
+        self, interaction: discord.Interaction, zip_path: Path, filename: str, status_content: str
+    ) -> bool:
+        """
+        Mirrors pubhelper.py's savesign delivery pattern: try a direct Discord
+        attachment, and only fall back to AnonDrop if Discord itself rejects it
+        (HTTPException, e.g. 413 too large) rather than pre-checking size.
+        Returns True if the file was actually delivered somewhere.
+        """
+        zip_bytes = zip_path.read_bytes()
 
-        if size <= limit:
+        try:
             await interaction.followup.send(
-                content="Here's your resigned save:",
-                file=discord.File(zip_path, filename=filename),
+                file=discord.File(io.BytesIO(zip_bytes), filename=filename)
             )
-            return "attached directly"
+            return True
+        except discord.HTTPException as e:
+            log.warning(
+                "Discord file upload failed (%s %s), falling back to AnonDrop",
+                e.status, e.code,
+            )
 
-        raise IdSaveResignError(
-            f"Resigned save is {size / 1024 / 1024:.1f} MB, over this server's "
-            f"{limit / 1024 / 1024:.1f} MB upload limit. There's no large-file "
-            f"delivery configured yet — ask about AnonDrop support if you hit this."
+        nitro_note = (
+            "\n-# 💡 Non-Nitro Discord limit is 10MB. Have Nitro? "
+            "The file would've been sent directly — no upload needed."
         )
+
+        async def _progress(percent: int):
+            bar = "█" * (percent // 10) + "░" * (10 - percent // 10)
+            try:
+                await interaction.edit_original_response(
+                    content=f"{status_content}\n⬆️ Uploading to AnonDrop... `[{bar}] {percent}%`"
+                )
+            except Exception:
+                pass
+
+        await interaction.edit_original_response(
+            content=f"{status_content}\n⬆️ Uploading to AnonDrop... `[░░░░░░░░░░] 0%`"
+        )
+
+        try:
+            anon_url = await self._anondrop_upload(zip_path, filename, progress_callback=_progress)
+        except IdSaveResignError as e:
+            log.warning("AnonDrop fallback failed: %s", e)
+            anon_url = None
+
+        if anon_url:
+            await interaction.edit_original_response(content=status_content)
+            await interaction.followup.send(f"📎 {anon_url}{nitro_note}")
+            return True
+
+        await interaction.followup.send(
+            "❌ File was too large for Discord and AnonDrop upload also failed."
+        )
+        return False
+    
+    async def _anondrop_upload(self, zip_path: Path, filename: str, progress_callback=None) -> str:
+        key = await self.config.anondrop_key()
+        if not key:
+            raise IdSaveResignError("AnonDrop isn't configured (no client key set).")
+
+        async with self._session.get(
+            "https://anondrop.net/initiateupload",
+            params={"filename": filename, "key": key},
+        ) as resp:
+            session_hash = (await resp.text()).strip()
+            if not session_hash:
+                raise IdSaveResignError("AnonDrop didn't return a session hash.")
+
+        total_size = zip_path.stat().st_size
+        sent = 0
+        with open(zip_path, "rb") as f:
+            while chunk := f.read(ANONDROP_CHUNK_SIZE):
+                form = aiohttp.FormData()
+                form.add_field("file", chunk, filename="blob", content_type="application/octet-stream")
+                async with self._session.post(
+                    "https://anondrop.net/uploadchunk",
+                    params={"session_hash": session_hash},
+                    data=form,
+                ) as resp:
+                    text = (await resp.text()).strip()
+                    if text != "done":
+                        raise IdSaveResignError(f"AnonDrop chunk upload failed: {text}")
+                sent += len(chunk)
+                if progress_callback:
+                    await progress_callback(int(sent / total_size * 100))
+
+        async with self._session.get(
+            "https://anondrop.net/endupload", params={"session_hash": session_hash}
+        ) as resp:
+            html = await resp.text()
+
+        match = re.search(r"href='(.*?)'", html)
+        if not match:
+            raise IdSaveResignError("AnonDrop didn't return a file link.")
+        return f"{match.group(1)}/{filename}"
 
     # ------------------------------------------------------------- commands
 
@@ -410,12 +502,17 @@ class IdSaveResign(commands.Cog):
             output_folder = await self._run_resign(profile, save_root, old_id, new_id, work_dir)
 
             out_zip = self._zip_dir(output_folder, job_dir / f"{profile.key}_{new_id}.zip")
-            await self._deliver(interaction, out_zip, out_zip.name)
 
-            placement = SAVE_PLACEMENT_MSG.format(
-                new_id=new_id, appid=profile.appid, save_folder=profile.save_folder
-            )
-            await interaction.followup.send(content=placement)
+            success_msg = f"✅ **Re-sign Complete!**\n\nOriginal ID: `{old_id}` → New ID: `{new_id}`"
+            await interaction.followup.send(content=success_msg)
+
+            delivered = await self._deliver(interaction, out_zip, out_zip.name, success_msg)
+
+            if delivered:
+                placement = SAVE_PLACEMENT_MSG.format(
+                    new_id=new_id, appid=profile.appid, save_folder=profile.save_folder
+                )
+                await interaction.followup.send(content=placement)
 
         except IdSaveResignError as e:
             await interaction.followup.send(content=f"⚠️ {e}")
