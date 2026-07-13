@@ -68,6 +68,41 @@ SAVE_PLACEMENT_MSG_007 = (
     "-# 🐧 **Linux / Steam Deck:** `~/.local/share/crucible-launcher/Prefix/007_first_lightprefix/drive_c/users/steamuser/AppData/Roaming/GSE Saves/3768760/remote/`\n"
 )
 
+# Matches literal paths/tokens that must never be translated or mangled:
+#   %ENV%\path with spaces (until a real delimiter), C:\windows\paths,
+#   /unix/paths, and backtick-wrapped code spans.
+_PROTECT_RE = re.compile(
+    r"(`[^`]+`"  # `code spans`
+    r"|%[A-Za-z_]+%[^\n`]*?(?=\s*(?:$|\n|`|[.,;:!?](?:\s|$)))"  # %ENV%\path with spaces
+    r"|[A-Za-z]:\\[^\n`]*?(?=\s*(?:$|\n|`|[.,;:!?](?:\s|$)))"  # C:\windows\paths
+    r"|~?/[A-Za-z0-9_./ -]*[A-Za-z0-9_./-](?=\s*(?:$|\n|`|[.,;:!?](?:\s|$)))"  # /unix and ~/paths with spaces
+    r")"
+)
+
+
+def _mask_protected(text: str):
+    """Replace protected tokens with translation-safe placeholders.
+
+    Returns (masked_text, placeholders). Placeholders use a bracket form
+    that Google Translate leaves untouched.
+    """
+    placeholders: dict[str, str] = {}
+
+    def _extract(m):
+        key = f"[[{len(placeholders)}]]"
+        placeholders[key] = m.group(0)
+        return key
+
+    return _PROTECT_RE.sub(_extract, text), placeholders
+
+
+def _unmask_protected(text: str, placeholders: dict[str, str]) -> str:
+    for key, val in placeholders.items():
+        text = text.replace(key, val)
+        text = text.replace(key.replace(" ", ""), val)
+    return text
+
+
 # Languages available in the /saveinst translate dropdown
 SAVEINST_LANGUAGES = [
     ("🇪🇸 Spanish", "es"),
@@ -1087,12 +1122,14 @@ class SaveInstTranslateView(discord.ui.View):
         try:
             from deep_translator import GoogleTranslator
 
-            translated = await asyncio.get_event_loop().run_in_executor(
+            masked, placeholders = _mask_protected(self.source_text)
+            raw = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: GoogleTranslator(source="en", target=lang_code).translate(
-                    self.source_text
+                    masked
                 ),
             )
+            translated = _unmask_protected(raw, placeholders)
         except Exception as e:
             await interaction.followup.send(
                 f"❌ Translation failed: {e}", ephemeral=True
