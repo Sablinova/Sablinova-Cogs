@@ -83,13 +83,15 @@ _PROTECT_RE = re.compile(
 def _mask_protected(text: str):
     """Replace protected tokens with translation-safe placeholders.
 
-    Returns (masked_text, placeholders). Placeholders use a bracket form
-    that Google Translate leaves untouched.
+    Returns (masked_text, placeholders). Placeholders read as inert
+    all-caps word tokens (e.g. ZZXPROTECT0XZZ) that Google Translate
+    treats as proper nouns and passes through untouched, without
+    suppressing translation of the surrounding prose.
     """
     placeholders: dict[str, str] = {}
 
     def _extract(m):
-        key = f"[[{len(placeholders)}]]"
+        key = f"ZZXPROTECT{len(placeholders)}XZZ"
         placeholders[key] = m.group(0)
         return key
 
@@ -99,7 +101,11 @@ def _mask_protected(text: str):
 def _unmask_protected(text: str, placeholders: dict[str, str]) -> str:
     for key, val in placeholders.items():
         text = text.replace(key, val)
-        text = text.replace(key.replace(" ", ""), val)
+        # Google sometimes lowercases or inserts spaces in the token;
+        # be forgiving. Use a function replacement so backslashes in the
+        # path are not interpreted as regex escapes.
+        pattern = re.compile(re.escape(key).replace("XZZ", r"\s*XZZ"), re.I)
+        text = pattern.sub(lambda _m: val, text)
     return text
 
 
