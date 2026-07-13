@@ -72,22 +72,37 @@ SAVE_PLACEMENT_MSG_007 = (
 #   %ENV%\path with spaces (until a real delimiter), C:\windows\paths,
 #   /unix/paths, and backtick-wrapped code spans.
 _PROTECT_RE = re.compile(
-    r"(`[^`]+`"  # `code spans`
+    r"(`[^`\n]+`"  # inline `code spans` (single line, no fences)
     r"|%[A-Za-z_]+%[^\n`]*?(?=\s*(?:$|\n|`|[.,;:!?](?:\s|$)))"  # %ENV%\path with spaces
     r"|[A-Za-z]:\\[^\n`]*?(?=\s*(?:$|\n|`|[.,;:!?](?:\s|$)))"  # C:\windows\paths
     r"|~?/[A-Za-z0-9_./ -]*[A-Za-z0-9_./-](?=\s*(?:$|\n|`|[.,;:!?](?:\s|$)))"  # /unix and ~/paths with spaces
     r")"
 )
 
+# Matches a triple-backtick fence wrapping the whole message (optionally with
+# a language tag), captured so we can strip it before translation and restore
+# it afterwards. Group 1 = leading fence (+ optional lang), group 2 = trailing.
+_FENCE_RE = re.compile(r"\A(```(?:[A-Za-z0-9_-]*\n|\n?))(.*?)(\n?```)\Z", re.S)
+
 
 def _mask_protected(text: str):
     """Replace protected tokens with translation-safe placeholders.
 
-    Returns (masked_text, placeholders). Placeholders read as inert
+    Returns (masked_text, placeholders, fence). Placeholders read as inert
     all-caps word tokens (e.g. ZZXPROTECT0XZZ) that Google Translate
     treats as proper nouns and passes through untouched, without
     suppressing translation of the surrounding prose.
+
+    A whole-message triple-backtick fence is stripped before masking (so
+    the inner prose still gets translated) and returned as ``fence`` for
+    restoration afterwards.
     """
+    fence = ("", "")
+    m = _FENCE_RE.match(text)
+    if m:
+        fence = (m.group(1), m.group(3))
+        text = m.group(2)
+
     placeholders: dict[str, str] = {}
 
     def _extract(m):
@@ -95,10 +110,12 @@ def _mask_protected(text: str):
         placeholders[key] = m.group(0)
         return key
 
-    return _PROTECT_RE.sub(_extract, text), placeholders
+    return _PROTECT_RE.sub(_extract, text), placeholders, fence
 
 
-def _unmask_protected(text: str, placeholders: dict[str, str]) -> str:
+def _unmask_protected(
+    text: str, placeholders: dict[str, str], fence: tuple[str, str] = ("", "")
+) -> str:
     for key, val in placeholders.items():
         text = text.replace(key, val)
         # Google sometimes lowercases or inserts spaces in the token;
@@ -106,7 +123,7 @@ def _unmask_protected(text: str, placeholders: dict[str, str]) -> str:
         # path are not interpreted as regex escapes.
         pattern = re.compile(re.escape(key).replace("XZZ", r"\s*XZZ"), re.I)
         text = pattern.sub(lambda _m: val, text)
-    return text
+    return f"{fence[0]}{text}{fence[1]}"
 
 
 # Languages available in the /saveinst translate dropdown
@@ -1128,14 +1145,14 @@ class SaveInstTranslateView(discord.ui.View):
         try:
             from deep_translator import GoogleTranslator
 
-            masked, placeholders = _mask_protected(self.source_text)
+            masked, placeholders, fence = _mask_protected(self.source_text)
             raw = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: GoogleTranslator(source="en", target=lang_code).translate(
                     masked
                 ),
             )
-            translated = _unmask_protected(raw, placeholders)
+            translated = _unmask_protected(raw, placeholders, fence)
         except Exception as e:
             await interaction.followup.send(
                 f"❌ Translation failed: {e}", ephemeral=True
