@@ -1188,6 +1188,7 @@ class SabPubHelper(commands.Cog):
             custom_saveinst={},  # Custom games for /saveinst command
             translation_cache={},  # Cached translations: key "game|lang|hash" -> translated text
             translation_cache_index={},  # Index: game_key -> [cache_key, ...]
+            anadius_games={},  # /anadius games: key -> {"name": display, "cfg_file": filename}
         )
         self.data_path = cog_data_path(self)
         self.funny_overrides_path = Path(__file__).parent / "funny_saveinst.json"
@@ -1318,6 +1319,88 @@ class SabPubHelper(commands.Cog):
             if path.exists():
                 return path
         return None
+
+    # ── Anadius helpers ──────────────────────────────────────────────────────
+
+    ANADIUS_TOKEN_PLACEHOLDER = "PASTE_A_VALID_DENUVO_TOKEN_HERE"
+
+    def _get_anadius_cfg_path(self, game_key: str) -> Path:
+        """Return the on-disk path of a game's mainbase anadius cfg."""
+        return self.data_path / f"anadius_{game_key}.cfg"
+
+    @staticmethod
+    def _parse_game_from_channel(channel_name: str) -> str:
+        """Extract a game name from a ticket/channel name.
+
+        Mirrors /saveinst: split on '-' (johnsmith-pragmata), else '|'
+        (johnsmith | Pragmata), else use the whole name.
+        """
+        if "-" in channel_name:
+            return channel_name.split("-", 1)[1].strip().lower().replace("-", " ")
+        if "|" in channel_name:
+            return channel_name.split("|", 1)[1].strip().lower()
+        return channel_name.strip().lower()
+
+    @staticmethod
+    def _match_game(game_name: str, targets: list[dict]) -> dict | None:
+        """Three-phase game matcher shared by /saveinst and /anadius.
+
+        Each target must have 'key' (lowercase) and 'name' (lowercase).
+        Returns the matching target dict or None.
+        """
+        # Phase 1: exact match
+        for t in targets:
+            if game_name == t["key"] or game_name == t["name"]:
+                return t
+
+        # Phase 2: substring, longest targets first (avoids hijacking)
+        for t in sorted(
+            targets, key=lambda x: max(len(x["key"]), len(x["name"])), reverse=True
+        ):
+            if t["key"] in game_name or t["name"] in game_name:
+                return t
+            if len(game_name) > 4 and (
+                game_name in t["key"] or game_name in t["name"]
+            ):
+                return t
+
+        # Phase 3: word-overlap scoring (>=3 char words)
+        game_words = {
+            w
+            for w in game_name.replace(":", " ").replace("-", " ").split()
+            if len(w) >= 3
+        }
+        best_match = None
+        best_score = 0
+        for t in targets:
+            t_words = {
+                w
+                for w in t["key"].replace(":", " ").replace("-", " ").split()
+                if len(w) >= 3
+            } | {
+                w
+                for w in t["name"].replace(":", " ").replace("-", " ").split()
+                if len(w) >= 3
+            }
+            overlap = len(game_words & t_words)
+            if overlap > best_score:
+                best_score = overlap
+                best_match = t
+        return best_match
+
+    async def _resolve_anadius_game(self, game_name: str) -> dict | None:
+        """Resolve a game name against the anadius_games registry."""
+        games = await self.config.anadius_games()
+        targets = [
+            {
+                "key": k,
+                "name": data.get("name", k).lower(),
+                "data": data,
+                "original_key": k,
+            }
+            for k, data in games.items()
+        ]
+        return self._match_game(game_name, targets)
 
     def _make_game_command(self, game_id: str):
         """Create a slash command callback for a game."""
@@ -3028,6 +3111,193 @@ class SabPubHelper(commands.Cog):
 
         await self._purge_game_translations(keyword)
 
+    # ── Anadius admin commands ───────────────────────────────────────────────
+
+    @pubhelper.group(name="anadius")
+    async def pubhelper_anadius(self, ctx: commands.Context) -> None:
+        """Manage games and mainbase cfgs for the /anadius command."""
+        pass
+
+    async def _match_anadius_key(self, keyword: str) -> str | None:
+        """Resolve a keyword to a stored anadius game key (exact/name/fuzzy)."""
+        games = await self.config.anadius_games()
+        keyword = keyword.lower()
+        if keyword in games:
+            return keyword
+        for k, data in games.items():
+            if keyword == data.get("name", "").lower():
+                return k
+        for k, data in games.items():
+            if k.lower() in keyword or keyword in k.lower():
+                return k
+        return None
+
+    @pubhelper_anadius.command(name="setup")
+    async def pubhelper_anadius_setup(self, ctx: commands.Context) -> None:
+        """Interactive wizard to add a new game + mainbase cfg to /anadius."""
+
+        def check(m):
+            return m.author == ctx.author and m.channel == ctx.channel
+
+        await ctx.send(
+            "Let's add a new game for the `/anadius` command.\n\n"
+            "**1. What is the Display Name of the game?** (e.g., `Lost In Random`)\n"
+            "*(Type `cancel` at any time to exit)*"
+        )
+        try:
+            msg = await self.bot.wait_for("message", timeout=120.0, check=check)
+            if msg.content.lower() == "cancel":
+                return await ctx.send("Setup cancelled.")
+            display_name = msg.content.strip()
+
+            await ctx.send(
+                "**2. What keyword should I look for in the ticket channel name?**\n"
+                "(e.g., type `lost in random` if the ticket is named `username-lost-in-random`)"
+            )
+            msg = await self.bot.wait_for("message", timeout=120.0, check=check)
+            if msg.content.lower() == "cancel":
+                return await ctx.send("Setup cancelled.")
+            keyword = msg.content.strip().lower()
+
+            await ctx.send(
+                "**3. Upload the mainbase `.cfg` file now** (must contain "
+                f"`{self.ANADIUS_TOKEN_PLACEHOLDER}`)."
+            )
+            msg = await self.bot.wait_for("message", timeout=300.0, check=check)
+            if msg.content.lower() == "cancel":
+                return await ctx.send("Setup cancelled.")
+
+            cfg_att = None
+            for att in msg.attachments:
+                if (att.filename or "").lower().endswith(".cfg"):
+                    cfg_att = att
+                    break
+            if cfg_att is None:
+                return await ctx.send(
+                    "\u274c No `.cfg` file attached. Setup cancelled."
+                )
+
+            data = await self._download_file(cfg_att.url)
+            if not isinstance(data, bytes):
+                return await ctx.send(f"\u274c Failed to download cfg: {data}")
+
+            cfg_text = data.decode("utf-8", errors="replace")
+            if self.ANADIUS_TOKEN_PLACEHOLDER not in cfg_text:
+                return await ctx.send(
+                    f"\u274c The uploaded cfg has no "
+                    f"`{self.ANADIUS_TOKEN_PLACEHOLDER}` placeholder. Setup cancelled."
+                )
+
+            cfg_path = self._get_anadius_cfg_path(keyword)
+            await asyncio.to_thread(cfg_path.write_bytes, data)
+
+            async with self.config.anadius_games() as games:
+                games[keyword] = {
+                    "name": display_name,
+                    "cfg_file": cfg_path.name,
+                }
+
+            await ctx.send(
+                f"\u2705 Successfully added **{display_name}** to `/anadius`.\n"
+                f"Test it in a channel containing `{keyword}` in its name."
+            )
+        except asyncio.TimeoutError:
+            await ctx.send("\u274c Setup timed out.")
+
+    @pubhelper_anadius.command(name="add")
+    async def pubhelper_anadius_add(
+        self, ctx: commands.Context, *, keyword: str = None
+    ) -> None:
+        """Add a game to /anadius. Usage: attach a .cfg and provide `<keyword>`.
+
+        The display name defaults to the keyword (title-cased); use `setup`
+        for the guided wizard.
+        """
+        if not keyword:
+            return await ctx.send(
+                "Usage: `[p]pubhelper anadius add <keyword>` with a `.cfg` "
+                "attached, or use `[p]pubhelper anadius setup` for the wizard."
+            )
+        keyword = keyword.strip().lower()
+
+        cfg_att = None
+        for att in ctx.message.attachments:
+            if (att.filename or "").lower().endswith(".cfg"):
+                cfg_att = att
+                break
+        if cfg_att is None:
+            return await ctx.send(
+                "\u274c Attach the mainbase `.cfg` file to this message."
+            )
+
+        data = await self._download_file(cfg_att.url)
+        if not isinstance(data, bytes):
+            return await ctx.send(f"\u274c Failed to download cfg: {data}")
+
+        cfg_text = data.decode("utf-8", errors="replace")
+        if self.ANADIUS_TOKEN_PLACEHOLDER not in cfg_text:
+            return await ctx.send(
+                f"\u274c The uploaded cfg has no "
+                f"`{self.ANADIUS_TOKEN_PLACEHOLDER}` placeholder."
+            )
+
+        cfg_path = self._get_anadius_cfg_path(keyword)
+        await asyncio.to_thread(cfg_path.write_bytes, data)
+
+        async with self.config.anadius_games() as games:
+            existing = games.get(keyword, {})
+            games[keyword] = {
+                "name": existing.get("name", keyword.title()),
+                "cfg_file": cfg_path.name,
+            }
+
+        await ctx.send(
+            f"\u2705 Added/updated **{keyword}** for `/anadius`."
+        )
+
+    @pubhelper_anadius.command(name="list")
+    async def pubhelper_anadius_list(self, ctx: commands.Context) -> None:
+        """List all games configured for /anadius."""
+        games = await self.config.anadius_games()
+        if not games:
+            return await ctx.send("No games configured for `/anadius` yet.")
+
+        lines = []
+        for k, data in sorted(games.items(), key=lambda x: x[1].get("name", x[0])):
+            cfg_path = self._get_anadius_cfg_path(k)
+            status = "\u2705" if cfg_path.exists() else "\u26a0\ufe0f missing cfg"
+            lines.append(f"- **{data.get('name', k)}** (`{k}`) {status}")
+
+        embed = discord.Embed(
+            title="/anadius Games",
+            description="\n".join(lines),
+            color=discord.Color.blue(),
+        )
+        embed.set_footer(text=f"{len(games)} game(s) configured")
+        await ctx.send(embed=embed)
+
+    @pubhelper_anadius.command(name="remove")
+    async def pubhelper_anadius_remove(
+        self, ctx: commands.Context, *, keyword: str
+    ) -> None:
+        """Remove a game from /anadius by its keyword or name."""
+        matched_key = await self._match_anadius_key(keyword)
+        if not matched_key:
+            return await ctx.send(
+                f"\u274c No anadius game found matching `{keyword}`."
+            )
+
+        async with self.config.anadius_games() as games:
+            name = games[matched_key].get("name", matched_key)
+            del games[matched_key]
+
+        cfg_path = self._get_anadius_cfg_path(matched_key)
+        if cfg_path.exists():
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(cfg_path.unlink)
+
+        await ctx.send(f"\u2705 Removed **{name}** from `/anadius` games.")
+
     @pubhelper_game.command(name="updatedll")
     async def update_dll(self, ctx: commands.Context) -> None:
         """Update steamclient64.dll across all game basefiles.
@@ -4395,51 +4665,7 @@ class SabPubHelper(commands.Cog):
                     }
                 )
 
-        best_match = None
-
-        # Phase 1: Exact Match
-        for t in targets:
-            if game_name == t["key"] or game_name == t["name"]:
-                best_match = t
-                break
-
-        # Phase 2: Substring Match (Longest targets first to avoid hijacking e.g. "Like a Dragon" stealing "Like a Dragon Gaiden")
-        if not best_match:
-            targets_sorted_by_len = sorted(
-                targets, key=lambda x: max(len(x["key"]), len(x["name"])), reverse=True
-            )
-            for t in targets_sorted_by_len:
-                if t["key"] in game_name or t["name"] in game_name:
-                    best_match = t
-                    break
-                if len(game_name) > 4 and (
-                    game_name in t["key"] or game_name in t["name"]
-                ):
-                    best_match = t
-                    break
-
-        # Phase 3: Aggressive Word Scoring (Finds highest overlap of >=3 char words)
-        if not best_match:
-            game_words = set(
-                w
-                for w in game_name.replace(":", " ").replace("-", " ").split()
-                if len(w) >= 3
-            )
-            best_score = 0
-            for t in targets:
-                t_words = set(
-                    w
-                    for w in t["key"].replace(":", " ").replace("-", " ").split()
-                    if len(w) >= 3
-                ) | set(
-                    w
-                    for w in t["name"].replace(":", " ").replace("-", " ").split()
-                    if len(w) >= 3
-                )
-                overlap = len(game_words & t_words)
-                if overlap > best_score:
-                    best_score = overlap
-                    best_match = t
+        best_match = self._match_game(game_name, targets)
 
         if not best_match:
             await interaction.response.send_message(
@@ -4536,6 +4762,169 @@ class SabPubHelper(commands.Cog):
                 )
             else:
                 await interaction.response.send_message(message, view=translate_view)
+
+    async def anadius_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        """Autocomplete for the game parameter on /anadius."""
+        try:
+            games = await self.config.anadius_games()
+        except Exception:
+            games = {}
+        current_lower = current.strip().lower()
+        items = [
+            (k, data.get("name", k.title())) for k, data in games.items()
+        ]
+        if current_lower:
+            items = [
+                (k, v)
+                for k, v in items
+                if current_lower in k or current_lower in v.lower()
+            ]
+        items.sort(key=lambda x: x[1])
+        return [
+            app_commands.Choice(name=display, value=key)
+            for key, display in items[:25]
+        ]
+
+    async def _find_ea_token_txt(
+        self, channel: discord.abc.Messageable, limit: int = 50
+    ) -> str | None:
+        """Scan the last `limit` messages for a .txt attachment whose filename
+        starts with 'EA_Token'. Returns the file's text contents (stripped)
+        or None if not found.
+        """
+        try:
+            async for msg in channel.history(limit=limit):
+                for att in msg.attachments:
+                    fname = (att.filename or "").lower()
+                    if fname.startswith("ea_token") and fname.endswith(".txt"):
+                        data = await self._download_file(att.url)
+                        if isinstance(data, bytes):
+                            return data.decode("utf-8", errors="replace").strip()
+                        return None
+        except discord.HTTPException as e:
+            log.warning("[anadius] failed scanning channel history: %s", e)
+        return None
+
+    @app_commands.command(
+        name="anadius",
+        description="Patch the game's anadius cfg with the EA token from the ticket",
+    )
+    @app_commands.describe(game="Optional: manually specify the game name")
+    @app_commands.autocomplete(game=anadius_autocomplete)
+    async def anadius(
+        self, interaction: discord.Interaction, game: str = None
+    ) -> None:
+        if not await self._safe_defer(interaction, thinking=True):
+            return
+
+        if game:
+            game_name = game.strip().lower()
+        else:
+            channel_name = getattr(interaction.channel, "name", "") or ""
+            game_name = self._parse_game_from_channel(channel_name)
+
+        match = await self._resolve_anadius_game(game_name)
+        if not match:
+            await interaction.followup.send(
+                f"❌ No anadius cfg found matching: **{game_name}**.",
+                ephemeral=True,
+            )
+            return
+
+        game_key = match["original_key"]
+        display_name = match["data"].get("name", game_key)
+        cfg_path = self._get_anadius_cfg_path(game_key)
+        if not cfg_path.exists():
+            await interaction.followup.send(
+                f"❌ Mainbase cfg file is missing for **{display_name}**. "
+                f"Re-add it with `[p]pubhelper anadius add`.",
+                ephemeral=True,
+            )
+            return
+
+        # Look for the EA token in the ticket's recent .txt attachments
+        token = await self._find_ea_token_txt(interaction.channel, limit=50)
+
+        if not token:
+            token = await self._prompt_for_token(interaction)
+            if not token:
+                return
+
+        try:
+            cfg_text = await asyncio.to_thread(
+                cfg_path.read_text, encoding="utf-8", errors="replace"
+            )
+        except Exception as e:
+            log.exception("[anadius] failed reading cfg for %s", game_key)
+            await interaction.followup.send(
+                f"❌ Failed to read mainbase cfg: {e}", ephemeral=True
+            )
+            return
+
+        if self.ANADIUS_TOKEN_PLACEHOLDER not in cfg_text:
+            await interaction.followup.send(
+                f"❌ Mainbase cfg for **{display_name}** has no "
+                f"`{self.ANADIUS_TOKEN_PLACEHOLDER}` placeholder to replace.",
+                ephemeral=True,
+            )
+            return
+
+        patched = cfg_text.replace(self.ANADIUS_TOKEN_PLACEHOLDER, token)
+        buffer = io.BytesIO(patched.encode("utf-8"))
+        file = discord.File(buffer, filename="anadius.cfg")
+        await interaction.followup.send(
+            f"\u2705 Patched **{display_name}** cfg with the EA token.",
+            file=file,
+        )
+
+    async def _prompt_for_token(
+        self, interaction: discord.Interaction
+    ) -> str | None:
+        """Prompt the user to send the token or a .txt file when none was found.
+
+        Returns the token string, or None if the user cancels/times out.
+        """
+        await interaction.followup.send(
+            "\u26a0\ufe0f No `EA_Token` `.txt` attachment found in the last 50 "
+            "messages.\nPlease **send the token** as text, or **upload the "
+            "`.txt` file**, within 120 seconds. (Type `cancel` to abort.)"
+        )
+
+        def check(m: discord.Message) -> bool:
+            return (
+                m.author.id == interaction.user.id
+                and m.channel.id == interaction.channel.id
+            )
+
+        try:
+            msg = await self.bot.wait_for("message", timeout=120.0, check=check)
+        except asyncio.TimeoutError:
+            await interaction.followup.send(
+                "\u274c Timed out waiting for the token.", ephemeral=True
+            )
+            return None
+
+        if msg.content.strip().lower() == "cancel":
+            await interaction.followup.send("Cancelled.", ephemeral=True)
+            return None
+
+        # Prefer an attached .txt file
+        for att in msg.attachments:
+            if (att.filename or "").lower().endswith(".txt"):
+                data = await self._download_file(att.url)
+                if isinstance(data, bytes):
+                    return data.decode("utf-8", errors="replace").strip()
+
+        token = msg.content.strip()
+        if token:
+            return token
+
+        await interaction.followup.send(
+            "\u274c No valid token or `.txt` file provided.", ephemeral=True
+        )
+        return None
 
     @app_commands.command(
         name="savebrute",
