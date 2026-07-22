@@ -4898,33 +4898,46 @@ class SabPubHelper(commands.Cog):
                 and m.channel.id == interaction.channel.id
             )
 
-        try:
-            msg = await self.bot.wait_for("message", timeout=120.0, check=check)
-        except asyncio.TimeoutError:
-            await interaction.followup.send(
-                "\u274c Timed out waiting for the token.", ephemeral=True
-            )
-            return None
+        deadline = asyncio.get_event_loop().time() + 120.0
 
-        if msg.content.strip().lower() == "cancel":
-            await interaction.followup.send("Cancelled.", ephemeral=True)
-            return None
+        while True:
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                await interaction.followup.send(
+                    "\u274c Timed out waiting for the token.", ephemeral=True
+                )
+                return None
 
-        # Prefer an attached .txt file
-        for att in msg.attachments:
-            if (att.filename or "").lower().endswith(".txt"):
-                data = await self._download_file(att.url)
-                if isinstance(data, bytes):
-                    return data.decode("utf-8", errors="replace").strip()
+            try:
+                msg = await self.bot.wait_for("message", timeout=remaining, check=check)
+            except asyncio.TimeoutError:
+                await interaction.followup.send(
+                    "\u274c Timed out waiting for the token.", ephemeral=True
+                )
+                return None
 
-        token = msg.content.strip()
-        if token:
-            return token
+            if msg.content.strip().lower() == "cancel":
+                await interaction.followup.send("Cancelled.", ephemeral=True)
+                return None
 
-        await interaction.followup.send(
-            "\u274c No valid token or `.txt` file provided.", ephemeral=True
-        )
-        return None
+            # Prefer an attached .txt file
+            for att in msg.attachments:
+                if (att.filename or "").lower().endswith(".txt"):
+                    data = await self._download_file(att.url)
+                    if isinstance(data, bytes):
+                        return data.decode("utf-8", errors="replace").strip()
+
+            # Fall back to plain text content
+            # Fall back to plain text content, but require a minimum length
+            # so short replies/emoji aren't mistaken for a token
+            token = msg.content.strip()
+            if len(token) > 100:
+                return token
+
+            # Message had neither a .txt attachment nor a sufficiently long
+            # text token -> keep waiting
+            continue
+
 
     @app_commands.command(
         name="savebrute",
