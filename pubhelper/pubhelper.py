@@ -4874,22 +4874,30 @@ class SabPubHelper(commands.Cog):
         patched = cfg_text.replace(self.ANADIUS_TOKEN_PLACEHOLDER, token)
         buffer = io.BytesIO(patched.encode("utf-8"))
         file = discord.File(buffer, filename="anadius.cfg")
-        msg = (
-            f"\u2705 Patched **{display_name}** cfg with the EA token.\n\n"
-            "### Applying the token\n"
-            "- Download `anadius.cfg`\n"
-            "  - Find the attachment below\n"
-            "    - Called `anadius.cfg`\n"
-            "    - Around 3\u201310KB in size\n"
-            "- Applying the token\n"
-            "  - Go into your game folder\n"
-            "  - Delete `anadius.cfg`\n"
-            "  - Go into your download folder\n"
-            "  - Paste the 3\u201310KB `anadius.cfg` into the game folder\n"
-            "    - It must be named `anadius.cfg`\n"
-            "    - It should not have `(1)` or `_2` etc"
+        instructions_url = (
+            "https://cdn.discordapp.com/attachments/1483155606545367040/"
+            "1529877977955962900/image.png"
         )
-        await interaction.followup.send(msg, file=file)
+        embed = discord.Embed(
+            description=(
+                f"\u2705 Patched **{display_name}** cfg with the EA token.\n\n"
+                f"### [Pasting the config]({instructions_url})\n"
+                "- Download `anadius.cfg`\n"
+                "  - Find the attachment below\n"
+                "    - Called `anadius.cfg`\n"
+                "    - Around 3\u201310KB in size\n"
+                "- Applying the token\n"
+                "  - Go into your game folder\n"
+                "  - Delete `anadius.cfg`\n"
+                "  - Go into your download folder\n"
+                "  - Paste the 3\u201310KB `anadius.cfg` into the game folder\n"
+                "    - It must be named `anadius.cfg`\n"
+                "    - It should not have `(1)` or `_2` etc"
+            ),
+            color=discord.Color.green(),
+        )
+        embed.set_image(url=instructions_url)
+        await interaction.followup.send(embed=embed, file=file)
 
     async def _prompt_for_token(
         self, interaction: discord.Interaction
