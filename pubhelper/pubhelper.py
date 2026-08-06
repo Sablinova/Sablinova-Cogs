@@ -4875,22 +4875,19 @@ class SabPubHelper(commands.Cog):
         buffer = io.BytesIO(patched.encode("utf-8"))
         file = discord.File(buffer, filename="anadius.cfg")
         instructions_url = (
-            "https://cdn.discordapp.com/attachments/1483155606545367040/"
-            "1529877977955962900/image.png"
+            "https://cdn.discordapp.com/attachments/1528400813108625488/"
+            "1534833601596620860/Screenshot_91.png"
         )
         embed = discord.Embed(
             description=(
                 f"\u2705 Patched **{display_name}** cfg with the EA token.\n\n"
                 f"### [Pasting the config]({instructions_url})\n"
                 "- Download `anadius.cfg`\n"
-            "  - Find the attachment above\n"
-            "    - Called `anadius.cfg`\n"
-            "    - Around 3\u201310KB in size\n"
                 "- Applying the token\n"
                 "  - Go into your game folder\n"
                 "  - Delete `anadius.cfg`\n"
                 "  - Go into your download folder\n"
-                "  - Paste the 3\u201310KB `anadius.cfg` into the game folder\n"
+                "  - Paste the 3\u201315KB `anadius.cfg` into the game folder\n"
                 "    - It must be named `anadius.cfg`\n"
                 "    - It should not have `(1)` or `_2` etc"
             ),
