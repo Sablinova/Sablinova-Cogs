@@ -16,7 +16,7 @@ import io
 import logging
 import time
 from pathlib import Path
-
+import zipfile
 import aiohttp
 import discord
 from discord import app_commands
@@ -94,22 +94,12 @@ class BL4Helper(commands.Cog):
     @commands.is_owner()
     async def setuptool(self, ctx: commands.Context) -> None:
 
-        await ctx.send(
-            "⏳ Downloading BL4 save resigner CLI from GitHub..."
-        )
+        await ctx.send("⏳ Downloading BL4 save resigner CLI from GitHub...")
 
         tools_dir = self.data_path / "tools"
         tools_dir.mkdir(parents=True, exist_ok=True)
 
         cli_release_url = "https://github.com/mi5hmash/Borderlands4SaveDataResigner/releases/download/v2.0.1/linux-x64_v2.0.1.zip"
-
-        if not cli_release_url:
-            await ctx.send(
-                "❌ No release URL configured for the BL4 CLI yet. "
-                "Check https://github.com/mi5hmash/Borderlands4SaveDataResigner/releases "
-                "for the correct asset and update `cli_release_url` in bl4resign.py."
-            )
-            return
 
         try:
             async with aiohttp.ClientSession() as session:
@@ -121,14 +111,33 @@ class BL4Helper(commands.Cog):
                         return
                     cli_data = await resp.read()
 
+            # Extract zip file in-memory
             target_cli = tools_dir / "bl4-savedata-resigner-cli"
-            target_cli.write_bytes(cli_data)
+            
+            with zipfile.ZipFile(io.BytesIO(cli_data)) as zip_ref:
+                # Extract all files into the tools directory
+                zip_ref.extractall(tools_dir)
+                
+                # Find the extracted executable (handling cases where file inside zip has or doesn't have an extension)
+                extracted_files = [f for f in zip_ref.namelist() if not f.endswith("/")]
+                
+                # If the binary inside zip is named differently, rename it to 'bl4-savedata-resigner-cli'
+                if extracted_files:
+                    primary_file = tools_dir / extracted_files[0]
+                    if primary_file != target_cli and primary_file.exists():
+                        primary_file.replace(target_cli)
+
+            # Mark as executable on Unix systems
             with contextlib.suppress(Exception):
                 target_cli.chmod(0o755)
 
-            await ctx.send(
-                f"✅ **BL4 save resigner CLI installed!**\n\nCLI: `{target_cli}`"
-            )
+            if target_cli.exists():
+                await ctx.send(
+                    f"✅ **BL4 save resigner CLI installed!**\n\nCLI: `{target_cli}`"
+                )
+            else:
+                await ctx.send("❌ Installation failed: Executable binary not found in archive.")
+
         except Exception as e:
             log.error(f"bl4 setuptool error: {e}", exc_info=True)
             await ctx.send(f"❌ Installation failed: {e}")
