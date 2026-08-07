@@ -146,12 +146,13 @@ class BL4Signer:
                 return None
 
             src_save = sav_files[0]
-            save_path = input_dir / src_save.name
+            # The bruteforce mode expects a fixed filename ("1.sav" per
+            # the README's example), not the save's original name.
+            save_path = input_dir / "1.sav"
             shutil.copy(src_save, save_path)
 
-            # -p points directly at the .sav file for bruteforce mode
-            # (unlike resign, which takes a directory). No -g profile
-            # flag and no -u — bruteforce takes no other options per -h.
+            # -p points directly at the fixed-name .sav file, matching
+            # the README's example command for bruteforce mode.
             # -q so the CLI doesn't block waiting for a keypress to exit
             # when run headlessly by the bot.
             cmd = [
