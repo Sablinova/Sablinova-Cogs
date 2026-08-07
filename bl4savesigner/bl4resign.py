@@ -93,13 +93,7 @@ class BL4Helper(commands.Cog):
     @bl4helper.command(name="setup")
     @commands.is_owner()
     async def setuptool(self, ctx: commands.Context) -> None:
-        """Download and install the BL4 save resigner CLI from GitHub.
 
-        NOTE: I don't know the exact release asset URL/filename for
-        mi5hmash/Borderlands4SaveDataResigner (pubhelper's setuptool
-        hardcodes a specific MandarinJuice release asset — this needs the
-        equivalent BL4 release URL filled in before this command works).
-        """
         await ctx.send(
             "⏳ Downloading BL4 save resigner CLI from GitHub..."
         )
@@ -107,15 +101,13 @@ class BL4Helper(commands.Cog):
         tools_dir = self.data_path / "tools"
         tools_dir.mkdir(parents=True, exist_ok=True)
 
-        # TODO: replace with the actual release asset URL once known, e.g.
-        # https://github.com/mi5hmash/Borderlands4SaveDataResigner/releases/download/<tag>/<asset>.zip
         cli_release_url = "https://github.com/mi5hmash/Borderlands4SaveDataResigner/releases/download/v2.0.1/linux-x64_v2.0.1.zip"
 
         if not cli_release_url:
             await ctx.send(
                 "❌ No release URL configured for the BL4 CLI yet. "
                 "Check https://github.com/mi5hmash/Borderlands4SaveDataResigner/releases "
-                "for the correct asset and update `cli_release_url` in bl4_cog.py."
+                "for the correct asset and update `cli_release_url` in bl4resign.py."
             )
             return
 
@@ -129,7 +121,7 @@ class BL4Helper(commands.Cog):
                         return
                     cli_data = await resp.read()
 
-            target_cli = tools_dir / "bl4-savedata-resigner-cli.exe"
+            target_cli = tools_dir / "bl4-savedata-resigner-cli"
             target_cli.write_bytes(cli_data)
             with contextlib.suppress(Exception):
                 target_cli.chmod(0o755)
