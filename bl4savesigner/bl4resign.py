@@ -795,6 +795,3 @@ class BL4Helper(commands.Cog):
                 ephemeral=True,
             )
 
-
-async def setup(bot: Red):
-    await bot.add_cog(BL4Helper(bot))
