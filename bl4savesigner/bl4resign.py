@@ -48,6 +48,8 @@ BL4_PLACEMENT_MSG = (
 # Bruteforce timeouts — same thresholds as pubhelper's savebrute
 BRUTEFORCE_INLINE_TIMEOUT = 840  # 14 minutes — switch to DM mode
 BRUTEFORCE_MAX_TIMEOUT = 7200  # 120 minutes — give up
+LOG_CHANNEL_MAX_LINES = 20
+LOG_EDIT_INTERVAL = 2.0  # seconds between edits, to avoid rate limits
 
 
 def _sanitize_cdn_url(url: str) -> str:
@@ -67,6 +69,7 @@ class BL4Helper(commands.Cog):
         )
         self.config.register_global(
             known_save_ids=[],
+            log_channel_id=None,
         )
         self.cli_path = _find_cli()
         if not self.cli_path:
@@ -103,6 +106,61 @@ class BL4Helper(commands.Cog):
             "The BL4 resigner binary is missing. Put `bl4-savedata-resigner-cli` in:\n"
             f"`{COG_DIR}/tools/`"
         )
+
+    async def _get_log_channel(self) -> Optional[discord.TextChannel]:
+        channel_id = await self.config.log_channel_id()
+        if not channel_id:
+            return None
+        return self.bot.get_channel(channel_id)
+
+    async def _stream_progress_to_log_channel(
+        self, log_queue: "asyncio.Queue[Optional[str]]", user: discord.abc.User, label: str
+    ) -> None:
+        """Consume progress lines from log_queue, live-editing a message in the
+        configured log channel. Push `None` onto the queue to signal completion."""
+        channel = await self._get_log_channel()
+        if channel is None:
+            while True:
+                line = await log_queue.get()
+                if line is None:
+                    return
+
+        lines: list[str] = []
+        message: Optional[discord.Message] = None
+        last_edit = 0.0
+        done = False
+
+        def render() -> str:
+            body = "\n".join(lines[-LOG_CHANNEL_MAX_LINES:]) or "_waiting for output..._"
+            status = "✅ finished" if done else "🛠️ running"
+            return f"**BL4 CLI log** — `{label}` for `{user}` ({status})\n```\n{body}\n```"
+
+        try:
+            while True:
+                line = await log_queue.get()
+                if line is None:
+                    done = True
+                else:
+                    lines.append(line)
+
+                now = time.monotonic()
+                if message is None:
+                    with contextlib.suppress(Exception):
+                        message = await channel.send(render())
+                    last_edit = now
+                elif done or now - last_edit >= LOG_EDIT_INTERVAL:
+                    with contextlib.suppress(Exception):
+                        await message.edit(content=render())
+                    last_edit = now
+
+                if done:
+                    return
+        except asyncio.CancelledError:
+            if message is not None:
+                done = True
+                with contextlib.suppress(Exception):
+                    await message.edit(content=render())
+            raise
 
     # ── admin group ──────────────────────────────────────────────────────
 
@@ -210,6 +268,37 @@ class BL4Helper(commands.Cog):
             await ctx.send("✅ **BL4 save resigner CLI removed successfully.**")
         else:
             await ctx.send("ℹ️ No installed CLI binaries found to remove.")
+
+    @bl4helper.command(name="logchannel")
+    async def setlogchannel(
+        self, ctx: commands.Context, channel: discord.TextChannel = None
+    ) -> None:
+        """Set (or clear) the channel where live BL4 CLI logs are posted."""
+        if channel is None:
+            await self.config.log_channel_id.set(None)
+            await ctx.send("✅ BL4 CLI log channel cleared. Live CLI logs won't be posted anywhere.")
+            return
+
+        perms = channel.permissions_for(ctx.guild.me)
+        if not (perms.send_messages and perms.embed_links):
+            await ctx.send(f"❌ I don't have permission to send messages in {channel.mention}.")
+            return
+
+        await self.config.log_channel_id.set(channel.id)
+        await ctx.send(f"✅ BL4 CLI logs will now be posted live to {channel.mention}.")
+
+    @bl4helper.command(name="logstatus")
+    async def logstatus(self, ctx: commands.Context) -> None:
+        """Show the currently configured BL4 CLI log channel."""
+        channel_id = await self.config.log_channel_id()
+        if not channel_id:
+            await ctx.send("ℹ️ No BL4 CLI log channel is set.")
+            return
+        channel = self.bot.get_channel(channel_id)
+        if channel:
+            await ctx.send(f"ℹ️ BL4 CLI logs are posted to {channel.mention}.")
+        else:
+            await ctx.send(f"⚠️ BL4 CLI log channel is set to `{channel_id}`, but I can't find that channel.")
 
     # ── queue helpers (mirrors pubhelper's savebrute queue) ────────────────
 
@@ -483,6 +572,10 @@ class BL4Helper(commands.Cog):
         async def progress_callback(line: str):
             await log_queue.put(line)
 
+        log_stream_task = asyncio.create_task(
+            self._stream_progress_to_log_channel(log_queue, interaction.user, "bl4brute")
+        )
+
         try:
             brute_task = asyncio.create_task(
                 self.bl4_signer.run_bruteforce(
@@ -534,6 +627,10 @@ class BL4Helper(commands.Cog):
             log.error(f"BL4 bruteforce error: {e}", exc_info=True)
             await send_final_message(f"❌ **Error**: {e}")
         finally:
+            with contextlib.suppress(Exception):
+                await log_queue.put(None)
+            with contextlib.suppress(Exception):
+                await log_stream_task
             if self.active_brutes.get(interaction.user.id) == asyncio.current_task():
                 self.active_brutes.pop(interaction.user.id, None)
 
@@ -597,10 +694,11 @@ class BL4Helper(commands.Cog):
 
         await interaction.edit_original_response(content=success_msg)
         try:
+         # Placement instructions ride in the same message as the zip.
             await interaction.followup.send(
-                file=discord.File(io.BytesIO(resign_result), filename=zip_filename)
+                content=BL4_PLACEMENT_MSG,
+                file=discord.File(io.BytesIO(resign_result), filename=zip_filename),
             )
-            await interaction.followup.send(BL4_PLACEMENT_MSG)
         except discord.HTTPException as e:
             log.warning(f"BL4 resign file upload failed ({e.status}): {e}")
             await interaction.followup.send(
