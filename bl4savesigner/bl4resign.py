@@ -22,6 +22,7 @@ import discord
 from discord import app_commands
 from redbot.core import Config, commands
 from redbot.core.bot import Red
+from redbot.core.data_manager import cog_data_path
 
 from .bl4_signer import BL4Signer
 
@@ -62,6 +63,7 @@ class BL4Helper(commands.Cog):
         self.config.register_global(
             known_save_ids=[],
         )
+        self.data_path = cog_data_path(self)
         self.bl4_signer = BL4Signer(self.data_path)
         self._cli_lock = asyncio.Lock()
         self.active_brutes: dict[int, asyncio.Task] = {}
