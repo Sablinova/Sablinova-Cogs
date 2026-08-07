@@ -76,7 +76,7 @@ def fetch_app_details(appid: int) -> dict:
     try:
         r = requests.get(
             "https://store.steampowered.com/api/appdetails",
-            params={"appids": appid, "cc": "in", "l": "en"},
+            params={"appids": appid, "cc": "us", "l": "en"},
             headers=HEADERS, timeout=10
         )
         r.raise_for_status()
@@ -232,7 +232,7 @@ def search_steam(query: str) -> list:
     try:
         r = requests.get(
             "https://store.steampowered.com/api/storesearch/",
-            params={"term": query, "cc": "in", "l": "en"},
+            params={"term": query, "cc": "us", "l": "en"},
             headers=HEADERS, timeout=10
         )
         items = r.json().get("items", [])
@@ -647,7 +647,7 @@ class DenuvoTracker(commands.Cog):
 
         return changes
 
-    @tasks.loop(minutes=15)
+    @tasks.loop(minutes=10)
     async def check_games_loop(self):
         await self.check_games_internal()
 
@@ -697,15 +697,10 @@ class DenuvoTracker(commands.Cog):
         await send_func(embed=embed)
 
     # ── command group (denuvowatch) ───────────────────────────────────────
-    @commands.hybrid_group(name="denuvowatch", fallback="help")
-    async def denuvowatch(self, ctx: commands.Context):
-        """DenuvoTracker — Steam watchlist for Denuvo/build/release changes."""
-        if ctx.invoked_subcommand is None:
-            await ctx.send_help(ctx.command)
 
-    @denuvowatch.command(name="add")
+    @commands.hybrid_command(name="dadd")
     @discord.app_commands.describe(query="Game name or Steam AppID")
-    async def denuvowatch_add(self, ctx: commands.Context, *, query: str):
+    async def dadd(self, ctx: commands.Context, *, query: str):
         """Add a game to the watchlist by name or AppID."""
         async with ctx.typing():
             games = await self._load_games()
@@ -757,9 +752,9 @@ class DenuvoTracker(commands.Cog):
         view.add_item(select)
         await ctx.send("Multiple results found — pick one:", view=view)
 
-    @denuvowatch.command(name="remove")
+    @commands.hybrid_command(name="dremove")
     @discord.app_commands.describe(query="Game name or AppID")
-    async def denuvowatch_remove(self, ctx: commands.Context, *, query: str):
+    async def dremove(self, ctx: commands.Context, *, query: str):
         """Remove a game from the watchlist."""
         games = await self._load_games()
         if not games:
@@ -804,8 +799,8 @@ class DenuvoTracker(commands.Cog):
         view.add_item(select)
         await ctx.send("Multiple matches — choose one:", view=view)
 
-    @denuvowatch.command(name="list")
-    async def denuvowatch_list(self, ctx: commands.Context):
+    @commands.hybrid_command(name="dlist")
+    async def dlist(self, ctx: commands.Context):
         """Show all watched games and their status."""
         games_dict = await self._load_games()
         if not games_dict:
@@ -833,9 +828,9 @@ class DenuvoTracker(commands.Cog):
         msg = await ctx.send(embed=view.build_embed(), view=view)
         view.message = msg
 
-    @denuvowatch.command(name="check")
+    @commands.hybrid_command(name="check")
     @discord.app_commands.describe(query="Game name or AppID")
-    async def denuvowatch_check(self, ctx: commands.Context, *, query: str):
+    async def dcheck(self, ctx: commands.Context, *, query: str):
         """Instantly check a game's current status."""
         async with ctx.typing():
             games = await self._load_games()
@@ -901,16 +896,16 @@ class DenuvoTracker(commands.Cog):
         embed.timestamp = datetime.now(timezone.utc)
         await ctx.send(embed=embed)
 
-    @denuvowatch.command(name="forcecheck")
-    async def denuvowatch_forcecheck(self, ctx: commands.Context):
+    @commands.hybrid_command(name="forcecheck")
+    async def dforcecheck(self, ctx: commands.Context):
         """Manually trigger a full watchlist scan."""
         await ctx.send("🔄 Running full watchlist check now…")
         changes = await self.check_games_internal(full_refresh=True)
         if not changes:
             await ctx.send("✅ Check complete — no changes detected.")
 
-    @denuvowatch.command(name="upcoming")
-    async def denuvowatch_upcoming(self, ctx: commands.Context):
+    @commands.hybrid_command(name="upcoming")
+    async def dupcoming(self, ctx: commands.Context):
         """Show all upcoming (unreleased) games in the watchlist."""
         games = await self._load_games()
 
@@ -941,9 +936,9 @@ class DenuvoTracker(commands.Cog):
         embed.description = "\n".join(lines)
         await ctx.send(embed=embed)
 
-    @denuvowatch.command(name="summary")
+    @commands.hybrid_command(name="summary")
     @discord.app_commands.describe(query="Game name or Steam AppID")
-    async def denuvowatch_summary(self, ctx: commands.Context, *, query: str):
+    async def dsummary(self, ctx: commands.Context, *, query: str):
         """Show a game's description from its Steam store page."""
         async with ctx.typing():
             appid = None
@@ -1007,13 +1002,13 @@ class DenuvoTracker(commands.Cog):
         embed.set_footer(text=f"AppID {appid}")
         await ctx.send(embed=embed)
 
-    @denuvowatch.command(name="depots")
+    @commands.hybrid_command(name="depots")
     @discord.app_commands.describe(
         query="Game name or AppID",
         index="Which build: 0=current (default), 1=previous, 2=two builds ago, 3=three builds ago",
         show_manifests="Also show manifest IDs (default: False)"
     )
-    async def denuvowatch_depots(self, ctx: commands.Context, query: str, index: int = 0, show_manifests: bool = False):
+    async def ddepots(self, ctx: commands.Context, query: str, index: int = 0, show_manifests: bool = False):
         """Show depot info for a watched game."""
         games = await self._load_games()
 
@@ -1081,8 +1076,8 @@ class DenuvoTracker(commands.Cog):
         embed.timestamp = datetime.now(timezone.utc)
         await ctx.send(embed=embed)
 	
-    @denuvowatch.command(name="import")
-    async def denuvowatch_import(self, ctx: commands.Context, url: str = None):
+    @commands.hybrid_command(name="dimport")
+    async def dimport(self, ctx: commands.Context, url: str = None):
         """Import games into the watchlist from a JSON file or URL."""
         raw = None
 
@@ -1176,6 +1171,11 @@ class DenuvoTracker(commands.Cog):
         await ctx.send("\n".join(lines))
     	
     # ── settings commands (Prefix Only) ───────────────────────────────────
+    @commands.group(name="denuvowatch", invoke_without_command=True)
+    async def denuvowatch(self, ctx: commands.Context):
+        """DenuvoTracker — Configuration and settings."""
+        await ctx.send_help(ctx.command)
+        
     @denuvowatch.command(name="settings", with_app_command=False)
     async def denuvowatch_settings(self, ctx: commands.Context):
         """View current DenuvoTracker settings."""
