@@ -828,7 +828,7 @@ class DenuvoTracker(commands.Cog):
         msg = await ctx.send(embed=view.build_embed(), view=view)
         view.message = msg
 
-    @commands.hybrid_command(name="check")
+    @commands.hybrid_command(name="dcheck")
     @discord.app_commands.describe(query="Game name or AppID")
     async def dcheck(self, ctx: commands.Context, *, query: str):
         """Instantly check a game's current status."""
@@ -896,7 +896,7 @@ class DenuvoTracker(commands.Cog):
         embed.timestamp = datetime.now(timezone.utc)
         await ctx.send(embed=embed)
 
-    @commands.hybrid_command(name="forcecheck")
+    @commands.hybrid_command(name="dforcecheck")
     async def dforcecheck(self, ctx: commands.Context):
         """Manually trigger a full watchlist scan."""
         await ctx.send("🔄 Running full watchlist check now…")
@@ -904,7 +904,7 @@ class DenuvoTracker(commands.Cog):
         if not changes:
             await ctx.send("✅ Check complete — no changes detected.")
 
-    @commands.hybrid_command(name="upcoming")
+    @commands.hybrid_command(name="dupcoming")
     async def dupcoming(self, ctx: commands.Context):
         """Show all upcoming (unreleased) games in the watchlist."""
         games = await self._load_games()
@@ -936,7 +936,7 @@ class DenuvoTracker(commands.Cog):
         embed.description = "\n".join(lines)
         await ctx.send(embed=embed)
 
-    @commands.hybrid_command(name="summary")
+    @commands.hybrid_command(name="dsummary")
     @discord.app_commands.describe(query="Game name or Steam AppID")
     async def dsummary(self, ctx: commands.Context, *, query: str):
         """Show a game's description from its Steam store page."""
@@ -1002,7 +1002,7 @@ class DenuvoTracker(commands.Cog):
         embed.set_footer(text=f"AppID {appid}")
         await ctx.send(embed=embed)
 
-    @commands.hybrid_command(name="depots")
+    @commands.hybrid_command(name="ddepots")
     @discord.app_commands.describe(
         query="Game name or AppID",
         index="Which build: 0=current (default), 1=previous, 2=two builds ago, 3=three builds ago",
