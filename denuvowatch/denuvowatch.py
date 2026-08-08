@@ -1,4 +1,5 @@
 import asyncio
+import re
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -287,8 +288,21 @@ def get_game_snapshot(appid: int) -> Optional[dict]:
         "release_date": release_date_str if (coming_soon and release_date_str) else None,
     }
 
+_TRADEMARK_CHARS = "™®©"
+_PUNCT_RE = re.compile(r"[:\-–—_'’,.!?]")
+_WS_RE = re.compile(r"\s+")
+
+def normalize_game_name(name: str) -> str:
+    if not name:
+        return ""
+    for ch in _TRADEMARK_CHARS:
+        name = name.replace(ch, "")
+    name = _PUNCT_RE.sub(" ", name)
+    name = _WS_RE.sub(" ", name).strip().lower()
+    return name
 
 async def resolve_best_game_match(query: str) -> Optional[int]:
+    """Search Steam and return the AppID of the best-matching actual game (filters DLC/tools/editors)."""
     raw_candidates = search_steam(query)[:10]
     if not raw_candidates:
         return None
@@ -304,15 +318,29 @@ async def resolve_best_game_match(query: str) -> Optional[int]:
     if not game_candidates:
         return None
 
-    query_lower = query.lower()
-    exact = [c for c in game_candidates if c["name"].lower() == query_lower]
+    query_norm = normalize_game_name(query)
+
+    exact = [c for c in game_candidates if normalize_game_name(c["name"]) == query_norm]
     if exact:
         return exact[0]["appid"]
-    starts = [c for c in game_candidates if c["name"].lower().startswith(query_lower)]
+
+    starts = [c for c in game_candidates if normalize_game_name(c["name"]).startswith(query_norm)]
     if starts:
         return starts[0]["appid"]
-    return game_candidates[0]["appid"]
 
+    starts_rev = [c for c in game_candidates if query_norm.startswith(normalize_game_name(c["name"]))]
+    if starts_rev:
+        return starts_rev[0]["appid"]
+
+    query_words = query_norm.split()
+    word_matches = [
+        c for c in game_candidates
+        if all(w in normalize_game_name(c["name"]) for w in query_words)
+    ]
+    if word_matches:
+        return word_matches[0]["appid"]
+
+    return game_candidates[0]["appid"]
 
 # ─── Embed builders ────────────────────────────────────────────────────────
 def build_denuvo_embed(appid: int, change_type: str, old: dict, new: dict) -> discord.Embed:
@@ -804,7 +832,7 @@ class DenuvoTracker(commands.Cog):
         """Show all watched games and their status."""
         games_dict = await self._load_games()
         if not games_dict:
-            await ctx.send("📭 Watchlist is empty. Use `denuvowatch add` to add games.")
+            await ctx.send("📭 Watchlist is empty. Use `dadd` to add games.")
             return
 
         games = list(games_dict.items())
@@ -872,7 +900,7 @@ class DenuvoTracker(commands.Cog):
         embed.add_field(name="Denuvo", value="⚠️ Yes" if snapshot["denuvo"] else "✅ No", inline=True)
         if not is_coming_soon:
             embed.add_field(name="Build ID", value=f"`{snapshot['build_id']}`" if snapshot["build_id"] else "Unknown", inline=True)
-        embed.add_field(name="Watchlist", value="👁️ Watching" if in_watchlist else "➕ Use `denuvowatch add`", inline=True)
+        embed.add_field(name="Watchlist", value="👁️ Watching" if in_watchlist else "➕ Use `dadd`", inline=True)
         if depot_sizes:
             total = sum(depot_sizes.values())
             embed.add_field(name="Build Size", value=format_size(total), inline=True)
@@ -964,12 +992,12 @@ class DenuvoTracker(commands.Cog):
             if about and about != short_desc:
                 full_text += f"\n\n{about}"
 
-            description = truncate_to_sentence(full_text, max_words=200)
+            description = truncate_to_sentence(full_text, max_words=150)
 
         embed = discord.Embed(
             title=f"📖 {name}",
             url=f"https://store.steampowered.com/app/{appid}/",
-            description=description[:4000],
+            description=description[:2000],
             color=discord.Color.blurple()
         )
 
@@ -1040,7 +1068,7 @@ class DenuvoTracker(commands.Cog):
             build_id = info.get("build_id", "unknown")
             label = f"Current (build `{build_id}`)"
             if not manifests and not depot_sizes:
-                await ctx.send("No depot data recorded yet — run `denuvowatch forcecheck` to populate.")
+                await ctx.send("No depot data recorded yet — run `dforcecheck` to populate.")
                 return
         else:
             history = await self._load_history()
