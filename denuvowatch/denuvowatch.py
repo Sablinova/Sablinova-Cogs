@@ -904,6 +904,8 @@ class DenuvoTracker(commands.Cog):
         if depot_sizes:
             total = sum(depot_sizes.values())
             embed.add_field(name="Build Size", value=format_size(total), inline=True)
+        if not is_coming_soon and snapshot.get("build_time"):
+            embed.add_field(name="Build Pushed", value=f"<t:{snapshot['build_time']}:R>", inline=True)
 
         if is_coming_soon and snapshot.get("release_date"):
             parsed_date = parse_release_date(snapshot["release_date"])
