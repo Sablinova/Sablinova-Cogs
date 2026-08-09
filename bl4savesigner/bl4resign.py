@@ -50,6 +50,7 @@ BRUTEFORCE_INLINE_TIMEOUT = 840  # 14 minutes — switch to DM mode
 BRUTEFORCE_MAX_TIMEOUT = 7200  # 120 minutes — give up
 LOG_CHANNEL_MAX_LINES = 20
 LOG_EDIT_INTERVAL = 2.0  # seconds between edits, to avoid rate limits
+GITHUB_RELEASES_API = "https://api.github.com/repos/Sablinova/Borderlands4SaveDataResigner-promax/releases/latest"
 
 
 def _sanitize_cdn_url(url: str) -> str:
@@ -173,25 +174,63 @@ class BL4Helper(commands.Cog):
     @bl4helper.command(name="setup")
     @commands.is_owner()
     async def setuptool(self, ctx: commands.Context) -> None:
-        """Download and install bl4-savedata-resigner-cli to tools/"""
-        CLI_RELEASE_URL = "https://github.com/Sablinova/Borderlands4SaveDataResigner-promax/releases/download/promax-v2.0.6/bl4-savedata-resigner-promax.zip"
-
+        """Download and install the latest bl4-savedata-resigner-cli release to tools/"""
         tools_dir = COG_DIR / "tools"
         tools_dir.mkdir(parents=True, exist_ok=True)
         target_cli = tools_dir / "bl4-savedata-resigner-cli"
 
-        msg = await ctx.send("⏳ Downloading BL4 save resigner CLI from GitHub...")
+        msg = await ctx.send("⏳ Checking GitHub API for the latest release...")
+
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "bl4helper-cog",
+        }
 
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(headers=headers) as session:
+                # Ask the GitHub API for the latest release metadata rather than
+                # hitting a hardcoded /releases/download/<tag>/... URL, so this
+                # command always grabs whatever the fork most recently published.
                 async with session.get(
-                    CLI_RELEASE_URL, timeout=aiohttp.ClientTimeout(total=120)
+                    GITHUB_RELEASES_API, timeout=aiohttp.ClientTimeout(total=30)
                 ) as resp:
                     if resp.status != 200:
                         return await msg.edit(
-                            content=f"❌ Download failed: HTTP {resp.status}\n{CLI_RELEASE_URL}"
+                            content=f"❌ GitHub API request failed: HTTP {resp.status}\n{GITHUB_RELEASES_API}"
                         )
-                    cli_data = await resp.read()
+                    release_data = await resp.json()
+
+                assets = release_data.get("assets", [])
+
+                asset = next(
+                    (a for a in assets if a.get("name") == "bl4-savedata-resigner-promax.zip"),
+                    None,
+                )
+
+                if not asset:
+                    available = ", ".join(a.get("name", "?") for a in assets) or "none"
+                    return await msg.edit(
+                        content=(
+                            "❌ Couldn't find `bl4-savedata-resigner-promax.zip` in the latest release.\n"
+                            f"Available assets: `{available}`"
+                        )
+                    )
+
+                download_url = asset["browser_download_url"]
+                tag_name = release_data.get("tag_name", "unknown")
+
+                await msg.edit(
+                    content=f"⏳ Downloading `{asset['name']}` (`{tag_name}`)..."
+                )
+
+                async with session.get(
+                    download_url, timeout=aiohttp.ClientTimeout(total=120)
+                ) as dl_resp:
+                    if dl_resp.status != 200:
+                        return await msg.edit(
+                            content=f"❌ Download failed: HTTP {dl_resp.status}\n{download_url}"
+                        )
+                    cli_data = await dl_resp.read()
 
             with tempfile.TemporaryDirectory() as tmpdir:
                 tmpdir_path = Path(tmpdir)
@@ -201,10 +240,8 @@ class BL4Helper(commands.Cog):
                 with zipfile.ZipFile(zip_path) as zf:
                     zf.extractall(tmpdir_path / "cli")
 
-                # Grab recursively to locate binary regardless of subfolder layout
                 all_files = list((tmpdir_path / "cli").rglob("*"))
 
-                # Filter out folders, .exe, and macOS files
                 candidates = [
                     p
                     for p in all_files
@@ -229,7 +266,7 @@ class BL4Helper(commands.Cog):
 
             await msg.edit(
                 content=(
-                    f"✅ **Installed to** `{target_cli}`\n"
+                    f"✅ **Installed `{tag_name}` to** `{target_cli}`\n"
                     f"`{target_cli.stat().st_size / 1024 / 1024:.2f} MB`"
                 )
             )
