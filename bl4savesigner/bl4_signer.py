@@ -43,10 +43,7 @@ log = logging.getLogger("red.sablinova.pubhelper")
 
 BL4_CLI_NAME = "bl4-savedata-resigner-cli"
 
-# TODO: adjust this once you know the tool's real stdout format.
-# This assumes something like "Found UserID: 12345" — same shape as
-# MandarinJuice. If the tool prints differently, update this pattern.
-_USER_ID_RE = re.compile(r"Found UserID:\s*(\d+)")
+_USER_ID_RE = re.compile(r"Found SteamID:\s*(\d+)")
 
 
 class BL4Signer:
