@@ -254,20 +254,19 @@ class BL4Helper(commands.Cog):
     @commands.is_owner()
     async def removetool(self, ctx: commands.Context) -> None:
         """Remove the installed BL4 save resigner CLI binary."""
-        tools_dir = COG_DIR / "tools"
-        bin_dir = COG_DIR / "bin"
+        tool_path = _find_cli()
 
-        removed = False
-        for folder in (tools_dir, bin_dir):
-            if folder.exists():
-                shutil.rmtree(folder, ignore_errors=True)
-                removed = True
+        if not tool_path:
+            return await ctx.send("ℹ️ No installed CLI binaries found to remove.")
 
-        if removed:
+        try:
+            # Delete just the specific file, leaving the tools/ directory intact
+            tool_path.unlink(missing_ok=True) 
             self.cli_path = None
             await ctx.send("✅ **BL4 save resigner CLI removed successfully.**")
-        else:
-            await ctx.send("ℹ️ No installed CLI binaries found to remove.")
+        except Exception as e:
+            log.exception("Failed to remove bl4 CLI tool")
+            await ctx.send(f"❌ Failed to remove tool: {e}")
 
     @bl4helper.command(name="logchannel")
     async def setlogchannel(
