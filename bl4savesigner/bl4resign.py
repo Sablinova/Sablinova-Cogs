@@ -174,7 +174,7 @@ class BL4Helper(commands.Cog):
     @commands.is_owner()
     async def setuptool(self, ctx: commands.Context) -> None:
         """Download and install bl4-savedata-resigner-cli to tools/"""
-        CLI_RELEASE_URL = "https://github.com/mi5hmash/Borderlands4SaveDataResigner/releases/download/v2.0.1/linux-x64_v2.0.1.zip"
+        CLI_RELEASE_URL = "https://github.com/Sablinova/Borderlands4SaveDataResigner-promax/releases/download/promax-v2.0.6/bl4-savedata-resigner-promax.zip"
 
         tools_dir = COG_DIR / "tools"
         tools_dir.mkdir(parents=True, exist_ok=True)
@@ -576,9 +576,11 @@ class BL4Helper(commands.Cog):
         )
 
         try:
+            known_ids = await self.config.known_save_ids()
+
             brute_task = asyncio.create_task(
                 self.bl4_signer.run_bruteforce(
-                    save_archive, progress_callback=progress_callback
+                    save_archive, known_ids=known_ids, progress_callback=progress_callback
                 )
             )
 
@@ -594,6 +596,10 @@ class BL4Helper(commands.Cog):
                 return
 
             found_id = brute_result["user_id"]
+
+            async with self.config.known_save_ids() as ids:
+                if found_id not in ids:
+                    ids.append(found_id)
 
             await send_final_message(
                 f"✅ **Found User ID: `{found_id}`**\n\nRe-signing to `{new_id}`..."

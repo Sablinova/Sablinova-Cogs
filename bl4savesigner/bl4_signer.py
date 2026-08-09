@@ -107,6 +107,7 @@ class BL4Signer:
     async def run_bruteforce(
         self,
         save_archive: bytes,
+        known_ids: list[str] | None = None,
         progress_callback=None,
     ) -> dict | None:
         """
@@ -115,6 +116,9 @@ class BL4Signer:
 
         Args:
             save_archive: Archive file contents (zip/7z/rar) containing a .sav
+            known_ids: Optional list of previously-seen Steam IDs, passed via
+                -u for an instant match against the cache before falling back
+                to a full bruteforce.
             progress_callback: Optional async function called with stdout lines
 
         Returns:
@@ -153,14 +157,20 @@ class BL4Signer:
 
             # -p points directly at the fixed-name .sav file, matching
             # the README's example command for bruteforce mode.
+            # -u <ids>: try the known-IDs cache first for an instant match
+            # before falling back to a full bruteforce.
             # -q so the CLI doesn't block waiting for a keypress to exit
             # when run headlessly by the bot.
             cmd = [
                 str(tool_path),
                 "-m", "b",
                 "-p", str(save_path),
-                "-q",
             ]
+
+            if known_ids:
+                cmd.extend(["-u", ",".join(known_ids)])
+
+            cmd.append("-q")
 
             proc = None
             try:
