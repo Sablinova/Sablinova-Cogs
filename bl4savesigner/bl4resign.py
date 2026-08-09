@@ -242,21 +242,18 @@ class BL4Helper(commands.Cog):
 
                 all_files = list((tmpdir_path / "cli").rglob("*"))
 
-                candidates = [
-                    p
-                    for p in all_files
-                    if p.is_file()
-                    and p.suffix != ".exe"
-                    and "osx" not in p.name.lower()
-                    and "mac" not in p.name.lower()
-                    and not p.name.endswith((".zip", ".txt", ".md", ".json"))
-                ]
-
-                cli_binary = candidates[0] if candidates else None
+                cli_binary = next(
+                    (p for p in all_files if p.is_file() and p.name == "bl4-savedata-resigner-cli"),
+                    None,
+                )
 
                 if not cli_binary:
+                    found = ", ".join(p.name for p in all_files if p.is_file()) or "none"
                     return await msg.edit(
-                        content="❌ CLI binary not found in archive."
+                        content=(
+                            "❌ `bl4-savedata-resigner-cli` binary not found in archive.\n"
+                            f"Files found: `{found}`"
+                        )
                     )
 
                 shutil.copy(cli_binary, target_cli)
