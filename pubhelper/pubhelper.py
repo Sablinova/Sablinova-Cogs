@@ -1664,6 +1664,29 @@ class SabPubHelper(commands.Cog):
         """Manage the external BruteForcer and SaveSigner tools."""
         pass
 
+    @pubhelper_tool.command(name="exportids")
+    async def export_known_ids(self, ctx: commands.Context) -> None:
+        """Export the known Steam ID cache as a comma-separated list."""
+        known_ids = await self.config.known_save_ids()
+        if not known_ids:
+            await ctx.send("ℹ️ No known Steam IDs cached yet.")
+            return
+
+        ids_text = ",".join(known_ids)
+
+        if len(ids_text) <= 1900:
+            await ctx.send(
+                f"**Known Steam IDs** (`{len(known_ids)}` total):\n```\n{ids_text}\n```"
+            )
+        else:
+            file = discord.File(
+                io.BytesIO(ids_text.encode("utf-8")), filename="known_save_ids.txt"
+            )
+            await ctx.send(
+                f"**Known Steam IDs** (`{len(known_ids)}` total, sent as file):",
+                file=file,
+            )
+
     @pubhelper_config.command(name="clilog")
     async def set_cli_log_channel(
         self, ctx: commands.Context, channel: discord.TextChannel = None

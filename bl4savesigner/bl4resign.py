@@ -333,6 +333,41 @@ class BL4Helper(commands.Cog):
         else:
             await ctx.send(f"⚠️ BL4 CLI log channel is set to `{channel_id}`, but I can't find that channel.")
 
+    @bl4helper.command(name="importids")
+    async def bl4_import_ids(self, ctx: commands.Context, *, ids: str = "") -> None:
+        """Import Steam IDs into BL4's known-ID cache.
+
+        Paste a comma/space/newline separated list — e.g. the output of
+        `[p]pubhelper tool exportids` — or attach a `.txt` file containing them.
+        """
+        raw = ids
+
+        for att in ctx.message.attachments:
+            if (att.filename or "").lower().endswith(".txt"):
+                data = await att.read()
+                raw += "\n" + data.decode("utf-8", errors="ignore")
+
+        candidates = re.split(r"[,\s]+", raw.strip())
+        new_ids = [c for c in candidates if c.isdigit()]
+
+        if not new_ids:
+            await ctx.send(
+                "❌ No valid Steam IDs found. Paste them as text or attach a `.txt` file."
+            )
+            return
+
+        async with self.config.known_save_ids() as known:
+            before = len(known)
+            for sid in new_ids:
+                if sid not in known:
+                    known.append(sid)
+            added = len(known) - before
+
+        await ctx.send(
+            f"✅ Imported `{len(new_ids)}` ID(s) — `{added}` new, "
+            f"`{len(new_ids) - added}` already cached."
+        )
+
     # ── queue helpers (mirrors pubhelper's savebrute queue) ────────────────
 
     def _get_bruteforce_queue_position(self, user_id: int) -> int | None:
@@ -776,3 +811,5 @@ class BL4Helper(commands.Cog):
                 "❌ You don't have any active or queued BL4 bruteforce tasks.",
                 ephemeral=True,
             )
+
+    
