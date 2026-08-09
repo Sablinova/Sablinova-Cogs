@@ -303,7 +303,8 @@ def normalize_game_name(name: str) -> str:
 
 async def resolve_best_game_match(query: str) -> Optional[int]:
     """Search Steam and return the AppID of the best-matching actual game (filters DLC/tools/editors)."""
-    raw_candidates = search_steam(query)[:10]
+    raw_candidates = await asyncio.to_thread(search_steam, query)
+    raw_candidates = raw_candidates[:10]
     if not raw_candidates:
         return None
 
@@ -454,15 +455,17 @@ class ListView(discord.ui.View):
 
     @discord.ui.button(label="◀ Prev", style=discord.ButtonStyle.secondary)
     async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
         self.page -= 1
         self._sync_buttons()
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+        await interaction.edit_original_response(embed=self.build_embed(), view=self)
 
     @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary)
     async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
         self.page += 1
         self._sync_buttons()
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+        await interaction.edit_original_response(embed=self.build_embed(), view=self)
 
     async def on_timeout(self):
         self.clear_items()
@@ -724,6 +727,21 @@ class DenuvoTracker(commands.Cog):
         embed.set_footer(text=f"AppID {appid}")
         await send_func(embed=embed)
 
+    async def _game_name_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> list:
+        games = await self._load_games()
+        current_lower = current.lower()
+        matches = [
+            info["name"]
+            for appid_str, info in games.items()
+            if current_lower in info["name"].lower()
+        ]
+        return [
+            discord.app_commands.Choice(name=name, value=name)
+            for name in matches[:25]
+        ]
+
     # ── command group (denuvowatch) ───────────────────────────────────────
 
     @commands.hybrid_command(name="dadd")
@@ -741,7 +759,8 @@ class DenuvoTracker(commands.Cog):
                     return
                 candidates = [{"appid": appid, "name": snapshot["name"]}]
             else:
-                raw_candidates = search_steam(query)[:10]
+                raw_candidates = await asyncio.to_thread(search_steam, query)
+                raw_candidates = raw_candidates[:10]
                 if not raw_candidates:
                     await ctx.send("❌ No results found on Steam.")
                     return
@@ -826,6 +845,10 @@ class DenuvoTracker(commands.Cog):
         view = discord.ui.View(timeout=60)
         view.add_item(select)
         await ctx.send("Multiple matches — choose one:", view=view)
+
+    @dremove.autocomplete("query")
+    async def dremove_query_autocomplete(self, interaction: discord.Interaction, current: str):
+        return await self._game_name_autocomplete(interaction, current)
 
     @commands.hybrid_command(name="dlist")
     async def dlist(self, ctx: commands.Context):
@@ -925,6 +948,10 @@ class DenuvoTracker(commands.Cog):
         embed.set_footer(text=f"AppID {appid}")
         embed.timestamp = datetime.now(timezone.utc)
         await ctx.send(embed=embed)
+
+    @dcheck.autocomplete("query")
+    async def dcheck_query_autocomplete(self, interaction: discord.Interaction, current: str):
+        return await self._game_name_autocomplete(interaction, current)
 
     @commands.hybrid_command(name="dforcecheck")
     async def dforcecheck(self, ctx: commands.Context):
@@ -1105,6 +1132,10 @@ class DenuvoTracker(commands.Cog):
         embed.set_footer(text=f"AppID {appid} • 0=current, 1-3=previous builds")
         embed.timestamp = datetime.now(timezone.utc)
         await ctx.send(embed=embed)
+
+    @ddepots.autocomplete("query")
+    async def ddepots_query_autocomplete(self, interaction: discord.Interaction, current: str):
+        return await self._game_name_autocomplete(interaction, current)
 	
     @commands.hybrid_command(name="dimport")
     async def dimport(self, ctx: commands.Context, url: str = None):
