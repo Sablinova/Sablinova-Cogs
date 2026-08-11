@@ -477,7 +477,7 @@ class ListView(discord.ui.View):
 
 
 # ─── Cog ───────────────────────────────────────────────────────────────────
-class DenuvoTracker(commands.Cog):
+class DenuvoWatch(commands.Cog):
     """Tracks Denuvo status, build updates, and release dates for a Steam watchlist."""
 
     def __init__(self, bot: Red):
@@ -509,12 +509,12 @@ class DenuvoTracker(commands.Cog):
         await self.bot.wait_until_red_ready()
         games = await self.config.games()
         if games:
-            print("[DenuvoTracker] Running startup forcecheck…")
+            print("[DenuvoWatch] Running startup forcecheck…")
             await self.check_games_internal(full_refresh=True)
-            print("[DenuvoTracker] Startup forcecheck complete.")
+            print("[DenuvoWatch] Startup forcecheck complete.")
         if not self.check_games_loop.is_running():
             self.check_games_loop.start()
-            print("[DenuvoTracker] Background check started (every 15 mins)")
+            print("[DenuvoWatch] Background check started (every 15 mins)")
 
     # ── owner-only check ──────────────────────────────────────────────────
     async def cog_check(self, ctx: commands.Context) -> bool:
@@ -549,16 +549,18 @@ class DenuvoTracker(commands.Cog):
         try:
             channel_id = await self.config.notify_channel_id()
             if not channel_id:
-                print("[DenuvoTracker][WARN] No notify channel configured.")
+                print("[DenuvoWatch][WARN] No notify channel configured.")
                 return False
             channel = self.bot.get_channel(channel_id)
             if channel is None:
-                print(f"[DenuvoTracker][WARN] Notify channel {channel_id} not found.")
+                print(f"[DenuvoWatch][WARN] Notify channel {channel_id} not found.")
                 return False
 
             games = await self._load_games()
             if not games:
                 return False
+
+            allowed = discord.AllowedMentions(users=True, roles=True)
 
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Checking {len(games)} games…")
 
@@ -609,7 +611,11 @@ class DenuvoTracker(commands.Cog):
                     new["new_build_size_bytes"] = new_total_bytes
 
                     mention = await self._get_notify_mention()
-                    await channel.send(content=mention, embed=build_depot_embed(appid, old_build, new_build, new))
+                    await channel.send(
+                        content=mention, 
+                        embed=build_depot_embed(appid, old_build, new_build, new),
+                        allowed_mentions=allowed
+                    )
                     changes = True
 
                     history = await self._load_history()
@@ -672,7 +678,7 @@ class DenuvoTracker(commands.Cog):
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Check complete.")
 
         except Exception as e:
-            print(f"[DenuvoTracker][ERROR] check_games crashed: {e}")
+            print(f"[DenuvoWatch][ERROR] check_games crashed: {e}")
             import traceback
             traceback.print_exc()
 
@@ -1234,16 +1240,16 @@ class DenuvoTracker(commands.Cog):
     # ── settings commands (Prefix Only) ───────────────────────────────────
     @commands.group(name="denuvowatch", invoke_without_command=True)
     async def denuvowatch(self, ctx: commands.Context):
-        """DenuvoTracker — Configuration and settings."""
+        """DenuvoWatch — Configuration and settings."""
         await ctx.send_help(ctx.command)
         
     @denuvowatch.command(name="settings", with_app_command=False)
     async def denuvowatch_settings(self, ctx: commands.Context):
-        """View current DenuvoTracker settings."""
+        """View current DenuvoWatch settings."""
         channel_id = await self.config.notify_channel_id()
         user_id = await self.config.notify_user_id()
         role_id = await self.config.notify_role_id()
-        embed = discord.Embed(title="⚙️ DenuvoTracker Settings", color=discord.Color.blurple())
+        embed = discord.Embed(title="⚙️ DenuvoWatch Settings", color=discord.Color.blurple())
         embed.add_field(name="Notify Channel", value=f"<#{channel_id}>" if channel_id else "Not set", inline=False)
         embed.add_field(name="Notify User", value=f"<@{user_id}>" if user_id else "Not set", inline=True)
         embed.add_field(name="Notify Role", value=f"<@&{role_id}>" if role_id else "Not set", inline=True)
