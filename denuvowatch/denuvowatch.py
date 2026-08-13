@@ -811,26 +811,36 @@ class DenuvoWatch(commands.Cog):
         """Remove a game from the watchlist."""
         games = await self._load_games()
         if not games:
-            await ctx.send("📭 Watchlist is empty.")
+            await ctx.send("📭 Watchlist is empty.", ephemeral=True)
             return
 
         matches = []
-        for appid_str, info in games.items():
-            if query.isdigit() and appid_str == query:
-                matches = [(appid_str, info)]
-                break
-            elif query.lower() in info["name"].lower():
-                matches.append((appid_str, info))
+        query_lower = query.lower()
 
-        if not matches:
-            await ctx.send(f"❌ No game matching `{query}` on the watchlist.")
-            return
+        # Exact name match first (covers autocomplete selections, which supply the exact stored name)
+        exact_matches = [
+            (appid_str, info) for appid_str, info in games.items()
+            if info["name"].lower() == query_lower
+        ]
+        if exact_matches:
+            matches = exact_matches
+        else:
+            for appid_str, info in games.items():
+                if query.isdigit() and appid_str == query:
+                    matches = [(appid_str, info)]
+                    break
+                elif query_lower in info["name"].lower():
+                    matches.append((appid_str, info))
+
+            if not matches:
+                await ctx.send(f"❌ No game matching `{query}` on the watchlist.", ephemeral=True)
+                return
 
         if len(matches) == 1:
             appid_str, info = matches[0]
             del games[appid_str]
             await self._save_games(games)
-            await ctx.send(f"🗑️ Removed **{info['name']}** from the watchlist.")
+            await ctx.send(f"🗑️ Removed **{info['name']}** from the watchlist.", ephemeral=True)
             return
 
         options = [
@@ -845,12 +855,12 @@ class DenuvoWatch(commands.Cog):
             name = fresh_games[chosen_id]["name"]
             del fresh_games[chosen_id]
             await self._save_games(fresh_games)
-            await inter.response.send_message(f"🗑️ Removed **{name}** from the watchlist.")
+            await inter.response.send_message(f"🗑️ Removed **{name}** from the watchlist.", ephemeral=True)
 
         select.callback = cb
         view = discord.ui.View(timeout=60)
         view.add_item(select)
-        await ctx.send("Multiple matches — choose one:", view=view)
+        await ctx.send("Multiple matches — choose one:", view=view, ephemeral=True)
 
     @dremove.autocomplete("query")
     async def dremove_query_autocomplete(self, interaction: discord.Interaction, current: str):
