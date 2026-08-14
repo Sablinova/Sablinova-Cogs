@@ -422,50 +422,107 @@ def build_release_embed(appid: int, old: dict, new: dict) -> discord.Embed:
 
 # ─── UI ────────────────────────────────────────────────────────────────────
 class ListView(discord.ui.View):
-    def __init__(self, games: list, timeout: float = 60):
+    def __init__(
+        self,
+        ctx: commands.Context,
+        games: list,
+        embed_color: discord.Color,
+        max_games: int = 100,
+        timeout: float = 60.0
+    ):
         super().__init__(timeout=timeout)
+        self.ctx = ctx
         self.games = games
+        self.embed_color = embed_color
+        self.max_games = max_games
         self.page = 0
         self.page_size = 25
-        self.total_pages = (len(games) + self.page_size - 1) // self.page_size
-        self.message: Optional[discord.Message] = None
+        self.total_pages = max(1, (len(games) + self.page_size - 1) // self.page_size)
+        self.message: discord.Message | None = None
+        self._embed_cache: dict[int, discord.Embed] = {}
+
+        self._warm_neighbors()
         self._sync_buttons()
 
-    def _sync_buttons(self):
-        self.prev_button.disabled = self.page == 0
-        self.next_button.disabled = self.page == self.total_pages - 1
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """Lock view interaction to the command invoker."""
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message(
+                "You cannot interact with this menu.",
+                ephemeral=True
+            )
+            return False
+        return True
 
-    def build_embed(self) -> discord.Embed:
-        start = self.page * self.page_size
-        slice_ = self.games[start:start + self.page_size]
+    def _build_embed(self, page: int) -> discord.Embed:
+        start = page * self.page_size
+        slice_ = self.games[start : start + self.page_size]
 
         embed = discord.Embed(
-            title=f"🎮 Steam Watchlist ({len(self.games)}/{MAX_GAMES})",
-            color=discord.Color.blurple()
+            title=f"🎮 Steam Watchlist ({len(self.games)}/{self.max_games})",
+            color=self.embed_color,
         )
+
+        if not slice_:
+            embed.description = "*No games in watchlist.*"
+            embed.set_footer(text="Page 1/1")
+            return embed
+
         lines = []
         for appid_str, info in slice_:
             icon = "⚠️" if info.get("denuvo") else "✅"
-            build = f" • build `{info['build_id']}`" if info.get("build_id") and not info.get("coming_soon") else ""
-            lines.append(f"{icon} **{info['name']}** `{appid_str}`{build}")
+            build = (
+                f" • build `{info['build_id']}`"
+                if info.get("build_id") and not info.get("coming_soon")
+                else ""
+            )
+            lines.append(f"{icon} **{info.get('name', 'Unknown')}** `{appid_str}`{build}")
 
         embed.description = "\n".join(lines)
-        embed.set_footer(text=f"Page {self.page + 1}/{self.total_pages} • ⚠️ = has Denuvo    ✅ = no Denuvo")
+        embed.set_footer(
+            text=f"Page {page + 1}/{self.total_pages} • ⚠️ = has Denuvo   ✅ = no Denuvo"
+        )
         return embed
+
+    def _get_or_build(self, page: int) -> discord.Embed:
+        if page not in self._embed_cache:
+            self._embed_cache[page] = self._build_embed(page)
+        return self._embed_cache[page]
+
+    def _warm_neighbors(self):
+        keep = {self.page}
+        if self.page > 0:
+            keep.add(self.page - 1)
+        if self.page < self.total_pages - 1:
+            keep.add(self.page + 1)
+
+        for p in keep:
+            self._get_or_build(p)
+
+        for cached_page in list(self._embed_cache.keys()):
+            if cached_page not in keep:
+                del self._embed_cache[cached_page]
+
+    def _sync_buttons(self):
+        self.prev_button.disabled = self.page == 0
+        self.next_button.disabled = self.page >= self.total_pages - 1
+
+    def build_embed(self) -> discord.Embed:
+        return self._get_or_build(self.page)
 
     @discord.ui.button(label="◀ Prev", style=discord.ButtonStyle.secondary)
     async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer()
         self.page -= 1
+        self._warm_neighbors()
         self._sync_buttons()
-        await interaction.edit_original_response(embed=self.build_embed(), view=self)
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
     @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary)
     async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer()
         self.page += 1
+        self._warm_neighbors()
         self._sync_buttons()
-        await interaction.edit_original_response(embed=self.build_embed(), view=self)
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
     async def on_timeout(self):
         self.clear_items()
@@ -493,6 +550,12 @@ class DenuvoWatch(commands.Cog):
         self.session = aiohttp.ClientSession() # Added session
         self._startup_task: Optional[asyncio.Task] = None
 
+        # In-memory cache of game names for autocomplete, so it never has to
+        # await a Config read (and risk Discord's ~3s autocomplete timeout).
+        self._name_cache: list[str] = []
+        self._name_cache_ts: float = 0.0
+        self._name_cache_ttl: float = 30.0
+
     # ── lifecycle ────────────────────────────────────────────────────────
     async def cog_load(self):
         self._startup_task = asyncio.create_task(self._startup_sequence())
@@ -508,6 +571,7 @@ class DenuvoWatch(commands.Cog):
     async def _startup_sequence(self):
         await self.bot.wait_until_red_ready()
         games = await self.config.games()
+        self._refresh_name_cache_from(games)
         if games:
             print("[DenuvoWatch] Running startup forcecheck…")
             await self.check_games_internal(full_refresh=True)
@@ -527,6 +591,15 @@ class DenuvoWatch(commands.Cog):
     async def _save_games(self, games: dict):
         games = dict(sorted(games.items(), key=lambda x: x[1].get("name", "").lower()))
         await self.config.games.set(games)
+        self._refresh_name_cache_from(games)
+
+    def _refresh_name_cache_from(self, games: dict):
+        self._name_cache = [info.get("name", "") for info in games.values()]
+        self._name_cache_ts = asyncio.get_event_loop().time()
+
+    async def _refresh_name_cache(self):
+        games = await self._load_games()
+        self._refresh_name_cache_from(games)
 
     async def _load_history(self) -> dict:
         return await self.config.history()
@@ -736,13 +809,15 @@ class DenuvoWatch(commands.Cog):
     async def _game_name_autocomplete(
         self, interaction: discord.Interaction, current: str
     ) -> list:
-        games = await self._load_games()
+        now = asyncio.get_event_loop().time()
+        if now - self._name_cache_ts > self._name_cache_ttl:
+            try:
+                await asyncio.wait_for(self._refresh_name_cache(), timeout=1.5)
+            except Exception:
+                pass  # fall back to whatever's already cached (even if empty/stale)
+
         current_lower = current.lower()
-        matches = [
-            info["name"]
-            for appid_str, info in games.items()
-            if current_lower in info["name"].lower()
-        ]
+        matches = [name for name in self._name_cache if current_lower in name.lower()]
         return [
             discord.app_commands.Choice(name=name, value=name)
             for name in matches[:25]
