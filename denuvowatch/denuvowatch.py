@@ -966,7 +966,7 @@ class DenuvoWatch(commands.Cog):
             await ctx.send(embed=embed)
             return
 
-        view = ListView(games)
+        view = ListView(ctx, games, discord.Color.blurple())
         msg = await ctx.send(embed=view.build_embed(), view=view)
         view.message = msg
 
