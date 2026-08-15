@@ -3,6 +3,7 @@ import re
 from datetime import datetime, timezone
 from typing import Optional
 
+import io
 import discord
 import requests
 import json
@@ -674,49 +675,56 @@ class DenuvoWatch(commands.Cog):
                 # Build ID change
                 old_build = old.get("build_id")
                 new_build = new.get("build_id")
+                build_actually_changed = False 
                 if old_build and new_build and old_build != new_build:
                     changed_appids.add(appid_str)
                     _, _, new_manifests, new_depot_sizes = await asyncio.to_thread(fetch_build_id, appid)
+                    old_manifests = old.get("manifests", {})
+                    if new_manifests != old_manifests:
+                        build_actually_changed = True
+                        old_total_bytes = sum(old.get("depot_sizes", {}).values())
+                        new_total_bytes = sum(new_depot_sizes.values()) if new_depot_sizes else 0
+                        new["old_build_size_bytes"] = old_total_bytes
+                        new["new_build_size_bytes"] = new_total_bytes
 
-                    old_total_bytes = sum(old.get("depot_sizes", {}).values())
-                    new_total_bytes = sum(new_depot_sizes.values()) if new_depot_sizes else 0
-                    new["old_build_size_bytes"] = old_total_bytes
-                    new["new_build_size_bytes"] = new_total_bytes
-
-                    mention = await self._get_notify_mention()
-                    await channel.send(
-                        content=mention, 
-                        embed=build_depot_embed(appid, old_build, new_build, new),
-                        allowed_mentions=allowed
-                    )
-                    changes = True
-
-                    history = await self._load_history()
-                    game_history = history.setdefault(appid_str, {})
-                    if old_build and old.get("manifests"):
-                        last_entry = next(iter(reversed(game_history.values())), None)
-                        old_manifests_changed = (
-                            last_entry is None or
-                            last_entry.get("manifests") != old["manifests"]
+                        mention = await self._get_notify_mention()
+                        await channel.send(
+                            content=mention, 
+                            embed=build_depot_embed(appid, old_build, new_build, new),
+                            allowed_mentions=allowed
                         )
-                        if old_manifests_changed:
-                            game_history[old_build] = {
-                                "manifests": old["manifests"],
-                                "depot_sizes": old.get("depot_sizes", {}),
-                            }
-                    if len(game_history) > 3:
-                        oldest = list(game_history.keys())[0]
-                        del game_history[oldest]
-                    await self._save_history(history)
-                    games[appid_str]["manifests"] = new_manifests
-                    games[appid_str]["depot_sizes"] = new_depot_sizes
+                        changes = True
 
-                games[appid_str].update({
+                        history = await self._load_history()
+                        game_history = history.setdefault(appid_str, {})
+                        if old_build and old.get("manifests"):
+                            last_entry = next(iter(reversed(game_history.values())), None)
+                            old_manifests_changed = (
+                                last_entry is None or
+                                last_entry.get("manifests") != old["manifests"]
+                            )
+                            if old_manifests_changed:
+                                game_history[old_build] = {
+                                    "manifests": old["manifests"],
+                                    "depot_sizes": old.get("depot_sizes", {}),
+                                }
+                        if len(game_history) > 3:
+                            oldest = list(game_history.keys())[0]
+                            del game_history[oldest]
+                        await self._save_history(history)
+                        games[appid_str]["manifests"] = new_manifests
+                        games[appid_str]["depot_sizes"] = new_depot_sizes
+                    else:
+                        print(f"[INFO] {new['name']}: buildid {old_build} → {new_build} but no tracked depot changed (likely non-windows push) — ignoring.")
+
+                update_fields = {
                     "name": new["name"],
                     "denuvo": new["denuvo"],
-                    "build_id": new["build_id"],
-                    "build_time": new.get("build_time"),
-                })
+                }
+                if build_actually_changed or not old_build:
+                    update_fields["build_id"] = new["build_id"]
+                    update_fields["build_time"] = new.get("build_time")
+                games[appid_str].update(update_fields)
 
                 if new.get("coming_soon"):
                     games[appid_str]["coming_soon"] = True
@@ -1227,6 +1235,23 @@ class DenuvoWatch(commands.Cog):
     @ddepots.autocomplete("query")
     async def ddepots_query_autocomplete(self, interaction: discord.Interaction, current: str):
         return await self._game_name_autocomplete(interaction, current)
+
+    @commands.hybrid_command(name="dexport")
+    async def dexport(self, ctx: commands.Context):
+        """Export the current watchlist as a JSON file (re-importable via dimport)."""
+        games = await self._load_games()
+        if not games:
+            await ctx.send("📭 Watchlist is empty — nothing to export.")
+            return
+
+        payload = {"games": games}
+        buffer = io.BytesIO(json.dumps(payload, indent=2).encode("utf-8"))
+        filename = f"steam_data_export_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
+
+        await ctx.send(
+            f"📤 Exported **{len(games)}** game(s).",
+            file=discord.File(fp=buffer, filename=filename),
+        )
 	
     @commands.hybrid_command(name="dimport")
     async def dimport(self, ctx: commands.Context, url: str = None):
