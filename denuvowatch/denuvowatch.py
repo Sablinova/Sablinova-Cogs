@@ -849,28 +849,73 @@ class DenuvoWatch(commands.Cog):
             for name in matches[:25]
         ]
 
-    async def get_total_size_with_dlc(self, appid: int) -> tuple[int, dict]:
-        _, _, _, base_depot_sizes = await asyncio.to_thread(fetch_build_id, appid)
-        depot_sizes = dict(base_depot_sizes)
+    async def fetch_dlc_depots_info(self, dlc_appid: int) -> dict[str, int]:
+        """Fetch depot sizes for dynamically discovered DLC sub-apps."""
+        depot_sizes = {}
+        try:
+            r = await asyncio.to_thread(
+                requests.get,
+                f"https://api.steamcmd.net/v1/info/{dlc_appid}",
+                headers=HEADERS,
+                timeout=10,
+            )
+            data = r.json()
+            dlc_depots = (
+                data.get("data", {})
+                    .get(str(dlc_appid), {})
+                    .get("depots", {})
+            )
+            if not dlc_depots:
+                return depot_sizes
 
+            for depot_id, depot_info in dlc_depots.items():
+                # Skip non-depot keys like 'branches', 'privatebranches', etc.
+                if not depot_id.isdigit() or not isinstance(depot_info, dict):
+                    continue
+
+                depot_oslist = depot_info.get("config", {}).get("oslist")
+                if depot_oslist and not any(os_ in depot_oslist for os_ in OSLIST_FILTER):
+                    continue
+
+                manifest = depot_info.get("manifests", {}).get("public")
+                size = 0
+                if isinstance(manifest, dict):
+                    size = int(manifest.get("size", 0))
+                elif "maxsize" in depot_info:
+                    try:
+                        size = int(depot_info.get("maxsize", 0))
+                    except (ValueError, TypeError):
+                        pass
+
+                if size > 0:
+                    depot_sizes[depot_id] = size
+        except Exception:
+            pass
+
+        return depot_sizes
+
+    async def get_total_size_with_dlc(self, appid: int) -> tuple[int, dict[str, int]]:
+        """Dynamic DLC size lookup used exclusively for ad-hoc / unwatched checks."""
+        # 1. Base game depots (via fetch_build_id which includes SUBDLC_APPIDS)
+        _, _, _, base_depots = await asyncio.to_thread(fetch_build_id, appid)
+        depot_sizes = dict(base_depots)
+
+        # 2. Discover all DLC AppIDs
         details = await asyncio.to_thread(fetch_app_details, appid)
         store_dlc_ids = set((details or {}).get("dlc", []))
-
         steamcmd_dlc_ids = set(await asyncio.to_thread(get_dlc_appids_from_steamcmd, appid))
-
         all_dlc_ids = store_dlc_ids | steamcmd_dlc_ids
 
-        async def fetch_dlc(dlc_appid: int):
-            _, _, _, dlc_depot_sizes = await asyncio.to_thread(fetch_build_id, dlc_appid)
-            return dlc_depot_sizes
-
+        # 3. Fetch sizes for all discovered DLCs concurrently
         if all_dlc_ids:
-            results = await asyncio.gather(*[fetch_dlc(d) for d in all_dlc_ids])
-            for dlc_depot_sizes in results:
-                depot_sizes.update(dlc_depot_sizes)
+            tasks = [self.fetch_dlc_depots_info(d) for d in all_dlc_ids]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for dlc_sizes in results:
+                if isinstance(dlc_sizes, dict):
+                    depot_sizes.update(dlc_sizes)
 
-        total = sum(depot_sizes.values())
-        return total, depot_sizes
+        total_bytes = sum(depot_sizes.values())
+        return total_bytes, depot_sizes
 
     # ── command group (denuvowatch) ───────────────────────────────────────
 
