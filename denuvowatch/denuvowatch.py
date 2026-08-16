@@ -582,8 +582,10 @@ class DenuvoWatch(commands.Cog):
             print("[DenuvoWatch] Background check started (every 15 mins)")
 
     # ── owner-only check ──────────────────────────────────────────────────
-    async def cog_check(self, ctx: commands.Context) -> bool:
-        return await self.bot.is_owner(ctx.author)
+    def owner_only():
+        async def predicate(ctx: commands.Context) -> bool:
+            return await ctx.bot.is_owner(ctx.author)
+        return commands.check(predicate)
 
     # ── persistence helpers ───────────────────────────────────────────────
     async def _load_games(self) -> dict:
@@ -835,6 +837,7 @@ class DenuvoWatch(commands.Cog):
 
     @commands.hybrid_command(name="dadd")
     @discord.app_commands.describe(query="Game name or Steam AppID")
+    @owner_only()
     async def dadd(self, ctx: commands.Context, *, query: str):
         """Add a game to the watchlist by name or AppID."""
         async with ctx.typing():
@@ -889,6 +892,7 @@ class DenuvoWatch(commands.Cog):
         await ctx.send("Multiple results found — pick one:", view=view)
 
     @commands.hybrid_command(name="dremove")
+    @owner_only()
     @discord.app_commands.describe(query="Game name or AppID")
     async def dremove(self, ctx: commands.Context, *, query: str):
         """Remove a game from the watchlist."""
@@ -1053,6 +1057,7 @@ class DenuvoWatch(commands.Cog):
         return await self._game_name_autocomplete(interaction, current)
 
     @commands.hybrid_command(name="dforcecheck")
+    @owner_only()
     async def dforcecheck(self, ctx: commands.Context):
         """Manually trigger a full watchlist scan."""
         await ctx.send("🔄 Running full watchlist check now…")
@@ -1254,6 +1259,7 @@ class DenuvoWatch(commands.Cog):
         )
 	
     @commands.hybrid_command(name="dimport")
+    @owner_only()
     async def dimport(self, ctx: commands.Context, url: str = None):
         """Import games into the watchlist from a JSON file or URL."""
         raw = None
@@ -1349,6 +1355,7 @@ class DenuvoWatch(commands.Cog):
     	
     # ── settings commands (Prefix Only) ───────────────────────────────────
     @commands.group(name="denuvowatch", invoke_without_command=True)
+    @owner_only()
     async def denuvowatch(self, ctx: commands.Context):
         """DenuvoWatch — Configuration and settings."""
         await ctx.send_help(ctx.command)
