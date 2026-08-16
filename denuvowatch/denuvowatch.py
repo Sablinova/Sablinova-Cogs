@@ -207,6 +207,22 @@ def fetch_build_id(appid: int) -> tuple:
     except Exception:
         return None, None, {}, {}
 
+def get_dlc_appids_from_steamcmd(appid: int) -> list:
+    try:
+        r = requests.get(
+            f"https://api.steamcmd.net/v1/info/{appid}",
+            headers=HEADERS, timeout=10
+        )
+        data = r.json()
+        app_data = data.get("data", {}).get(str(appid), {})
+        extended = app_data.get("extended", {})
+        listofdlc = extended.get("listofdlc", "")
+        if not listofdlc:
+            return []
+        return [int(x) for x in listofdlc.split(",") if x.strip().isdigit()]
+    except Exception:
+        return []
+
 
 def check_denuvo_api(data: dict) -> bool:
     return "denuvo" in data.get("drm_notice", "").lower()
@@ -579,7 +595,7 @@ class DenuvoWatch(commands.Cog):
             print("[DenuvoWatch] Startup forcecheck complete.")
         if not self.check_games_loop.is_running():
             self.check_games_loop.start()
-            print("[DenuvoWatch] Background check started (every 15 mins)")
+            print("[DenuvoWatch] Background check started (every 10 mins)")
 
     # ── owner-only check ──────────────────────────────────────────────────
     def owner_only():
@@ -833,6 +849,29 @@ class DenuvoWatch(commands.Cog):
             for name in matches[:25]
         ]
 
+    async def get_total_size_with_dlc(self, appid: int) -> tuple[int, dict]:
+        _, _, _, base_depot_sizes = await asyncio.to_thread(fetch_build_id, appid)
+        depot_sizes = dict(base_depot_sizes)
+
+        details = await asyncio.to_thread(fetch_app_details, appid)
+        store_dlc_ids = set((details or {}).get("dlc", []))
+
+        steamcmd_dlc_ids = set(await asyncio.to_thread(get_dlc_appids_from_steamcmd, appid))
+
+        all_dlc_ids = store_dlc_ids | steamcmd_dlc_ids
+
+        async def fetch_dlc(dlc_appid: int):
+            _, _, _, dlc_depot_sizes = await asyncio.to_thread(fetch_build_id, dlc_appid)
+            return dlc_depot_sizes
+
+        if all_dlc_ids:
+            results = await asyncio.gather(*[fetch_dlc(d) for d in all_dlc_ids])
+            for dlc_depot_sizes in results:
+                depot_sizes.update(dlc_depot_sizes)
+
+        total = sum(depot_sizes.values())
+        return total, depot_sizes
+
     # ── command group (denuvowatch) ───────────────────────────────────────
 
     @commands.hybrid_command(name="dadd")
@@ -1014,7 +1053,7 @@ class DenuvoWatch(commands.Cog):
 
             depot_sizes = stored.get("depot_sizes", {})
             if not depot_sizes:
-                _, _, _, depot_sizes = await asyncio.to_thread(fetch_build_id, appid)
+                _, depot_sizes = await self.get_total_size_with_dlc(appid)
 
         embed = discord.Embed(
             title=f"🔍 {snapshot['name']}",
@@ -1361,6 +1400,7 @@ class DenuvoWatch(commands.Cog):
         await ctx.send_help(ctx.command)
         
     @denuvowatch.command(name="settings", with_app_command=False)
+    @owner_only()
     async def denuvowatch_settings(self, ctx: commands.Context):
         """View current DenuvoWatch settings."""
         channel_id = await self.config.notify_channel_id()
@@ -1373,18 +1413,21 @@ class DenuvoWatch(commands.Cog):
         await ctx.send(embed=embed)
 
     @denuvowatch.command(name="channel", with_app_command=False)
+    @owner_only()
     async def denuvowatch_channel(self, ctx: commands.Context, channel: discord.TextChannel):
         """Set the channel where update embeds are posted."""
         await self.config.notify_channel_id.set(channel.id)
         await ctx.send(f"✅ Notify channel set to {channel.mention}.")
 
     @denuvowatch.command(name="role", with_app_command=False)
+    @owner_only()
     async def denuvowatch_role(self, ctx: commands.Context, role: Optional[discord.Role] = None):
         """Set (or clear, if omitted) the role pinged on build changes."""
         await self.config.notify_role_id.set(role.id if role else None)
         await ctx.send(f"✅ Notify role set to {role.mention}." if role else "✅ Notify role cleared.")
 
     @denuvowatch.command(name="user", with_app_command=False)
+    @owner_only()
     async def denuvowatch_user(self, ctx: commands.Context, user: Optional[discord.User] = None):
         """Set (or clear, if omitted) the user pinged on build changes."""
         await self.config.notify_user_id.set(user.id if user else None)
