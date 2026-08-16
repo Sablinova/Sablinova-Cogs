@@ -47,6 +47,7 @@ SUBDLC_APPIDS = {
     "1273400": ["2153870"],
     "1490890": ["1777140"],
     "491540": ["3544250"],
+    "2361770": ["3381250"],
 }
 
 OSLIST_FILTER = ["windows"]
@@ -1068,6 +1069,9 @@ class DenuvoWatch(commands.Cog):
 
     @commands.hybrid_command(name="dcheck")
     @discord.app_commands.describe(query="Game name or AppID")
+    @discord.app_commands.guild_install()
+    @discord.app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
+    @commands.guild_only()
     async def dcheck(self, ctx: commands.Context, *, query: str):
         """Instantly check a game's current status."""
         async with ctx.typing():
