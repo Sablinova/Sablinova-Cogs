@@ -851,7 +851,6 @@ class DenuvoWatch(commands.Cog):
         ]
 
     async def fetch_dlc_depots_info(self, dlc_appid: int) -> dict[str, int]:
-        """Fetch depot sizes for dynamically discovered DLC sub-apps."""
         depot_sizes = {}
         try:
             r = await asyncio.to_thread(
@@ -861,16 +860,17 @@ class DenuvoWatch(commands.Cog):
                 timeout=10,
             )
             data = r.json()
-            dlc_depots = (
-                data.get("data", {})
-                    .get(str(dlc_appid), {})
-                    .get("depots", {})
-            )
+            app_data = data.get("data", {}).get(str(dlc_appid), {})
+
+            app_type = app_data.get("common", {}).get("type", "").lower()
+            if app_type != "dlc":
+                return depot_sizes  # skip demos, base-game cross-refs, tools, etc.
+
+            dlc_depots = app_data.get("depots", {})
             if not dlc_depots:
                 return depot_sizes
 
             for depot_id, depot_info in dlc_depots.items():
-                # Skip non-depot keys like 'branches', 'privatebranches', etc.
                 if not depot_id.isdigit() or not isinstance(depot_info, dict):
                     continue
 
@@ -1071,7 +1071,6 @@ class DenuvoWatch(commands.Cog):
     @discord.app_commands.describe(query="Game name or AppID")
     @discord.app_commands.guild_install()
     @discord.app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
-    @commands.guild_only()
     async def dcheck(self, ctx: commands.Context, *, query: str):
         """Instantly check a game's current status."""
         async with ctx.typing():
