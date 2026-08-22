@@ -71,7 +71,7 @@ class Guide(commands.Cog):
 
     async def _save_guides(self, guides: dict) -> None:
         self._guides_cache = guides
-        await self.config.set("guides", guides)
+        await self.config.set(guides)
 
     # ── Admin prefix commands ────────────────────────────────────────────────
 
