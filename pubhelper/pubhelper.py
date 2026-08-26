@@ -1346,23 +1346,31 @@ class SabPubHelper(commands.Cog):
         """Three-phase game matcher shared by /saveinst and /anadius.
 
         Each target must have 'key' (lowercase) and 'name' (lowercase).
+        May optionally have 'aliases' (list of lowercase strings).
         Returns the matching target dict or None.
         """
-        # Phase 1: exact match
+        # Phase 1: exact match on key, name, or alias
         for t in targets:
-            if game_name == t["key"] or game_name == t["name"]:
+            if (
+                game_name == t["key"]
+                or game_name == t["name"]
+                or game_name in t.get("aliases", [])
+            ):
                 return t
 
         # Phase 2: substring, longest targets first (avoids hijacking)
-        for t in sorted(
-            targets, key=lambda x: max(len(x["key"]), len(x["name"])), reverse=True
-        ):
-            if t["key"] in game_name or t["name"] in game_name:
-                return t
-            if len(game_name) > 4 and (
-                game_name in t["key"] or game_name in t["name"]
-            ):
-                return t
+        def _max_len(t: dict) -> int:
+            lengths = [len(t["key"]), len(t["name"])]
+            lengths += [len(a) for a in t.get("aliases", [])]
+            return max(lengths)
+
+        for t in sorted(targets, key=_max_len, reverse=True):
+            candidates = [t["key"], t["name"]] + t.get("aliases", [])
+            for c in candidates:
+                if c in game_name:
+                    return t
+                if len(game_name) > 4 and game_name in c:
+                    return t
 
         # Phase 3: word-overlap scoring (>=3 char words)
         game_words = {
@@ -1373,13 +1381,10 @@ class SabPubHelper(commands.Cog):
         best_match = None
         best_score = 0
         for t in targets:
+            all_text = f"{t['key']} {t['name']} {' '.join(t.get('aliases', []))}"
             t_words = {
                 w
-                for w in t["key"].replace(":", " ").replace("-", " ").split()
-                if len(w) >= 3
-            } | {
-                w
-                for w in t["name"].replace(":", " ").replace("-", " ").split()
+                for w in all_text.replace(":", " ").replace("-", " ").split()
                 if len(w) >= 3
             }
             overlap = len(game_words & t_words)
@@ -2581,6 +2586,7 @@ class SabPubHelper(commands.Cog):
                     "custom_text": custom_text,
                     "attach_image": attach_image,
                     "custom_image_url": custom_image_url,
+                    "aliases": [],
                 }
 
             await self._purge_game_translations(keyword)
@@ -2624,14 +2630,7 @@ class SabPubHelper(commands.Cog):
         """Remove a custom game from /saveinst by its keyword or name."""
         async with self.config.custom_saveinst() as custom_games:
             keyword = keyword.lower()
-            matched_key = None
-            if keyword in custom_games:
-                matched_key = keyword
-            else:
-                for k, data in custom_games.items():
-                    if keyword == data["name"].lower():
-                        matched_key = k
-                        break
+            matched_key = self._resolve_custom_saveinst_key(keyword, custom_games)
 
             if matched_key:
                 name = custom_games[matched_key]["name"]
@@ -2663,20 +2662,7 @@ class SabPubHelper(commands.Cog):
         custom_games = await self.config.custom_saveinst()
         keyword = keyword.lower()
 
-        # Check custom games first
-        matched_custom_key = None
-        if keyword in custom_games:
-            matched_custom_key = keyword
-        else:
-            for k, data in custom_games.items():
-                if keyword == data["name"].lower():
-                    matched_custom_key = k
-                    break
-            if not matched_custom_key:
-                for k, data in custom_games.items():
-                    if k.lower() in keyword or keyword in k.lower():
-                        matched_custom_key = k
-                        break
+        matched_custom_key = self._resolve_custom_saveinst_key(keyword, custom_games)
 
         if matched_custom_key:
             data = custom_games[matched_custom_key]
@@ -2788,20 +2774,8 @@ class SabPubHelper(commands.Cog):
         custom_games = await self.config.custom_saveinst()
         keyword = keyword.lower()
 
-        matched_key = None
+        matched_key = self._resolve_custom_saveinst_key(keyword, custom_games)
         message = None
-
-        if keyword in custom_games:
-            matched_key = keyword
-        else:
-            for k, data in custom_games.items():
-                if (
-                    keyword == data["name"].lower()
-                    or k.lower() in keyword
-                    or keyword in k.lower()
-                ):
-                    matched_key = k
-                    break
 
         if matched_key:
             data = custom_games[matched_key]
@@ -2890,14 +2864,7 @@ class SabPubHelper(commands.Cog):
         async with self.config.custom_saveinst() as custom_games:
             keyword = keyword.lower()
 
-            matched_key = None
-            if keyword in custom_games:
-                matched_key = keyword
-            else:
-                for k, data in custom_games.items():
-                    if keyword == data["name"].lower():
-                        matched_key = k
-                        break
+            matched_key = self._resolve_custom_saveinst_key(keyword, custom_games)
 
             if not matched_key:
                 # Check if it's a base game to override
@@ -2937,6 +2904,7 @@ class SabPubHelper(commands.Cog):
                             "custom_text": "",
                             "attach_image": True,
                             "custom_image_url": "",
+                            "aliases": [],
                         }
                     else:
                         profile = SAVE_PROFILES[matched_key]
@@ -2948,6 +2916,7 @@ class SabPubHelper(commands.Cog):
                             "custom_text": "",
                             "attach_image": True,
                             "custom_image_url": "",
+                            "aliases": [],
                         }
                     await ctx.send(
                         f"Created a custom override for base game **{profile['name']}**."
@@ -3002,6 +2971,10 @@ class SabPubHelper(commands.Cog):
                     name="2. Setup Type & Text", value=text_preview, inline=False
                 )
                 embed.add_field(name="3. Image", value=image_preview, inline=False)
+                            
+                aliases = data.get("aliases", [])
+                alias_display = ", ".join(f"`{a}`" for a in aliases) if aliases else "None"
+                embed.add_field(name="4. Aliases", value=alias_display, inline=False)
 
                 await ctx.send(embed=embed)
 
@@ -3123,8 +3096,46 @@ class SabPubHelper(commands.Cog):
                         else:
                             await ctx.send("Invalid choice. Try again.")
 
+                    elif choice == "4":
+                        current_aliases = data.get("aliases", [])
+                        alias_display = ", ".join(f"`{a}`" for a in current_aliases) if current_aliases else "None"
+                        await ctx.send(
+                            f"Current aliases: {alias_display}\n\n"
+                            "`add <alias>` — add an alias\n"
+                            "`remove <alias>` — remove an alias\n"
+                            "`cancel` — go back"
+                        )
+                        alias_msg = await ctx.bot.wait_for("message", check=check, timeout=120)
+                        alias_input = alias_msg.content.strip().lower()
+
+                        if alias_input == "cancel":
+                            continue
+                        elif alias_input.startswith("add "):
+                            new_alias = alias_input[4:].strip()
+                            conflict = self._resolve_custom_saveinst_key(new_alias, custom_games)
+                            if conflict and conflict != keyword:
+                                await ctx.send(f"❌ `{new_alias}` is already used by **{custom_games[conflict]['name']}**.")
+                            elif new_alias in current_aliases:
+                                await ctx.send(f"❌ `{new_alias}` is already an alias for this game.")
+                            else:
+                                current_aliases.append(new_alias)
+                                data["aliases"] = current_aliases
+                                custom_games[keyword] = data
+                                await ctx.send(f"✅ Alias `{new_alias}` added.")
+                        elif alias_input.startswith("remove "):
+                            rem_alias = alias_input[7:].strip()
+                            if rem_alias not in current_aliases:
+                                await ctx.send(f"❌ `{rem_alias}` is not an alias for this game.")
+                            else:
+                                current_aliases.remove(rem_alias)
+                                data["aliases"] = current_aliases
+                                custom_games[keyword] = data
+                                await ctx.send(f"✅ Alias `{rem_alias}` removed.")
+                        else:
+                            await ctx.send("Invalid input. Use `add <alias>`, `remove <alias>`, or `cancel`.")
+
                     else:
-                        await ctx.send("Invalid choice. Type 1, 2, 3, or `cancel`.")
+                        await ctx.send("Invalid choice. Type 1, 2, 3, 4 or `cancel`.")
 
                 except asyncio.TimeoutError:
                     await ctx.send(
@@ -3133,6 +3144,22 @@ class SabPubHelper(commands.Cog):
                     break
 
         await self._purge_game_translations(keyword)
+
+    def _resolve_custom_saveinst_key(self, query: str, custom_games: dict) -> str | None:
+        """Resolve a query (keyword, alias, or name) to a custom_saveinst key."""
+        query = query.lower().strip()
+        if query in custom_games:
+            return query
+        for k, data in custom_games.items():
+            if query in [a.lower() for a in data.get("aliases", [])]:
+                return k
+        for k, data in custom_games.items():
+            if query == data["name"].lower():
+                return k
+        for k, data in custom_games.items():
+            if k.lower() in query or query in k.lower():
+                return k
+        return None
 
     # ── Anadius admin commands ───────────────────────────────────────────────
 
@@ -4589,35 +4616,35 @@ class SabPubHelper(commands.Cog):
         self, interaction: discord.Interaction, current: str
     ) -> list[app_commands.Choice[str]]:
         """Autocomplete for the game parameter on /saveinst."""
-        games: dict[str, str] = {}  # lowercase_key -> display_name
-
+        games: dict[str, dict] = {}
         for key, data in SAVE_PROFILES.items():
-            games[key] = data.get("display_name", key.title())
+            games[key] = {"display": data.get("display_name", key.title()), "aliases": []}
         for key, data in SEGA_PROFILES.items():
-            games[key] = data.get("display_name", key.title())
-
+            games[key] = {"display": data.get("display_name", key.title()), "aliases": []}
         try:
             custom = await self.config.custom_saveinst()
             for key, data in custom.items():
-                games[key] = data.get("display_name", key.title())
+                games[key] = {
+                    "display": data.get("name", key.title()),
+                    "aliases": [a.lower() for a in data.get("aliases", [])],
+                }
         except Exception:
             pass
 
         current_lower = current.strip().lower()
         if current_lower:
             filtered = [
-                (k, v)
+                (k, v["display"])
                 for k, v in games.items()
-                if current_lower in k or current_lower in v.lower()
+                if current_lower in k
+                or current_lower in v["display"].lower()
+                or any(current_lower in a for a in v["aliases"])
             ]
         else:
-            filtered = list(games.items())
+            filtered = [(k, v["display"]) for k, v in games.items()]
 
         filtered.sort(key=lambda x: x[1])
-        return [
-            app_commands.Choice(name=display, value=key)
-            for key, display in filtered[:25]
-        ]
+        return [app_commands.Choice(name=display, value=key) for key, display in filtered[:25]]
 
     @app_commands.command(
         name="saveinst",
@@ -4660,6 +4687,7 @@ class SabPubHelper(commands.Cog):
                 {
                     "key": k,
                     "name": data["name"].lower(),
+                    "aliases": [a.lower() for a in data.get("aliases", [])],
                     "type": "custom",
                     "data": data,
                     "original_key": k,
