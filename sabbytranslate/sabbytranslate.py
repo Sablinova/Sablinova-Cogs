@@ -2,144 +2,66 @@ import asyncio
 import html
 import logging
 import re
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple
 
 import aiohttp
 import discord
 from discord import app_commands
+import langdetect
+from langdetect import DetectorFactory
 from redbot.core import Config, commands
 from redbot.core.bot import Red
 
+DetectorFactory.seed = 0
+
 log = logging.getLogger("red.sablinova.sabbytranslate")
 
-# Comprehensive Language Mapping: Code -> Name & Name -> Code
+CUSTOM_EMOJI_RE = re.compile(r"<a?:\w+:\d+>")
+MENTION_RE = re.compile(r"<@!?[0-9]+>|<@&[0-9]+>|<#[0-9]+>")
+URL_RE = re.compile(r"https?://\S+")
+DISCORD_TIMESTAMP_RE = re.compile(r"<t:\d+(:[tTdDfFR])?>")
+
 LANGUAGES: Dict[str, str] = {
-    "af": "Afrikaans",
-    "sq": "Albanian",
-    "am": "Amharic",
-    "ar": "Arabic",
-    "hy": "Armenian",
-    "az": "Azerbaijani",
-    "eu": "Basque",
-    "be": "Belarusian",
-    "bn": "Bengali",
-    "bs": "Bosnian",
-    "bg": "Bulgarian",
-    "ca": "Catalan",
-    "ceb": "Cebuano",
-    "ny": "Chichewa",
-    "zh-CN": "Chinese (Simplified)",
-    "zh-TW": "Chinese (Traditional)",
-    "co": "Corsican",
-    "hr": "Croatian",
-    "cs": "Czech",
-    "da": "Danish",
-    "nl": "Dutch",
-    "en": "English",
-    "eo": "Esperanto",
-    "et": "Estonian",
-    "tl": "Filipino",
-    "fi": "Finnish",
-    "fr": "French",
-    "fy": "Frisian",
-    "gl": "Galician",
-    "ka": "Georgian",
-    "de": "German",
-    "el": "Greek",
-    "gu": "Gujarati",
-    "ht": "Haitian Creole",
-    "ha": "Hausa",
-    "haw": "Hawaiian",
-    "he": "Hebrew",
-    "hi": "Hindi",
-    "hmn": "Hmong",
-    "hu": "Hungarian",
-    "is": "Icelandic",
-    "ig": "Igbo",
-    "id": "Indonesian",
-    "ga": "Irish",
-    "it": "Italian",
-    "ja": "Japanese",
-    "jw": "Javanese",
-    "kn": "Kannada",
-    "kk": "Kazakh",
-    "km": "Khmer",
-    "rw": "Kinyarwanda",
-    "ko": "Korean",
-    "ku": "Kurdish",
-    "ky": "Kyrgyz",
-    "lo": "Lao",
-    "la": "Latin",
-    "lv": "Latvian",
-    "lt": "Lithuanian",
-    "lb": "Luxembourgish",
-    "mk": "Macedonian",
-    "mg": "Malagasy",
-    "ms": "Malay",
-    "ml": "Malayalam",
-    "mt": "Maltese",
-    "mi": "Maori",
-    "mr": "Marathi",
-    "mn": "Mongolian",
-    "my": "Myanmar (Burmese)",
-    "ne": "Nepali",
-    "no": "Norwegian",
-    "or": "Odia",
-    "ps": "Pashto",
-    "fa": "Persian",
-    "pl": "Polish",
-    "pt": "Portuguese",
-    "pa": "Punjabi",
-    "ro": "Romanian",
-    "ru": "Russian",
-    "sm": "Samoan",
-    "gd": "Scots Gaelic",
-    "sr": "Serbian",
-    "st": "Sesotho",
-    "sn": "Shona",
-    "sd": "Sindhi",
-    "si": "Sinhala",
-    "sk": "Slovak",
-    "sl": "Slovenian",
-    "so": "Somali",
-    "es": "Spanish",
-    "su": "Sundanese",
-    "sw": "Swahili",
-    "sv": "Swedish",
-    "tg": "Tajik",
-    "ta": "Tamil",
-    "tt": "Tatar",
-    "te": "Telugu",
-    "th": "Thai",
-    "tr": "Turkish",
-    "tk": "Turkmen",
-    "uk": "Ukrainian",
-    "ur": "Urdu",
-    "ug": "Uyghur",
-    "uz": "Uzbek",
-    "vi": "Vietnamese",
-    "cy": "Welsh",
-    "xh": "Xhosa",
-    "yi": "Yiddish",
-    "yo": "Yoruba",
-    "zu": "Zulu",
+    "af": "Afrikaans", "sq": "Albanian", "am": "Amharic", "ar": "Arabic", "hy": "Armenian",
+    "az": "Azerbaijani", "eu": "Basque", "be": "Belarusian", "bn": "Bengali", "bs": "Bosnian",
+    "bg": "Bulgarian", "ca": "Catalan", "ceb": "Cebuano", "ny": "Chichewa",
+    "zh-CN": "Chinese (Simplified)", "zh-TW": "Chinese (Traditional)", "co": "Corsican",
+    "hr": "Croatian", "cs": "Czech", "da": "Danish", "nl": "Dutch", "en": "English",
+    "eo": "Esperanto", "et": "Estonian", "tl": "Filipino", "fi": "Finnish", "fr": "French",
+    "fy": "Frisian", "gl": "Galician", "ka": "Georgian", "de": "German", "el": "Greek",
+    "gu": "Gujarati", "ht": "Haitian Creole", "ha": "Hausa", "haw": "Hawaiian", "he": "Hebrew",
+    "hi": "Hindi", "hmn": "Hmong", "hu": "Hungarian", "is": "Icelandic", "ig": "Igbo",
+    "id": "Indonesian", "ga": "Irish", "it": "Italian", "ja": "Japanese", "jw": "Javanese",
+    "kn": "Kannada", "kk": "Kazakh", "km": "Khmer", "rw": "Kinyarwanda", "ko": "Korean",
+    "ku": "Kurdish", "ky": "Kyrgyz", "lo": "Lao", "la": "Latin", "lv": "Latvian",
+    "lt": "Lithuanian", "lb": "Luxembourgish", "mk": "Macedonian", "mg": "Malagasy",
+    "ms": "Malay", "ml": "Malayalam", "mt": "Maltese", "mi": "Maori", "mr": "Marathi",
+    "mn": "Mongolian", "my": "Myanmar (Burmese)", "ne": "Nepali", "no": "Norwegian",
+    "or": "Odia", "ps": "Pashto", "fa": "Persian", "pl": "Polish", "pt": "Portuguese",
+    "pa": "Punjabi", "ro": "Romanian", "ru": "Russian", "sm": "Samoan", "gd": "Scots Gaelic",
+    "sr": "Serbian", "st": "Sesotho", "sn": "Shona", "sd": "Sindhi", "si": "Sinhala",
+    "sk": "Slovak", "sl": "Slovenian", "so": "Somali", "es": "Spanish", "su": "Sundanese",
+    "sw": "Swahili", "sv": "Swedish", "tg": "Tajik", "ta": "Tamil", "tt": "Tatar",
+    "te": "Telugu", "th": "Thai", "tr": "Turkish", "tk": "Turkmen", "uk": "Ukrainian",
+    "ur": "Urdu", "ug": "Uyghur", "uz": "Uzbek", "vi": "Vietnamese", "cy": "Welsh",
+    "xh": "Xhosa", "yi": "Yiddish", "yo": "Yoruba", "zu": "Zulu",
 }
 
-# Reverse lookup
 NAME_TO_CODE: Dict[str, str] = {name.lower(): code for code, name in LANGUAGES.items()}
 for code, name in LANGUAGES.items():
     NAME_TO_CODE[code.lower()] = code
-# Common aliases
 NAME_TO_CODE["chinese"] = "zh-CN"
+NAME_TO_CODE["zh"] = "zh-CN"
 NAME_TO_CODE["portugese"] = "pt"
 NAME_TO_CODE["brazilian"] = "pt"
 NAME_TO_CODE["filipino"] = "tl"
 NAME_TO_CODE["tagalog"] = "tl"
 NAME_TO_CODE["farsi"] = "fa"
+NAME_TO_CODE["jp"] = "ja"
+NAME_TO_CODE["kr"] = "ko"
 
 
 def normalize_language(lang_input: str) -> Optional[Tuple[str, str]]:
-    """Normalize any language string/code into (code, Display Name)."""
     if not lang_input:
         return None
     cleaned = lang_input.strip().lower()
@@ -152,9 +74,68 @@ def normalize_language(lang_input: str) -> Optional[Tuple[str, str]]:
     return None
 
 
-class TranslationService:
-    """Async multi-backend translation client with caching."""
+def clean_text_for_detection(text: str) -> str:
+    t = re.sub(r"```[\s\S]*?```", "", text)
+    t = re.sub(r"`[^`]*`", "", t)
+    t = CUSTOM_EMOJI_RE.sub("", t)
+    t = MENTION_RE.sub("", t)
+    t = URL_RE.sub("", t)
+    t = DISCORD_TIMESTAMP_RE.sub("", t)
+    return t.strip()
 
+
+def detect_script_heuristic(text: str) -> Optional[str]:
+    has_arabic = any("\u0600" <= ch <= "\u06FF" or "\u0750" <= ch <= "\u077F" for ch in text)
+    if has_arabic:
+        return "ar"
+    has_hangul = any("\uAC00" <= ch <= "\uD7AF" or "\u1100" <= ch <= "\u11FF" for ch in text)
+    if has_hangul:
+        return "ko"
+    has_hiragana_katakana = any("\u3040" <= ch <= "\u30FF" for ch in text)
+    if has_hiragana_katakana:
+        return "ja"
+    has_cyrillic = any("\u0400" <= ch <= "\u04FF" for ch in text)
+    if has_cyrillic:
+        return "ru"
+    has_hebrew = any("\u0590" <= ch <= "\u05FF" for ch in text)
+    if has_hebrew:
+        return "he"
+    has_devanagari = any("\u0900" <= ch <= "\u097F" for ch in text)
+    if has_devanagari:
+        return "hi"
+    has_thai = any("\u0E00" <= ch <= "\u0E7F" for ch in text)
+    if has_thai:
+        return "th"
+    has_greek = any("\u0370" <= ch <= "\u03FF" for ch in text)
+    if has_greek:
+        return "el"
+    return None
+
+
+def detect_language(text: str) -> Optional[str]:
+    cleaned = clean_text_for_detection(text)
+    if not cleaned:
+        return None
+
+    script_code = detect_script_heuristic(cleaned)
+    if script_code:
+        return script_code
+
+    if len(cleaned.split()) <= 1 and len(cleaned) < 4:
+        return None
+
+    try:
+        lang = langdetect.detect(cleaned)
+        if lang == "zh-cn":
+            return "zh-CN"
+        if lang == "zh-tw":
+            return "zh-TW"
+        return lang
+    except Exception:
+        return None
+
+
+class TranslationService:
     def __init__(self):
         self._cache: Dict[str, str] = {}
         self._headers = {
@@ -180,7 +161,7 @@ class TranslationService:
         src_code = source if source != "auto" else "en"
         url = "https://api.mymemory.translated.net/get"
         params = {"q": text, "langpair": f"{src_code}|{target}"}
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(headers=self._headers) as session:
             async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=8)) as resp:
                 if resp.status == 200:
                     data = await resp.json(content_type=None)
@@ -190,7 +171,6 @@ class TranslationService:
         return None
 
     async def translate(self, text: str, target: str, source: str = "auto") -> str:
-        """Translate a piece of text into the target language."""
         if not text or not text.strip():
             return text
 
@@ -198,7 +178,6 @@ class TranslationService:
         if cache_key in self._cache:
             return self._cache[cache_key]
 
-        # Try Google Mobile first
         try:
             res = await self._google_mobile(text, target, source)
             if res:
@@ -207,7 +186,6 @@ class TranslationService:
         except Exception as e:
             log.debug(f"Google mobile translation error: {e}")
 
-        # Fallback to MyMemory
         try:
             res = await self._mymemory(text, target, source)
             if res:
@@ -219,7 +197,6 @@ class TranslationService:
         return text
 
     async def translate_batch(self, texts: List[str], target: str, source: str = "auto") -> List[str]:
-        """Translate a batch of texts concurrently."""
         tasks = [self.translate(t, target, source) for t in texts]
         return await asyncio.gather(*tasks)
 
@@ -227,7 +204,7 @@ class TranslationService:
 class SabbyTranslate(commands.Cog):
     """
     Translate entire Discord threads, replicate rich embeds identically in any language,
-    and manage two-way live translation in Discord channels/threads.
+    and manage smart two-way & hub live translation in Discord channels/threads.
     """
 
     def __init__(self, bot: Red):
@@ -235,20 +212,24 @@ class SabbyTranslate(commands.Cog):
         self.config = Config.get_conf(self, identifier=8923178041, force_registration=True)
         self.config.register_channel(
             enabled=False,
-            lang1="en",
-            lang2="pt",
+            main_lang="en",
+            second_lang="pt",
+            mode="hub",
+            reply_translate=True,
+        )
+        self.config.register_user(
+            preferred_language=None,
         )
         self.translator = TranslationService()
+        self._user_last_lang: Dict[int, str] = {}
 
     async def language_autocomplete(
         self, interaction: discord.Interaction, current: str
     ) -> List[app_commands.Choice[str]]:
-        """Autocomplete helper for language slash options."""
         current = current.lower().strip()
         choices = []
 
-        # Common languages on top
-        common_codes = ["pt", "en", "es", "fr", "de", "it", "ru", "ja", "zh-CN", "ko", "ar", "tr"]
+        common_codes = ["en", "pt", "es", "fr", "de", "it", "ru", "ar", "ko", "ja", "zh-CN", "tr"]
         for code in common_codes:
             name = LANGUAGES[code]
             if not current or current in name.lower() or current in code.lower():
@@ -263,7 +244,6 @@ class SabbyTranslate(commands.Cog):
         return choices[:25]
 
     async def replicate_embed_translated(self, embed: discord.Embed, target_code: str) -> discord.Embed:
-        """Reconstruct an exact replica of an embed with all text translated."""
         texts_to_translate: List[Tuple[str, str]] = []
 
         if embed.title:
@@ -279,7 +259,6 @@ class SabbyTranslate(commands.Cog):
             texts_to_translate.append((f"field_name_{idx}", field.name))
             texts_to_translate.append((f"field_val_{idx}", field.value))
 
-        # Batch translate all text fragments concurrently
         translated_results = await self.translator.translate_batch(
             [t[1] for t in texts_to_translate], target=target_code
         )
@@ -289,7 +268,6 @@ class SabbyTranslate(commands.Cog):
             for i in range(len(texts_to_translate))
         }
 
-        # Build new embed preserving exact styling, colors, and media
         new_embed = discord.Embed(
             title=translated_map.get("title", embed.title),
             description=translated_map.get("description", embed.description),
@@ -339,7 +317,6 @@ class SabbyTranslate(commands.Cog):
         language: str,
         limit: Optional[app_commands.Range[int, 1, 100]] = 50,
     ):
-        """Slash command to translate all thread contents and embeds."""
         norm = normalize_language(language)
         if not norm:
             await interaction.response.send_message(
@@ -358,12 +335,10 @@ class SabbyTranslate(commands.Cog):
 
         await interaction.response.defer(ephemeral=False)
 
-        # Collect messages oldest first
         history_msgs: List[discord.Message] = []
         async for msg in channel.history(limit=limit, oldest_first=True):
-            # Skip messages created by this bot containing translations or status
             if msg.author.id == self.bot.user.id and (
-                "Translated Thread History" in msg.content or "Live two-way translation" in msg.content
+                "Translated Thread History" in msg.content or "Live Translation" in msg.content or "Translated" in msg.content
             ):
                 continue
             history_msgs.append(msg)
@@ -372,13 +347,12 @@ class SabbyTranslate(commands.Cog):
             await interaction.followup.send("⚠️ No messages found to translate in this thread.")
             return
 
-        header_msg = await interaction.followup.send(
+        await interaction.followup.send(
             f"🔄 **Translating {len(history_msgs)} message(s) to {target_name} ({target_code})...**"
         )
 
         translated_count = 0
         for msg in history_msgs:
-            # 1. Translate embeds
             if msg.embeds:
                 for original_embed in msg.embeds:
                     try:
@@ -394,7 +368,6 @@ class SabbyTranslate(commands.Cog):
                     except Exception as e:
                         log.error(f"Error translating embed: {e}", exc_info=True)
 
-            # 2. Translate text content
             if msg.content and msg.content.strip():
                 try:
                     translated_text = await self.translator.translate(
@@ -412,36 +385,39 @@ class SabbyTranslate(commands.Cog):
             f"✅ **Completed translation of {translated_count} item(s) to {target_name}!**"
         )
 
-    # ── Live Two-Way Translation Commands ──
-
     @app_commands.command(
         name="livetranslate",
-        description="Configure live real-time two-way translation in this thread or channel.",
+        description="Configure smart live translation in this thread or channel.",
     )
     @app_commands.describe(
         action="Action to perform (start, stop, or status)",
-        first_language="First language for two-way translation (e.g. English)",
-        second_language="Second language for two-way translation (e.g. Portuguese)",
+        main_language="Channel main language (all foreign messages translate to this, e.g. English)",
+        second_language="Optional second language for two-way translation (e.g. Portuguese)",
+        mode="Hub (translate all foreign -> main language) or Two-Way (exchange between main & second)",
     )
     @app_commands.choices(
         action=[
             app_commands.Choice(name="Start Live Translation", value="start"),
             app_commands.Choice(name="Stop Live Translation", value="stop"),
             app_commands.Choice(name="Check Status", value="status"),
-        ]
+        ],
+        mode=[
+            app_commands.Choice(name="Hub Mode (All foreign languages -> Main language)", value="hub"),
+            app_commands.Choice(name="Two-Way Mode (Main language <-> Second language)", value="twoway"),
+        ],
     )
     @app_commands.autocomplete(
-        first_language=language_autocomplete,
+        main_language=language_autocomplete,
         second_language=language_autocomplete,
     )
     async def slash_livetranslate(
         self,
         interaction: discord.Interaction,
         action: app_commands.Choice[str],
-        first_language: Optional[str] = "English",
+        main_language: Optional[str] = "English",
         second_language: Optional[str] = "Portuguese",
+        mode: Optional[app_commands.Choice[str]] = None,
     ):
-        """Manage live translation for the current thread/channel."""
         channel = interaction.channel
         if not isinstance(channel, (discord.Thread, discord.TextChannel)):
             await interaction.response.send_message(
@@ -464,61 +440,115 @@ class SabbyTranslate(commands.Cog):
                     ephemeral=True,
                 )
             else:
-                l1 = LANGUAGES.get(conf["lang1"], conf["lang1"])
-                l2 = LANGUAGES.get(conf["lang2"], conf["lang2"])
+                main_l = LANGUAGES.get(conf["main_lang"], conf["main_lang"].upper())
+                sec_l = LANGUAGES.get(conf["second_lang"], conf["second_lang"].upper())
+                m_type = "Hub Mode (All foreign languages ➔ " + main_l + ")" if conf.get("mode") == "hub" else f"Two-Way Mode ({main_l} ⇄ {sec_l})"
                 await interaction.response.send_message(
                     f"🟢 **Live Translation Active in {channel.mention}**\n"
-                    f"• **Language 1:** {l1} (`{conf['lang1']}`)\n"
-                    f"• **Language 2:** {l2} (`{conf['lang2']}`)\n"
-                    f"Messages sent in {l1} auto-translate to {l2}, and vice-versa."
+                    f"• **Mode:** {m_type}\n"
+                    f"• **Main Language:** {main_l} (`{conf['main_lang']}`)\n"
+                    f"• **Second Language:** {sec_l} (`{conf['second_lang']}`)\n"
+                    f"• **Smart Reply Translation:** `Enabled`\n"
+                    f"💡 *Replies to foreign speakers automatically translate back into their language!*"
                 )
             return
 
-        # Start action
-        norm1 = normalize_language(first_language or "English")
-        norm2 = normalize_language(second_language or "Portuguese")
+        norm_main = normalize_language(main_language or "English")
+        norm_sec = normalize_language(second_language or "Portuguese")
 
-        if not norm1 or not norm2:
+        if not norm_main or not norm_sec:
             await interaction.response.send_message(
                 "❌ One or both languages were not recognized. Please check language names.",
                 ephemeral=True,
             )
             return
 
-        code1, name1 = norm1
-        code2, name2 = norm2
+        code_main, name_main = norm_main
+        code_sec, name_sec = norm_sec
+        chosen_mode = mode.value if mode else "hub"
 
-        if code1 == code2:
-            await interaction.response.send_message(
-                "⚠️ First and second languages cannot be the same.", ephemeral=True
+        await self.config.channel(channel).set({
+            "enabled": True,
+            "main_lang": code_main,
+            "second_lang": code_sec,
+            "mode": chosen_mode,
+            "reply_translate": True,
+        })
+
+        if chosen_mode == "hub":
+            desc = (
+                f"🌐 **Hub Translation is active in {channel.mention}!**\n\n"
+                f"• Any message in **Arabic, Korean, Portuguese, Spanish, Russian, Japanese, etc.** will automatically translate to **{name_main}**.\n"
+                f"• **Smart Reply Translation**: Replying to a foreign user in {name_main} will auto-translate your reply into their language!\n\n"
+                f"To turn off, run `/livetranslate action:Stop`."
             )
-            return
-
-        await self.config.channel(channel).set(
-            {"enabled": True, "lang1": code1, "lang2": code2}
-        )
+        else:
+            desc = (
+                f"🔀 **Two-Way Translation is active in {channel.mention}!**\n\n"
+                f"• Messages in **{name_main}** auto-translate to **{name_sec}**.\n"
+                f"• Messages in **{name_sec}** auto-translate to **{name_main}**.\n"
+                f"• Other foreign languages auto-translate to **{name_main}**.\n\n"
+                f"To turn off, run `/livetranslate action:Stop`."
+            )
 
         embed = discord.Embed(
-            title="🌐 Live Two-Way Translation Activated",
-            description=(
-                f"Real-time translation is now active in {channel.mention}!\n\n"
-                f"🔀 **{name1} ({code1}) ⇄ {name2} ({code2})**\n\n"
-                f"• Messages sent in **{name1}** will auto-translate to **{name2}**.\n"
-                f"• Messages sent in **{name2}** will auto-translate to **{name1}**.\n\n"
-                f"To turn off, run `/livetranslate action:Stop`."
-            ),
+            title="🌐 Live Translation Activated",
+            description=desc,
             color=discord.Color.blue(),
         )
         await interaction.response.send_message(embed=embed)
 
-    # ── Text Prefix Commands ──
+    @app_commands.command(
+        name="mytranslate",
+        description="Set your preferred personal language for smart translation & replies.",
+    )
+    @app_commands.describe(
+        language="Your native/preferred language (e.g. Portuguese, Korean, Arabic)",
+    )
+    @app_commands.autocomplete(language=language_autocomplete)
+    async def slash_mytranslate(
+        self,
+        interaction: discord.Interaction,
+        language: Optional[str] = None,
+    ):
+        if not language:
+            curr = await self.config.user(interaction.user).preferred_language()
+            if curr:
+                lang_name = LANGUAGES.get(curr, curr.upper())
+                await interaction.response.send_message(
+                    f"ℹ️ Your preferred language is set to **{lang_name}** (`{curr}`).\n"
+                    f"To change it, run `/mytranslate language:<new_language>`.",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.response.send_message(
+                    "ℹ️ You have not set a preferred language yet. Run `/mytranslate language:<your_language>` to set one!",
+                    ephemeral=True,
+                )
+            return
+
+        norm = normalize_language(language)
+        if not norm:
+            await interaction.response.send_message(
+                f"❌ Language `{language}` not recognized.", ephemeral=True
+            )
+            return
+
+        code, name = norm
+        await self.config.user(interaction.user).preferred_language.set(code)
+        self._user_last_lang[interaction.user.id] = code
+
+        await interaction.response.send_message(
+            f"✅ Your preferred language is now saved as **{name}** (`{code}`)!\n"
+            f"When people reply to you in live translation channels, their messages will automatically translate into **{name}**.",
+            ephemeral=True,
+        )
 
     @commands.command(name="fulltranslate", aliases=["threadtranslate", "translateall"])
     @commands.guild_only()
     async def prefix_fulltranslate(
         self, ctx: commands.Context, language: str, limit: int = 50
     ):
-        """Translate thread messages and embeds (Prefix command)."""
         norm = normalize_language(language)
         if not norm:
             await ctx.send(f"❌ Language `{language}` not recognized.")
@@ -553,51 +583,85 @@ class SabbyTranslate(commands.Cog):
                     )
                     await asyncio.sleep(0.3)
 
-    # ── Listener for Live Translation ──
-
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """Live message listener for channels/threads with translation enabled."""
         if message.author.bot or not message.guild or not message.content:
             return
 
-        # Check if live translation is enabled in this channel/thread
         conf = await self.config.channel(message.channel).all()
         if not conf.get("enabled"):
             return
 
-        lang1 = conf.get("lang1", "en")
-        lang2 = conf.get("lang2", "pt")
-
         text = message.content.strip()
-        if text.startswith(tuple(await self.bot.get_valid_prefixes(message.guild))):
+        prefixes = await self.bot.get_valid_prefixes(message.guild)
+        if text.startswith(tuple(prefixes)):
             return
 
-        # Target language logic: translate to lang2 by default, or lang1 if detected as lang2
-        # Translate to both or detect
-        # We translate to lang2 first; if source is lang2, translate to lang1
-        try:
-            # Detect by translating to lang1
-            translated_to_l1 = await self.translator.translate(text, target=lang1, source="auto")
-            translated_to_l2 = await self.translator.translate(text, target=lang2, source="auto")
+        main_lang = conf.get("main_lang", "en")
+        second_lang = conf.get("second_lang", "pt")
+        mode = conf.get("mode", "hub")
+        reply_enabled = conf.get("reply_translate", True)
 
-            # Determine whether source is lang1 or lang2
-            name1 = LANGUAGES.get(lang1, lang1.upper())
-            name2 = LANGUAGES.get(lang2, lang2.upper())
-
-            # If translating to lang1 produced a different text, and translating to lang2 produced exact same text,
-            # then source was lang2 -> send lang1 translation
-            if text.lower() == translated_to_l2.lower() and text.lower() != translated_to_l1.lower():
-                out_text = translated_to_l1
-                src_name, dst_name = name2, name1
-            else:
-                out_text = translated_to_l2
-                src_name, dst_name = name1, name2
-
-            if out_text.lower() != text.lower():
-                await message.reply(
-                    f"🌐 **[Translated {src_name} ➔ {dst_name}]**:\n{out_text}",
-                    mention_author=False,
+        # 1. Smart Reply Context
+        if reply_enabled and message.reference and message.reference.message_id:
+            try:
+                ref_msg = message.reference.resolved or await message.channel.fetch_message(
+                    message.reference.message_id
                 )
+                if ref_msg and isinstance(ref_msg, discord.Message) and not ref_msg.author.bot and ref_msg.author.id != message.author.id:
+                    user_pref = await self.config.user(ref_msg.author).preferred_language()
+                    recipient_lang = user_pref or self._user_last_lang.get(ref_msg.author.id)
+
+                    if not recipient_lang and ref_msg.content:
+                        recipient_lang = detect_language(ref_msg.content)
+
+                    sender_lang = detect_language(text) or main_lang
+                    self._user_last_lang[message.author.id] = sender_lang
+
+                    if recipient_lang and recipient_lang != sender_lang:
+                        recip_name = LANGUAGES.get(recipient_lang, recipient_lang.upper())
+                        send_name = LANGUAGES.get(sender_lang, sender_lang.upper())
+                        translated = await self.translator.translate(text, target=recipient_lang, source=sender_lang)
+
+                        if translated.lower().strip() != text.lower().strip():
+                            await message.reply(
+                                f"🌐 **[Translated {send_name} ➔ {recip_name} for {ref_msg.author.mention}]**:\n{translated}",
+                                mention_author=False,
+                            )
+                            return
+            except Exception as e:
+                log.debug(f"Reply context translation error: {e}")
+
+        # 2. General channel message translation
+        detected_lang = detect_language(text)
+        if not detected_lang:
+            return
+
+        self._user_last_lang[message.author.id] = detected_lang
+
+        target_lang = None
+        if detected_lang == main_lang:
+            if mode == "twoway" and second_lang and second_lang != main_lang:
+                target_lang = second_lang
+            else:
+                return
+        else:
+            target_lang = main_lang
+
+        if not target_lang or target_lang == detected_lang:
+            return
+
+        try:
+            translated = await self.translator.translate(text, target=target_lang, source=detected_lang)
+            if translated.lower().strip() == text.lower().strip():
+                return
+
+            src_name = LANGUAGES.get(detected_lang, detected_lang.upper())
+            dst_name = LANGUAGES.get(target_lang, target_lang.upper())
+
+            await message.reply(
+                f"🌐 **[Translated {src_name} ➔ {dst_name}]**:\n{translated}",
+                mention_author=False,
+            )
         except Exception as e:
             log.error(f"Live translation error on message {message.id}: {e}", exc_info=True)
