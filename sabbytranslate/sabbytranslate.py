@@ -2,7 +2,7 @@ import asyncio
 import html
 import logging
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import aiohttp
 import discord
@@ -201,6 +201,107 @@ class TranslationService:
         return await asyncio.gather(*tasks)
 
 
+class LanguageSelect(discord.ui.Select):
+    def __init__(self, cog, user_id: int):
+        self.cog = cog
+        self.user_id = user_id
+        options = [
+            discord.SelectOption(label="English", value="en", emoji="🇺🇸"),
+            discord.SelectOption(label="Portuguese", value="pt", emoji="🇧🇷"),
+            discord.SelectOption(label="Arabic", value="ar", emoji="🇸🇦"),
+            discord.SelectOption(label="Korean", value="ko", emoji="🇰🇷"),
+            discord.SelectOption(label="Spanish", value="es", emoji="🇪🇸"),
+            discord.SelectOption(label="French", value="fr", emoji="🇫🇷"),
+            discord.SelectOption(label="German", value="de", emoji="🇩🇪"),
+            discord.SelectOption(label="Russian", value="ru", emoji="🇷🇺"),
+            discord.SelectOption(label="Japanese", value="ja", emoji="🇯🇵"),
+            discord.SelectOption(label="Chinese", value="zh-CN", emoji="🇨🇳"),
+            discord.SelectOption(label="Italian", value="it", emoji="🇮🇹"),
+            discord.SelectOption(label="Turkish", value="tr", emoji="🇹🇷"),
+            discord.SelectOption(label="Vietnamese", value="vi", emoji="🇻🇳"),
+            discord.SelectOption(label="Hindi", value="hi", emoji="🇮🇳"),
+            discord.SelectOption(label="Indonesian", value="id", emoji="🇮🇩"),
+        ]
+        super().__init__(placeholder="🌐 Choose your preferred language...", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ This language prompt is for another user.", ephemeral=True)
+            return
+
+        chosen_code = self.values[0]
+        chosen_name = LANGUAGES.get(chosen_code, chosen_code.title())
+        await self.cog.config.user(interaction.user).preferred_language.set(chosen_code)
+        self.cog._user_last_lang[interaction.user.id] = chosen_code
+
+        for item in self.view.children:
+            item.disabled = True
+        await interaction.response.edit_message(
+            content=f"✅ {interaction.user.mention} saved preferred language as **{chosen_name}** (`{chosen_code}`)!\nReplies to you in live translation threads will automatically translate into **{chosen_name}**.",
+            view=self.view,
+        )
+
+
+class LanguagePromptView(discord.ui.View):
+    def __init__(self, cog, user_id: int, detected_code: str, detected_name: str, timeout: float = 120.0):
+        super().__init__(timeout=timeout)
+        self.cog = cog
+        self.user_id = user_id
+        self.detected_code = detected_code
+        self.detected_name = detected_name
+
+        btn_detected = discord.ui.Button(
+            label=f"Set to {detected_name} ({detected_code})",
+            style=discord.ButtonStyle.primary,
+            emoji="✅",
+            custom_id=f"set_detected_{detected_code}"
+        )
+        btn_detected.callback = self.set_detected_callback
+        self.add_item(btn_detected)
+
+        self.add_item(LanguageSelect(cog, user_id))
+
+        btn_dismiss = discord.ui.Button(
+            label="Dismiss",
+            style=discord.ButtonStyle.secondary,
+            emoji="✖️",
+            custom_id="dismiss_prompt"
+        )
+        btn_dismiss.callback = self.dismiss_callback
+        self.add_item(btn_dismiss)
+
+    async def set_detected_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ This language prompt is for another user.", ephemeral=True)
+            return
+
+        await self.cog.config.user(interaction.user).preferred_language.set(self.detected_code)
+        self.cog._user_last_lang[interaction.user.id] = self.detected_code
+
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(
+            content=f"✅ {interaction.user.mention} saved preferred language as **{self.detected_name}** (`{self.detected_code}`)!\nReplies to you in live translation threads will automatically translate into **{self.detected_name}**.",
+            view=self,
+        )
+
+    async def dismiss_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ This language prompt is for another user.", ephemeral=True)
+            return
+
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(
+            content=f"ℹ️ {interaction.user.mention} dismissed language setup.",
+            view=self,
+        )
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+
+
 class SabbyTranslate(commands.Cog):
     """
     Translate entire Discord threads, replicate rich embeds identically in any language,
@@ -214,14 +315,16 @@ class SabbyTranslate(commands.Cog):
             enabled=False,
             main_lang="en",
             second_lang="pt",
-            mode="hub",
+            mode="hub",  # "hub" = all foreign -> main_lang; "twoway" = main_lang <-> second_lang
             reply_translate=True,
+            prompt_new_users=True,  # Interactive button prompt for users without preferred language
         )
         self.config.register_user(
             preferred_language=None,
         )
         self.translator = TranslationService()
         self._user_last_lang: Dict[int, str] = {}
+        self._prompted_users: Set[int] = set()
 
     async def language_autocomplete(
         self, interaction: discord.Interaction, current: str
@@ -449,6 +552,7 @@ class SabbyTranslate(commands.Cog):
                     f"• **Main Language:** {main_l} (`{conf['main_lang']}`)\n"
                     f"• **Second Language:** {sec_l} (`{conf['second_lang']}`)\n"
                     f"• **Smart Reply Translation:** `Enabled`\n"
+                    f"• **New User Language Setup Prompt:** `Enabled`\n"
                     f"💡 *Replies to foreign speakers automatically translate back into their language!*"
                 )
             return
@@ -473,13 +577,15 @@ class SabbyTranslate(commands.Cog):
             "second_lang": code_sec,
             "mode": chosen_mode,
             "reply_translate": True,
+            "prompt_new_users": True,
         })
 
         if chosen_mode == "hub":
             desc = (
                 f"🌐 **Hub Translation is active in {channel.mention}!**\n\n"
                 f"• Any message in **Arabic, Korean, Portuguese, Spanish, Russian, Japanese, etc.** will automatically translate to **{name_main}**.\n"
-                f"• **Smart Reply Translation**: Replying to a foreign user in {name_main} will auto-translate your reply into their language!\n\n"
+                f"• **Smart Reply Translation**: Replying to a foreign user will auto-translate your reply into their language!\n"
+                f"• **Auto Language Prompt**: Unregistered users will be prompted once with interactive buttons to save their language.\n\n"
                 f"To turn off, run `/livetranslate action:Stop`."
             )
         else:
@@ -521,8 +627,12 @@ class SabbyTranslate(commands.Cog):
                     ephemeral=True,
                 )
             else:
+                # Show interactive prompt view
+                view = discord.ui.View(timeout=120.0)
+                view.add_item(LanguageSelect(self, interaction.user.id))
                 await interaction.response.send_message(
-                    "ℹ️ You have not set a preferred language yet. Run `/mytranslate language:<your_language>` to set one!",
+                    "🌐 **Select your native / preferred language below:**",
+                    view=view,
                     ephemeral=True,
                 )
             return
@@ -601,8 +711,28 @@ class SabbyTranslate(commands.Cog):
         second_lang = conf.get("second_lang", "pt")
         mode = conf.get("mode", "hub")
         reply_enabled = conf.get("reply_translate", True)
+        prompt_enabled = conf.get("prompt_new_users", True)
 
-        # 1. Smart Reply Context
+        # 1. Check & prompt unregistered foreign speakers
+        detected_lang = detect_language(text)
+        if detected_lang:
+            self._user_last_lang[message.author.id] = detected_lang
+
+            if prompt_enabled and message.author.id not in self._prompted_users:
+                user_pref = await self.config.user(message.author).preferred_language()
+                if not user_pref and detected_lang != main_lang:
+                    self._prompted_users.add(message.author.id)
+                    det_name = LANGUAGES.get(detected_lang, detected_lang.upper())
+                    view = LanguagePromptView(self, message.author.id, detected_lang, det_name)
+                    asyncio.create_task(
+                        message.channel.send(
+                            f"👋 Hello {message.author.mention}! I noticed you are speaking **{det_name}**.\n"
+                            f"Would you like to save **{det_name}** as your preferred language so replies to you are automatically translated?",
+                            view=view,
+                        )
+                    )
+
+        # 2. Smart Reply Context
         if reply_enabled and message.reference and message.reference.message_id:
             try:
                 ref_msg = message.reference.resolved or await message.channel.fetch_message(
@@ -615,8 +745,7 @@ class SabbyTranslate(commands.Cog):
                     if not recipient_lang and ref_msg.content:
                         recipient_lang = detect_language(ref_msg.content)
 
-                    sender_lang = detect_language(text) or main_lang
-                    self._user_last_lang[message.author.id] = sender_lang
+                    sender_lang = detected_lang or main_lang
 
                     if recipient_lang and recipient_lang != sender_lang:
                         recip_name = LANGUAGES.get(recipient_lang, recipient_lang.upper())
@@ -632,12 +761,9 @@ class SabbyTranslate(commands.Cog):
             except Exception as e:
                 log.debug(f"Reply context translation error: {e}")
 
-        # 2. General channel message translation
-        detected_lang = detect_language(text)
+        # 3. General channel message translation
         if not detected_lang:
             return
-
-        self._user_last_lang[message.author.id] = detected_lang
 
         target_lang = None
         if detected_lang == main_lang:
