@@ -1,0 +1,11 @@
+{
+  "author": ["Sablinova"],
+  "description": "Translate entire Discord threads, reconstruct translated rich embeds identically, and enable two-way live translation.",
+  "install_msg": "Thanks for installing SabbyTranslate! Use `/fulltranslate` to translate threads and embeds, or `/livetranslate` for real-time two-way chat translation.",
+  "short": "Thread, Embed, and Live Two-Way Translator for Discord",
+  "tags": ["translate", "translation", "embeds", "threads", "live", "multilingual", "portuguese", "english"],
+  "min_bot_version": "3.5.0",
+  "hidden": false,
+  "disabled": false,
+  "type": "COG"
+}
