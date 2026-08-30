@@ -305,7 +305,7 @@ class LanguagePromptView(discord.ui.View):
 class SabbyTranslate(commands.Cog):
     """
     Translate entire Discord threads, replicate rich embeds identically in any language,
-    and manage smart two-way & hub live translation in Discord channels/threads.
+    and manage two-way live translation in Discord channels/threads.
     """
 
     def __init__(self, bot: Red):
@@ -313,11 +313,10 @@ class SabbyTranslate(commands.Cog):
         self.config = Config.get_conf(self, identifier=8923178041, force_registration=True)
         self.config.register_channel(
             enabled=False,
-            main_lang="en",
+            first_lang="en",
             second_lang="pt",
-            mode="hub",  # "hub" = all foreign -> main_lang; "twoway" = main_lang <-> second_lang
             reply_translate=True,
-            prompt_new_users=True,  # Interactive button prompt for users without preferred language
+            prompt_new_users=True,
         )
         self.config.register_user(
             preferred_language=None,
@@ -441,7 +440,7 @@ class SabbyTranslate(commands.Cog):
         history_msgs: List[discord.Message] = []
         async for msg in channel.history(limit=limit, oldest_first=True):
             if msg.author.id == self.bot.user.id and (
-                "Translated Thread History" in msg.content or "Live Translation" in msg.content or "Translated" in msg.content
+                "Translated Thread History" in msg.content or "Live Two-Way Translation" in msg.content or "Translated" in msg.content
             ):
                 continue
             history_msgs.append(msg)
@@ -488,15 +487,16 @@ class SabbyTranslate(commands.Cog):
             f"✅ **Completed translation of {translated_count} item(s) to {target_name}!**"
         )
 
+    # ── Live Two-Way Translation ──
+
     @app_commands.command(
         name="livetranslate",
-        description="Configure smart live translation in this thread or channel.",
+        description="Configure two-way live translation in this thread or channel.",
     )
     @app_commands.describe(
         action="Action to perform (start, stop, or status)",
-        main_language="Channel main language (all foreign messages translate to this, e.g. English)",
-        second_language="Optional second language for two-way translation (e.g. Portuguese)",
-        mode="Hub (translate all foreign -> main language) or Two-Way (exchange between main & second)",
+        first_language="First language (e.g. English)",
+        second_language="Second language (e.g. Portuguese)",
     )
     @app_commands.choices(
         action=[
@@ -504,22 +504,17 @@ class SabbyTranslate(commands.Cog):
             app_commands.Choice(name="Stop Live Translation", value="stop"),
             app_commands.Choice(name="Check Status", value="status"),
         ],
-        mode=[
-            app_commands.Choice(name="Hub Mode (All foreign languages -> Main language)", value="hub"),
-            app_commands.Choice(name="Two-Way Mode (Main language <-> Second language)", value="twoway"),
-        ],
     )
     @app_commands.autocomplete(
-        main_language=language_autocomplete,
+        first_language=language_autocomplete,
         second_language=language_autocomplete,
     )
     async def slash_livetranslate(
         self,
         interaction: discord.Interaction,
         action: app_commands.Choice[str],
-        main_language: Optional[str] = "English",
+        first_language: Optional[str] = "English",
         second_language: Optional[str] = "Portuguese",
-        mode: Optional[app_commands.Choice[str]] = None,
     ):
         channel = interaction.channel
         if not isinstance(channel, (discord.Thread, discord.TextChannel)):
@@ -543,63 +538,57 @@ class SabbyTranslate(commands.Cog):
                     ephemeral=True,
                 )
             else:
-                main_l = LANGUAGES.get(conf["main_lang"], conf["main_lang"].upper())
+                first_l = LANGUAGES.get(conf["first_lang"], conf["first_lang"].upper())
                 sec_l = LANGUAGES.get(conf["second_lang"], conf["second_lang"].upper())
-                m_type = "Hub Mode (All foreign languages ➔ " + main_l + ")" if conf.get("mode") == "hub" else f"Two-Way Mode ({main_l} ⇄ {sec_l})"
                 await interaction.response.send_message(
-                    f"🟢 **Live Translation Active in {channel.mention}**\n"
-                    f"• **Mode:** {m_type}\n"
-                    f"• **Main Language:** {main_l} (`{conf['main_lang']}`)\n"
-                    f"• **Second Language:** {sec_l} (`{conf['second_lang']}`)\n"
-                    f"• **Smart Reply Translation:** `Enabled`\n"
-                    f"• **New User Language Setup Prompt:** `Enabled`\n"
-                    f"💡 *Replies to foreign speakers automatically translate back into their language!*"
+                    f"🟢 **Live Two-Way Translation Active in {channel.mention}**\n"
+                    f"• **Language 1:** {first_l} (`{conf['first_lang']}`)\n"
+                    f"• **Language 2:** {sec_l} (`{conf['second_lang']}`)\n"
+                    f"• Messages sent in **{first_l}** auto-translate to **{sec_l}**.\n"
+                    f"• Messages sent in **{sec_l}** auto-translate to **{first_l}**.\n"
+                    f"• Messages in any other language auto-translate to **{first_l}**.\n"
+                    f"• **Smart Reply Translation:** `Enabled`"
                 )
             return
 
-        norm_main = normalize_language(main_language or "English")
-        norm_sec = normalize_language(second_language or "Portuguese")
+        norm1 = normalize_language(first_language or "English")
+        norm2 = normalize_language(second_language or "Portuguese")
 
-        if not norm_main or not norm_sec:
+        if not norm1 or not norm2:
             await interaction.response.send_message(
                 "❌ One or both languages were not recognized. Please check language names.",
                 ephemeral=True,
             )
             return
 
-        code_main, name_main = norm_main
-        code_sec, name_sec = norm_sec
-        chosen_mode = mode.value if mode else "hub"
+        code1, name1 = norm1
+        code2, name2 = norm2
+
+        if code1 == code2:
+            await interaction.response.send_message(
+                "⚠️ First and second languages cannot be the same.", ephemeral=True
+            )
+            return
 
         await self.config.channel(channel).set({
             "enabled": True,
-            "main_lang": code_main,
-            "second_lang": code_sec,
-            "mode": chosen_mode,
+            "first_lang": code1,
+            "second_lang": code2,
             "reply_translate": True,
             "prompt_new_users": True,
         })
 
-        if chosen_mode == "hub":
-            desc = (
-                f"🌐 **Hub Translation is active in {channel.mention}!**\n\n"
-                f"• Any message in **Arabic, Korean, Portuguese, Spanish, Russian, Japanese, etc.** will automatically translate to **{name_main}**.\n"
-                f"• **Smart Reply Translation**: Replying to a foreign user will auto-translate your reply into their language!\n"
-                f"• **Auto Language Prompt**: Unregistered users will be prompted once with interactive buttons to save their language.\n\n"
-                f"To turn off, run `/livetranslate action:Stop`."
-            )
-        else:
-            desc = (
-                f"🔀 **Two-Way Translation is active in {channel.mention}!**\n\n"
-                f"• Messages in **{name_main}** auto-translate to **{name_sec}**.\n"
-                f"• Messages in **{name_sec}** auto-translate to **{name_main}**.\n"
-                f"• Other foreign languages auto-translate to **{name_main}**.\n\n"
-                f"To turn off, run `/livetranslate action:Stop`."
-            )
-
         embed = discord.Embed(
-            title="🌐 Live Translation Activated",
-            description=desc,
+            title="🌐 Live Two-Way Translation Activated",
+            description=(
+                f"Two-way translation is now active in {channel.mention}!\n\n"
+                f"🔀 **{name1} ({code1}) ⇄ {name2} ({code2})**\n\n"
+                f"• Messages in **{name1}** will auto-translate to **{name2}**.\n"
+                f"• Messages in **{name2}** will auto-translate to **{name1}**.\n"
+                f"• Messages in any other language will auto-translate to **{name1}**.\n"
+                f"• **Smart Reply Translation**: Replies to foreign users auto-translate back into their language.\n\n"
+                f"To turn off, run `/livetranslate action:Stop`."
+            ),
             color=discord.Color.blue(),
         )
         await interaction.response.send_message(embed=embed)
@@ -627,7 +616,6 @@ class SabbyTranslate(commands.Cog):
                     ephemeral=True,
                 )
             else:
-                # Show interactive prompt view
                 view = discord.ui.View(timeout=120.0)
                 view.add_item(LanguageSelect(self, interaction.user.id))
                 await interaction.response.send_message(
@@ -707,9 +695,8 @@ class SabbyTranslate(commands.Cog):
         if text.startswith(tuple(prefixes)):
             return
 
-        main_lang = conf.get("main_lang", "en")
+        first_lang = conf.get("first_lang", "en")
         second_lang = conf.get("second_lang", "pt")
-        mode = conf.get("mode", "hub")
         reply_enabled = conf.get("reply_translate", True)
         prompt_enabled = conf.get("prompt_new_users", True)
 
@@ -720,7 +707,7 @@ class SabbyTranslate(commands.Cog):
 
             if prompt_enabled and message.author.id not in self._prompted_users:
                 user_pref = await self.config.user(message.author).preferred_language()
-                if not user_pref and detected_lang != main_lang:
+                if not user_pref and detected_lang not in (first_lang, second_lang):
                     self._prompted_users.add(message.author.id)
                     det_name = LANGUAGES.get(detected_lang, detected_lang.upper())
                     view = LanguagePromptView(self, message.author.id, detected_lang, det_name)
@@ -745,7 +732,7 @@ class SabbyTranslate(commands.Cog):
                     if not recipient_lang and ref_msg.content:
                         recipient_lang = detect_language(ref_msg.content)
 
-                    sender_lang = detected_lang or main_lang
+                    sender_lang = detected_lang or first_lang
 
                     if recipient_lang and recipient_lang != sender_lang:
                         recip_name = LANGUAGES.get(recipient_lang, recipient_lang.upper())
@@ -761,18 +748,17 @@ class SabbyTranslate(commands.Cog):
             except Exception as e:
                 log.debug(f"Reply context translation error: {e}")
 
-        # 3. General channel message translation
+        # 3. Two-Way Channel Translation
         if not detected_lang:
             return
 
-        target_lang = None
-        if detected_lang == main_lang:
-            if mode == "twoway" and second_lang and second_lang != main_lang:
-                target_lang = second_lang
-            else:
-                return
+        if detected_lang == first_lang:
+            target_lang = second_lang
+        elif detected_lang == second_lang:
+            target_lang = first_lang
         else:
-            target_lang = main_lang
+            # Any other language translates to first_lang
+            target_lang = first_lang
 
         if not target_lang or target_lang == detected_lang:
             return
