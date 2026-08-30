@@ -4793,6 +4793,21 @@ class SabPubHelper(commands.Cog):
 
         else:
             profile = best_match["data"]
+            TARGET_GUILD_ID = 1265271912037089312
+            if interaction.guild_id == TARGET_GUILD_ID:
+                steam_id = profile.get("steam_id", "")
+                linux_folder = profile.get("linux_folder", game_key.replace(" ", "_") + "prefix")
+                
+                # Send just the savepaths (without the image or step-by-step text)
+                message = (
+                    f"**Windows:**\n`%AppData%\\GSE Saves\\{steam_id}\\remote\\win64_save\\`\n\n"
+                    f"**Linux / Steam Deck:**\n`~/.local/share/crucible-launcher/Prefix/{linux_folder}/drive_c/users/steamuser/AppData/Roaming/GSE Saves/{steam_id}/remote/win64_save/`"
+                )
+                
+                translate_view = SaveInstTranslateView(cog=self, game_key=game_key, source_text=message)
+                await interaction.response.send_message(message, view=translate_view)
+                return
+            
             message = SAVE_INSTRUCTIONS.format(
                 steam_id=profile["steam_id"],
                 display_name=profile["display_name"],
