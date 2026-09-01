@@ -1099,6 +1099,10 @@ class DenuvoWatch(commands.Cog):
             in_watchlist = str(appid) in games
             stored = games.get(str(appid), {})
 
+            if not in_watchlist and not await self.bot.is_owner(ctx.author):
+                await ctx.send("❌ Only owners can check games that aren't on the watchlist.")
+                return
+
             depot_sizes = stored.get("depot_sizes", {})
             if not depot_sizes:
                 _, depot_sizes = await self.get_total_size_with_dlc(appid)
