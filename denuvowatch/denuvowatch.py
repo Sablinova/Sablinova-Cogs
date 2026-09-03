@@ -310,13 +310,43 @@ _TRADEMARK_CHARS = "™®©"
 _PUNCT_RE = re.compile(r"[:\-–—_'’,.!?]")
 _WS_RE = re.compile(r"\s+")
 
+_ROMAN_NUMERAL_RE = re.compile(
+    r'^(?=[MDCLXVI])M{0,4}(CM|CD|D?C{0,3})(XC|XL|L?X{0,3})(IX|IV|V?I{0,3})$'
+)
+_ROMAN_VALUES = {'I': 1, 'V': 5, 'X': 10, 'L': 50, 'C': 100, 'D': 500, 'M': 1000}
+
+def roman_to_int(word: str) -> Optional[int]:
+    """Returns the integer value if `word` is a valid Roman numeral, else None."""
+    w = word.upper()
+    if not _ROMAN_NUMERAL_RE.match(w):
+        return None
+    total, prev = 0, 0
+    for ch in reversed(w):
+        val = _ROMAN_VALUES[ch]
+        if val < prev:
+            total -= val
+        else:
+            total += val
+            prev = val
+    return total
+
+def convert_roman_numerals(text: str) -> str:
+    """Replaces standalone Roman-numeral words with their Arabic equivalent."""
+    words = text.split()
+    return " ".join(
+        str(roman_to_int(w)) if roman_to_int(w) is not None else w
+        for w in words
+    )
+
 def normalize_game_name(name: str) -> str:
     if not name:
         return ""
     for ch in _TRADEMARK_CHARS:
         name = name.replace(ch, "")
     name = _PUNCT_RE.sub(" ", name)
-    name = _WS_RE.sub(" ", name).strip().lower()
+    name = _WS_RE.sub(" ", name).strip()
+    name = convert_roman_numerals(name)
+    name = name.lower()
     return name
 
 async def resolve_best_game_match(query: str) -> Optional[int]:
