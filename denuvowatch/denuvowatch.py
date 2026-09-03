@@ -956,6 +956,15 @@ class DenuvoWatch(commands.Cog):
                         await ctx.send("❌ No games found (all results were DLC/other).")
                         return
 
+                    query_norm = normalize_game_name(query)
+                    exact = [c for c in candidates if normalize_game_name(c["name"]) == query_norm]
+                    if exact:
+                        candidates = [exact[0]]
+                    else:
+                        starts = [c for c in candidates if normalize_game_name(c["name"]).startswith(query_norm)]
+                        if starts:
+                            candidates = [starts[0]]
+
         if len(candidates) == 1:
             await self._add_appid(ctx, games, candidates[0]["appid"], ctx.send)
             return
