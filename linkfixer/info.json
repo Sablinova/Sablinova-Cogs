@@ -1,0 +1,13 @@
+{
+    "author": ["hollowstrawberry", "Sablinova"],
+    "min_bot_version": "3.5.0",
+    "min_python_version": [3, 9, 0],
+    "description": "Sends modified links to embed content from popular social media sites: Twitter/X, Reddit, TikTok, Instagram, Pixiv, Threads, and more with per-channel toggles.",
+    "hidden": false,
+    "install_msg": "LinkFixer installed.\nInstructions:\n1. Load it with [p]load linkfixer\n2. Enable server-wide with [p]linkfixer enable, or per channel with [p]linkfixer channel enable #channel\n3. Links from twitter, tiktok, instagram, etc. will automatically embed properly.",
+    "required_cogs": {},
+    "requirements": [],
+    "short": "Sends modified links to embed content from popular social media sites with per-channel toggles.",
+    "end_user_data_statement": "This cog does not store user data.",
+    "tags": ["link", "url", "fix", "embed", "twitter", "x", "instagram", "pixiv", "reddit", "tiktok", "social", "channels"]
+}

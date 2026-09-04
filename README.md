@@ -16,6 +16,7 @@ Custom cogs for [Red-DiscordBot](https://github.com/Cog-Creators/Red-DiscordBot)
 | Cog | Description |
 |-----|-------------|
 | [SabbySnipe](sabbysnipe/) | Ultra-fast, persistent SQLite WAL-backed message sniping engine with zero event-loop lag. |
+| [LinkFixer](linkfixer/) | Automatically replaces social media links with rich embedding alternatives, featuring per-channel toggles. |
 | [SabDownloader](sabdownloader/) | Download media from Instagram, TikTok, YouTube, Twitter/X, Reddit, and 1000+ sites with auto-compression and AnonDrop fallback. |
 | [SabHoneypot](sabhoneypot/) | Trap channel to catch self-bots and scammers with automatic mute, kick, ban, or log-only actions. |
 | [Backup](backup/) | Export and import installed repositories and cogs for easy bot migration. |
