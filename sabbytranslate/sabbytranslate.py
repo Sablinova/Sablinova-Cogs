@@ -45,6 +45,7 @@ LANGUAGES: Dict[str, str] = {
     "te": "Telugu", "th": "Thai", "tr": "Turkish", "tk": "Turkmen", "uk": "Ukrainian",
     "ur": "Urdu", "ug": "Uyghur", "uz": "Uzbek", "vi": "Vietnamese", "cy": "Welsh",
     "xh": "Xhosa", "yi": "Yiddish", "yo": "Yoruba", "zu": "Zulu",
+    "ary": "Moroccan Arabic (Darija)",
 }
 
 NAME_TO_CODE: Dict[str, str] = {name.lower(): code for code, name in LANGUAGES.items()}
@@ -59,6 +60,11 @@ NAME_TO_CODE["tagalog"] = "tl"
 NAME_TO_CODE["farsi"] = "fa"
 NAME_TO_CODE["jp"] = "ja"
 NAME_TO_CODE["kr"] = "ko"
+NAME_TO_CODE["darija"] = "ary"
+NAME_TO_CODE["moroccan"] = "ary"
+NAME_TO_CODE["moroccan arabic"] = "ary"
+NAME_TO_CODE["maghrebi"] = "ary"
+NAME_TO_CODE["ar-ma"] = "ary"
 
 
 def normalize_language(lang_input: str) -> Optional[Tuple[str, str]]:
@@ -178,6 +184,15 @@ class TranslationService:
         if cache_key in self._cache:
             return self._cache[cache_key]
 
+        if target == "ary" or source == "ary":
+            try:
+                res = await self._mymemory(text, target, source)
+                if res and res != text:
+                    self._cache[cache_key] = res
+                    return res
+            except Exception as e:
+                log.debug(f"MyMemory Darija translation error: {e}")
+
         try:
             res = await self._google_mobile(text, target, source)
             if res:
@@ -209,6 +224,7 @@ class LanguageSelect(discord.ui.Select):
             discord.SelectOption(label="English", value="en", emoji="🇺🇸"),
             discord.SelectOption(label="Portuguese", value="pt", emoji="🇧🇷"),
             discord.SelectOption(label="Arabic", value="ar", emoji="🇸🇦"),
+            discord.SelectOption(label="Darija (Moroccan)", value="ary", emoji="🇲🇦"),
             discord.SelectOption(label="Korean", value="ko", emoji="🇰🇷"),
             discord.SelectOption(label="Spanish", value="es", emoji="🇪🇸"),
             discord.SelectOption(label="French", value="fr", emoji="🇫🇷"),
@@ -523,14 +539,15 @@ class SabbyTranslate(commands.Cog):
             )
             return
 
-        if action.value == "stop":
+        action_val = str(getattr(action, "value", action)).strip().lower()
+        if action_val == "stop":
             await self.config.channel(channel).clear()
             await interaction.response.send_message(
                 f"🛑 **Live translation deactivated** for {channel.mention}."
             )
             return
 
-        if action.value == "status":
+        if action_val == "status":
             conf = await self.config.channel(channel).all()
             if not conf.get("enabled"):
                 await interaction.response.send_message(
