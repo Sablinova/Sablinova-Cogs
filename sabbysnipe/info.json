@@ -1,0 +1,10 @@
+{
+    "author": ["Sabby", "Sablinova"],
+    "name": "SabbySnipe",
+    "short": "Ultra-fast, persistent SQLite WAL-backed message snipe engine.",
+    "description": "Blazing fast deleted and edited message sniping with persistent SQLite WAL database, zero event-loop lag, interactive UI pagination, and deep historical search.",
+    "tags": ["snipe", "esnipe", "deleted", "edited", "database", "speed"],
+    "min_bot_version": "3.5.0",
+    "min_python_version": [3, 11, 0],
+    "end_user_data_statement": "This cog stores deleted and edited message content locally in SQLite for moderation and recovery purposes according to the configured server retention policy."
+}
