@@ -84,6 +84,13 @@ SAVE_PROFILES = {
         "steam_id": "3357650",
         "config_folder": "pub_pragmata/",
     },
+    "onimusha way of the sword": {
+        "name": "Onimusha",
+        "display_name": "Onimusha Way of the Sword",
+        "profile": "Onimusha Way of the Sword v1.bin",
+        "steam_id": "2638890",
+        "config_folder": "pub_onimusha/",
+    },
 }
 
 

@@ -4077,7 +4077,7 @@ class SabPubHelper(commands.Cog):
 
                 # Download profiles
                 async with session.get(
-                    "https://github.com/mi5hmash/MandarinJuice/releases/download/v1.1.0/_profiles.zip",
+                    "https://github.com/mi5hmash/MandarinJuice/releases/download/v1.4.1/_profiles.zip",
                     timeout=aiohttp.ClientTimeout(total=120),
                 ) as resp:
                     if resp.status != 200:
