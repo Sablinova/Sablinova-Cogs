@@ -229,7 +229,8 @@ def check_denuvo_api(data: dict) -> bool:
     return "denuvo" in data.get("drm_notice", "").lower()
 
 
-def check_denuvo_scrape(appid: int) -> bool:
+def check_denuvo_scrape(appid: int) -> Optional[bool]:
+    """Returns True/False if the scrape succeeded, None if the request itself failed."""
     try:
         r = requests.get(
             f"https://store.steampowered.com/app/{appid}/",
@@ -240,11 +241,13 @@ def check_denuvo_scrape(appid: int) -> bool:
         soup = BeautifulSoup(r.text, "html.parser")
         return "denuvo" in soup.get_text().lower()
     except Exception:
-        return False
-
+        return None
 
 def has_denuvo(appid: int, data: dict) -> bool:
-    return check_denuvo_api(data) or check_denuvo_scrape(appid)
+    scrape_result = check_denuvo_scrape(appid)
+    if scrape_result is not None:
+        return scrape_result
+    return check_denuvo_api(data)
 
 
 def search_steam(query: str) -> list:
