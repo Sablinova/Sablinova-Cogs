@@ -35,14 +35,13 @@ def _find_cli() -> Optional[Path]:
             return p
     return None
 
-
 BL4_PLACEMENT_MSG = (
     "### 📂 Installation Instructions\n"
     "**1.** Press `Win + R`, paste the path below, and hit **Enter**:\n"
     "```cmd\n"
     "%USERPROFILE%\\Documents\\My Games\\Borderlands 4\\Saved\\SaveGames\\\n"
     "```\n"
-    "**2.** Extract the attached `.zip` and copy the `.sav` file(s) into that folder, replacing the old ones.\n"
+    "**2.** Extract the attached `.zip` and copy the folder into that folder, replacing the old one if it exists.\n"
     "**3.** Launch the game normally!\n"
 )
 
@@ -685,7 +684,7 @@ class BL4Helper(commands.Cog):
                 )
                 return
 
-            zip_filename = "bl4_resigned.zip"
+            zip_filename = f"{new_id}.zip"
             ping = f"{notify.mention}\n" if notify else ""
             zip_file = discord.File(io.BytesIO(resign_result), filename=zip_filename)
 
@@ -765,7 +764,7 @@ class BL4Helper(commands.Cog):
         success_msg = (
             f"{ping}\n✅ **Re-sign Complete!**\n\nOriginal ID: `{old_id}` → New ID: `{new_id}`"
         )
-        zip_filename = "bl4_resigned.zip"
+        zip_filename = f"{new_id}.zip"
 
         await interaction.edit_original_response(content=success_msg)
         try:
