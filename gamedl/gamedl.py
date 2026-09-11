@@ -66,10 +66,13 @@ KNOWN_DOMAINS: Dict[str, str] = {
 
 
 def _clean_game_title(title: str) -> str:
-    """Remove HTML entities and trailing SteamRIP branding."""
+    """Remove HTML entities, 'Free Download', and trailing SteamRIP branding."""
     clean = html.unescape(title)
+    clean = re.sub(r"\bFree\s+Download\b", "", clean, flags=re.IGNORECASE)
     clean = re.sub(r"[\s»\-|–—]+\s*SteamRIP.*$", "", clean, flags=re.IGNORECASE)
     clean = re.sub(r"\bSteamRIP\b", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"[\s»\-|–—]+$", "", clean)
+    clean = re.sub(r"^[\s»\-|–—]+", "", clean)
     return re.sub(r"\s+", " ", clean).strip()
 
 
@@ -78,7 +81,6 @@ def _clean_for_steam(raw_title: str) -> str:
     clean = _clean_game_title(raw_title)
     clean = re.sub(r"\(.*?\)", "", clean)
     clean = re.sub(r"\[.*?\]", "", clean)
-    clean = re.sub(r"\bFree\s+Download\b.*", "", clean, flags=re.IGNORECASE)
     clean = re.sub(r"[-–—:]?\s*(?:Digital\s+)?Deluxe\s+Edition.*", "", clean, flags=re.IGNORECASE)
     clean = re.sub(r"[\s»\-|–—]+$", "", clean)
     return re.sub(r"\s+", " ", clean).strip()
@@ -92,7 +94,7 @@ def _sync_fetch(url: str, headers: Optional[Dict[str, str]] = None, timeout: int
 
 
 def _resolve_steam_data_sync(game_title: str) -> Optional[Dict[str, Any]]:
-    """Search Steam store API for the official game page and 600x900 vertical portrait art."""
+    """Search Steam store API for the official game page, clean name, and 600x900 vertical portrait art."""
     search_term = _clean_for_steam(game_title)
     if not search_term:
         return None
@@ -228,19 +230,25 @@ class GameDL(commands.Cog):
         if not body:
             return None
 
-        # Title
+        # Clean base title
         og_title = re.search(
             r'<meta\s+property=[\"\']og:title[\"\']\s+content=[\"\']([^\"\']+)[\"\']',
             body,
             re.IGNORECASE,
         )
-        if og_title:
-            title = _clean_game_title(og_title.group(1))
-        else:
-            title = "Unknown Game"
+        raw_name = og_title.group(1) if og_title else "Unknown Game"
+        cleaned_name = _clean_game_title(raw_name)
 
-        # Lookup Steam Store info for official portrait art and store page
-        steam_info = await asyncio.to_thread(_resolve_steam_data_sync, title)
+        # Lookup Steam Store info for official portrait art, clean title, and store page
+        steam_info = await asyncio.to_thread(_resolve_steam_data_sync, cleaned_name)
+
+        # Title: Prefer official clean Steam title (e.g. 'Portal 2'), else stripped game name without (Build...)
+        if steam_info and steam_info.get("name"):
+            title = steam_info["name"]
+        else:
+            # Strip trailing parentheses (e.g. version or build info) to keep just the game name
+            no_parens = re.sub(r"\s*\([^)]*\)", "", cleaned_name).strip()
+            title = no_parens or cleaned_name
 
         # Image priority: Steam official portrait cover -> search card portrait -> page image
         if steam_info and steam_info.get("portrait_url"):
@@ -347,6 +355,14 @@ class GameDL(commands.Cog):
 
             downloads.append({"host": host_label, "url": raw_url})
 
+        # Sort download links so Buzzheavier / BZZHR is prioritized first
+        def _is_bzzhr(item: Dict[str, str]) -> bool:
+            h = item["host"].lower()
+            u = item["url"].lower()
+            return any(k in h or k in u for k in ["buzzheavier", "bzzhr"])
+
+        downloads.sort(key=lambda x: 0 if _is_bzzhr(x) else 1)
+
         # Game store page (defaults to Steam if matched)
         game_page_url = steam_info["steam_url"] if steam_info else page_url
         is_steam = bool(steam_info)
@@ -414,7 +430,7 @@ class GameDL(commands.Cog):
                 await ctx.send(embed=embed)
                 return
 
-            # Construct Embed (Links to Steam, no SteamRIP branding)
+            # Construct Embed (Clean game name, links to Steam, no SteamRIP branding)
             embed = discord.Embed(
                 title=f"🎮 {details['title']}",
                 url=details["url"],
@@ -427,13 +443,17 @@ class GameDL(commands.Cog):
             desc_lines.append(f"📦 **Game Size:** `{details['size']}`")
             embed.description = "\n".join(desc_lines)
 
-            # Direct Download Links
+            # Direct Download Links with BZZHR recommended sign
             if details["downloads"]:
                 dl_lines = []
                 for item in details["downloads"]:
                     host_name = item["host"]
                     link_url = item["url"]
-                    dl_lines.append(f"• [**{host_name}**]({link_url})")
+                    is_bzzhr = any(k in host_name.lower() or k in link_url.lower() for k in ["buzzheavier", "bzzhr"])
+                    if is_bzzhr:
+                        dl_lines.append(f"• [**{host_name}**]({link_url}) ⭐ *(Recommended)*")
+                    else:
+                        dl_lines.append(f"• [**{host_name}**]({link_url})")
                 embed.add_field(
                     name="📥 Direct Download Links",
                     value="\n".join(dl_lines),
@@ -446,9 +466,9 @@ class GameDL(commands.Cog):
                     inline=False,
                 )
 
-            # Other search results (if available)
+            # Other search results (if available, with Free Download removed)
             if len(results) > 1:
-                other_titles = [f"• {item['title']}" for item in results[1:5]]
+                other_titles = [f"• {_clean_game_title(item['title'])}" for item in results[1:5]]
                 embed.add_field(
                     name="🔍 Other Matches",
                     value="\n".join(other_titles),
@@ -467,12 +487,14 @@ class GameDL(commands.Cog):
             # Interactive Link Buttons View
             view = discord.ui.View()
 
-            # Add download link buttons (up to 4)
+            # Add download link buttons (up to 4, with BZZHR recommended star)
             for item in details["downloads"][:4]:
-                host_label = item["host"][:20]
+                host_label = item["host"][:18]
+                is_bzzhr = any(k in host_label.lower() or k in item["url"].lower() for k in ["buzzheavier", "bzzhr"])
+                btn_text = f"⭐ Download ({host_label})" if is_bzzhr else f"Download ({host_label})"
                 view.add_item(
                     discord.ui.Button(
-                        label=f"Download ({host_label})",
+                        label=btn_text,
                         url=item["url"],
                         style=discord.ButtonStyle.link,
                     )
