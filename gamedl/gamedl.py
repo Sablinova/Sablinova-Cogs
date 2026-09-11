@@ -32,12 +32,15 @@ HEADERS = {
     "Upgrade-Insecure-Requests": "1",
 }
 
+USER_AGENTS: List[str] = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36 Edg/127.0.0.0",
+]
+
 BZZHR_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/128.0.0.0 Safari/537.36"
-    ),
+    "User-Agent": USER_AGENTS[0],
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Referer": "https://steamrip.com/",
     "Sec-Fetch-Dest": "document",
@@ -48,8 +51,9 @@ BZZHR_HEADERS = {
 
 KNOWN_DOMAINS: Dict[str, str] = {
     "gofile.io": "Gofile",
-    "bzzhr.to": "Buzzheavier",
-    "buzzheavier.com": "Buzzheavier",
+    "bzzhr.to": "BZZHR",
+    "ts.bzzhr.to": "BZZHR",
+    "buzzheavier.com": "BZZHR",
     "megadb.net": "MegaDB",
     "1fichier.com": "1Fichier",
     "fileditchfiles.me": "FileDitch",
@@ -66,11 +70,17 @@ KNOWN_DOMAINS: Dict[str, str] = {
 
 
 def _clean_game_title(title: str) -> str:
-    """Remove HTML entities, 'Free Download', and trailing SteamRIP branding."""
+    """Remove HTML entities, 'Free Download', versions, builds, and trailing SteamRIP branding."""
     clean = html.unescape(title)
     clean = re.sub(r"\bFree\s+Download\b", "", clean, flags=re.IGNORECASE)
     clean = re.sub(r"[\s»\-|–—]+\s*SteamRIP.*$", "", clean, flags=re.IGNORECASE)
     clean = re.sub(r"\bSteamRIP\b", "", clean, flags=re.IGNORECASE)
+    # Remove parenthesized versions/builds like (v1.4.5.8 + Co-op) or (Build 123)
+    clean = re.sub(r"\s*\([^)]*\)", "", clean)
+    # Remove bracketed versions like [v2.12] or [Build 100]
+    clean = re.sub(r"\s*\[[^\]]*\]", "", clean)
+    # Remove standalone trailing version like v1.4.4.9 or - 1.4.4.9
+    clean = re.sub(r"[\s\-–—:]+\s*v?\d+(?:\.\d+)+[a-z0-9_.-]*$", "", clean, flags=re.IGNORECASE)
     clean = re.sub(r"[\s»\-|–—]+$", "", clean)
     clean = re.sub(r"^[\s»\-|–—]+", "", clean)
     return re.sub(r"\s+", " ", clean).strip()
@@ -79,8 +89,6 @@ def _clean_game_title(title: str) -> str:
 def _clean_for_steam(raw_title: str) -> str:
     """Extract core game title suitable for Steam store search."""
     clean = _clean_game_title(raw_title)
-    clean = re.sub(r"\(.*?\)", "", clean)
-    clean = re.sub(r"\[.*?\]", "", clean)
     clean = re.sub(r"[-–—:]?\s*(?:Digital\s+)?Deluxe\s+Edition.*", "", clean, flags=re.IGNORECASE)
     clean = re.sub(r"[\s»\-|–—]+$", "", clean)
     return re.sub(r"\s+", " ", clean).strip()
@@ -118,42 +126,64 @@ def _resolve_steam_data_sync(game_title: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _resolve_bzzhr_direct(url: str) -> str:
-    """Resolve BZZHR/Buzzheavier anti-hotlink links directly to the CDN file download URL."""
-    try:
-        req = urllib.request.Request(url, headers=BZZHR_HEADERS)
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            html_text = resp.read().decode("utf-8", errors="replace")
+def _resolve_bzzhr_direct(url: str, max_retries: int = 5) -> str:
+    """Resolve BZZHR/Buzzheavier anti-hotlink links directly to the CDN file download URL.
 
-        m = re.search(r'hx-get=[\"\'](/[^/]+/download\?[^\"\']+)[\"\']', html_text)
-        if not m:
-            m = re.search(r'copyDownloadLink\([\'\"]\\?(/[^/]+/download\?[^\'\"]+)[\'\"]\)', html_text)
-        if not m:
-            return url
+    BZZHR redirects to steamrip.com unless Referer is steamrip.com.
+    Resolving the link directly to the ts.bzzhr.to CDN URL allows users to download
+    without any anti-hotlink redirects or browser warnings.
+    """
+    import time
+    for attempt in range(max_retries):
+        ua = USER_AGENTS[attempt % len(USER_AGENTS)]
+        headers = {
+            "User-Agent": ua,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Referer": "https://steamrip.com/",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "cross-site",
+            "Upgrade-Insecure-Requests": "1",
+        }
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=7) as resp:
+                html_text = resp.read().decode("utf-8", errors="replace")
 
-        dl_path = m.group(1).replace(r"\/", "/")
-        parsed = urllib.parse.urlparse(url)
-        base = f"{parsed.scheme}://{parsed.netloc}"
-        dl_url = urllib.parse.urljoin(base, dl_path)
+            m = (
+                re.search(r'hx-get=[\"\'](/[^/]+/download\?[^\"\']+)[\"\']', html_text)
+                or re.search(r'copyDownloadLink\([\'\"]\\?(/[^/]+/download\?[^\'\"]+)[\'\"]\)', html_text)
+                or re.search(r'href=[\"\'](/[^/]+/download\?[^\"\']+)[\"\']', html_text)
+            )
+            if not m:
+                time.sleep(0.3)
+                continue
 
-        req_dl = urllib.request.Request(
-            dl_url,
-            headers={
-                "User-Agent": BZZHR_HEADERS["User-Agent"],
-                "HX-Request": "true",
-                "HX-Current-URL": url,
-                "Referer": url,
-                "Sec-Fetch-Dest": "empty",
-                "Sec-Fetch-Mode": "cors",
-                "Sec-Fetch-Site": "same-origin",
-            },
-        )
-        with urllib.request.urlopen(req_dl, timeout=10) as dl_resp:
-            direct_cdn = dl_resp.headers.get("Hx-Redirect") or dl_resp.headers.get("Location")
-            if direct_cdn:
-                return direct_cdn
-    except Exception as exc:
-        log.debug("Could not resolve BZZHR direct link for %s: %s", url, exc)
+            dl_path = m.group(1).replace(r"\/", "/")
+            parsed = urllib.parse.urlparse(url)
+            base = f"{parsed.scheme}://{parsed.netloc}"
+            dl_url = urllib.parse.urljoin(base, dl_path)
+
+            req_dl = urllib.request.Request(
+                dl_url,
+                headers={
+                    "User-Agent": ua,
+                    "HX-Request": "true",
+                    "HX-Current-URL": url,
+                    "Referer": url,
+                    "Sec-Fetch-Dest": "empty",
+                    "Sec-Fetch-Mode": "cors",
+                    "Sec-Fetch-Site": "same-origin",
+                },
+            )
+            with urllib.request.urlopen(req_dl, timeout=7) as dl_resp:
+                direct_cdn = dl_resp.headers.get("Hx-Redirect") or dl_resp.headers.get("Location")
+                if direct_cdn:
+                    return direct_cdn
+        except Exception:
+            time.sleep(0.25 * (attempt + 1))
+
+    log.warning("Could not resolve BZZHR direct link for %s after %d retries", url, max_retries)
     return url
 
 
@@ -242,13 +272,11 @@ class GameDL(commands.Cog):
         # Lookup Steam Store info for official portrait art, clean title, and store page
         steam_info = await asyncio.to_thread(_resolve_steam_data_sync, cleaned_name)
 
-        # Title: Prefer official clean Steam title (e.g. 'Portal 2'), else stripped game name without (Build...)
+        # Title: Prefer official clean Steam title (e.g. 'Portal 2'), else pure game name without (Build...)
         if steam_info and steam_info.get("name"):
             title = steam_info["name"]
         else:
-            # Strip trailing parentheses (e.g. version or build info) to keep just the game name
-            no_parens = re.sub(r"\s*\([^)]*\)", "", cleaned_name).strip()
-            title = no_parens or cleaned_name
+            title = cleaned_name
 
         # Image priority: Steam official portrait cover -> search card portrait -> page image
         if steam_info and steam_info.get("portrait_url"):
@@ -286,6 +314,10 @@ class GameDL(commands.Cog):
             re.IGNORECASE,
         )
         version = ver_match.group(1).strip() if ver_match else None
+        if not version:
+            vm = re.search(r'[\(\[]?(v?\d+(?:\.\d+)+[^\)\]]*)[\)\]]?', raw_name)
+            if vm:
+                version = vm.group(1).strip()
 
         # Direct download links (shortc-button links)
         button_matches = list(
@@ -352,6 +384,10 @@ class GameDL(commands.Cog):
 
             if not host_label:
                 host_label = KNOWN_DOMAINS.get(domain, domain or "Direct Download")
+
+            # Normalize Buzzheavier / BZZHR label to BZZHR
+            if any(k in host_label.lower() or k in raw_url.lower() for k in ["bzzhr", "buzzheavier"]):
+                host_label = "BZZHR"
 
             downloads.append({"host": host_label, "url": raw_url})
 
@@ -450,10 +486,11 @@ class GameDL(commands.Cog):
                     host_name = item["host"]
                     link_url = item["url"]
                     is_bzzhr = any(k in host_name.lower() or k in link_url.lower() for k in ["buzzheavier", "bzzhr"])
+                    display_host = "BZZHR" if is_bzzhr else host_name
                     if is_bzzhr:
-                        dl_lines.append(f"• [**{host_name}**]({link_url}) ⭐ *(Recommended)*")
+                        dl_lines.append(f"• [**{display_host}**]({link_url}) ⭐ *(Recommended)*")
                     else:
-                        dl_lines.append(f"• [**{host_name}**]({link_url})")
+                        dl_lines.append(f"• [**{display_host}**]({link_url})")
                 embed.add_field(
                     name="📥 Direct Download Links",
                     value="\n".join(dl_lines),
@@ -491,7 +528,7 @@ class GameDL(commands.Cog):
             for item in details["downloads"][:4]:
                 host_label = item["host"][:18]
                 is_bzzhr = any(k in host_label.lower() or k in item["url"].lower() for k in ["buzzheavier", "bzzhr"])
-                btn_text = f"⭐ Download ({host_label})" if is_bzzhr else f"Download ({host_label})"
+                btn_text = "⭐ Download (BZZHR)" if is_bzzhr else f"Download ({host_label})"
                 view.add_item(
                     discord.ui.Button(
                         label=btn_text,
