@@ -364,14 +364,14 @@ def _extract_gamebounty_details_sync(slug: str) -> Optional[Dict[str, Any]]:
 
 
 def _download_sort_key(item: Dict[str, str]) -> int:
-    """Prioritize BZZHR first, followed by top fast direct hosts."""
+    """Prioritize recommended hosts (BZZHR, PixelDrain) first, followed by other fast direct hosts."""
     h = item["host"].lower()
     u = item["url"].lower()
     if any(k in h or k in u for k in ["buzzheavier", "bzzhr"]):
         return 0
-    if "gofile" in h or "gofile" in u:
-        return 1
     if "pixeldrain" in h or "pixeldrain" in u:
+        return 1
+    if "gofile" in h or "gofile" in u:
         return 2
     if "fileditch" in h or "fileditch" in u:
         return 3
@@ -722,7 +722,7 @@ class GameDL(commands.Cog):
         if desc_lines:
             embed.description = "\n".join(desc_lines)[:4000]
 
-        # Sort downloads: BZZHR first, then fast mirrors (Gofile, PixelDrain, FileDitch, MegaDB, etc.)
+        # Sort downloads: Recommended first (BZZHR, PixelDrain), then fast mirrors (Gofile, FileDitch, MegaDB, etc.)
         downloads = sorted(details.get("downloads", []), key=_download_sort_key)
 
         if downloads:
@@ -730,9 +730,9 @@ class GameDL(commands.Cog):
             for item in downloads:
                 host_name = item["host"]
                 link_url = item["url"]
-                is_bzzhr = any(k in host_name.lower() or k in link_url.lower() for k in ["buzzheavier", "bzzhr"])
+                is_recommended = any(k in host_name.lower() or k in link_url.lower() for k in ["buzzheavier", "bzzhr", "pixeldrain"])
                 display_host = host_name
-                if is_bzzhr and "⭐" not in display_host:
+                if is_recommended and "⭐" not in display_host:
                     dl_lines.append(f"• [**{display_host}**]({link_url}) ⭐ *(Recommended)*")
                 else:
                     dl_lines.append(f"• [**{display_host}**]({link_url})")
@@ -789,8 +789,8 @@ class GameDL(commands.Cog):
         view = discord.ui.View()
         for item in downloads[:4]:
             host_label = item["host"][:18]
-            is_bzzhr = any(k in host_label.lower() or k in item["url"].lower() for k in ["buzzheavier", "bzzhr"])
-            btn_text = "⭐ Download (BZZHR)" if is_bzzhr else f"Download ({host_label})"
+            is_recommended = any(k in host_label.lower() or k in item["url"].lower() for k in ["buzzheavier", "bzzhr", "pixeldrain"])
+            btn_text = f"⭐ Download ({host_label})" if is_recommended else f"Download ({host_label})"
             if len(item["url"]) <= 512:
                 view.add_item(
                     discord.ui.Button(
@@ -963,93 +963,3 @@ class GameDL(commands.Cog):
                 return
 
             await self._send_game_card(ctx, details, other_titles[:6])
-
-    @commands.hybrid_command(
-        name="gamebounty",
-        aliases=["gb"],
-        description="Search GameBounty specifically for PC game direct downloads.",
-    )
-    @app_commands.describe(game="The name of the game to search GameBounty for")
-    @commands.cooldown(1, 3.0, commands.BucketType.user)
-    async def gamebounty(self, ctx: commands.Context, *, game: str):
-        """Search GameBounty specifically for direct game download links.
-
-        Example:
-            [p]gamebounty cyberpunk 2077
-            [p]gb elden ring
-        """
-        async with ctx.typing():
-            clean_q = game.strip()
-            if clean_q.isdigit():
-                steam_name = await asyncio.to_thread(_lookup_appid_sync, clean_q)
-                if steam_name:
-                    clean_q = steam_name
-
-            results, err = await self._search_gamebounty(clean_q)
-            if not results:
-                embed = discord.Embed(
-                    title="🔍 Game Not Found on GameBounty",
-                    description=f"No results found on GameBounty matching **{clean_q}**.",
-                    color=discord.Color.orange(),
-                )
-                await ctx.send(embed=embed)
-                return
-
-            top = results[0]
-            details = await self._extract_gamebounty_details(top["slug"])
-            if not details:
-                embed = discord.Embed(
-                    title="❌ Failed to Load Game Details",
-                    description=f"Could not load details for [{top['title']}](https://gamebounty.world/{top['slug']}-free-pc-download).",
-                    color=discord.Color.red(),
-                )
-                await ctx.send(embed=embed)
-                return
-
-            other_titles = [f"• {_clean_game_title(r['title'])}" for r in results[1:5]]
-            await self._send_game_card(ctx, details, other_titles)
-
-    @commands.hybrid_command(
-        name="steamrip",
-        aliases=["srip"],
-        description="Search SteamRIP specifically for PC game direct downloads.",
-    )
-    @app_commands.describe(game="The name of the game to search SteamRIP for")
-    @commands.cooldown(1, 3.0, commands.BucketType.user)
-    async def steamrip(self, ctx: commands.Context, *, game: str):
-        """Search SteamRIP specifically for direct game download links.
-
-        Example:
-            [p]steamrip terraria
-            [p]srip portal 2
-        """
-        async with ctx.typing():
-            clean_q = game.strip()
-            if clean_q.isdigit():
-                steam_name = await asyncio.to_thread(_lookup_appid_sync, clean_q)
-                if steam_name:
-                    clean_q = steam_name
-
-            results, err = await self._search_games(clean_q)
-            if not results:
-                embed = discord.Embed(
-                    title="🔍 Game Not Found on SteamRIP",
-                    description=f"No results found on SteamRIP matching **{clean_q}**.",
-                    color=discord.Color.orange(),
-                )
-                await ctx.send(embed=embed)
-                return
-
-            top = results[0]
-            details = await self._extract_details(top["url"], default_image=top.get("portrait_image"))
-            if not details:
-                embed = discord.Embed(
-                    title="❌ Failed to Load Game Details",
-                    description=f"Could not load details for [{top['title']}]({top['url']}).",
-                    color=discord.Color.red(),
-                )
-                await ctx.send(embed=embed)
-                return
-
-            other_titles = [f"• {_clean_game_title(r['title'])}" for r in results[1:5]]
-            await self._send_game_card(ctx, details, other_titles)

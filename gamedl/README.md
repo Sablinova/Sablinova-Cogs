@@ -15,7 +15,6 @@ A Red-DiscordBot cog to quickly search [SteamRIP](https://steamrip.com/) and [Ga
 
 ## Commands
 
-- `[p]gamedl <game name or AppID>` - Unified search across SteamRIP & GameBounty with merged mirrors (alias: `[p]gdl`).
-- `[p]gamebounty <game name or AppID>` - Search GameBounty specifically (alias: `[p]gb`).
-- `[p]steamrip <game name or AppID>` - Search SteamRIP specifically (alias: `[p]srip`).
+- `[p]gamedl <game name or AppID>` - Unified search across SteamRIP & GameBounty with merged mirrors (aliases: `[p]dl`, `[p]gdl`).
 - `/gamedl <game name or AppID>` - Slash command version.
+
