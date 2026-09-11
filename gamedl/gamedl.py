@@ -69,6 +69,8 @@ KNOWN_DOMAINS: Dict[str, str] = {
     "qiwi.gg": "Qiwi",
     "datanodes.to": "DataNodes",
     "pixeldrain.com": "PixelDrain",
+    "cdn.pixeldrain.eu.cc": "PixelDrain",
+    "pixeldrain.eu.cc": "PixelDrain",
     "mediafire.com": "MediaFire",
     "mega.nz": "MEGA",
     "dropgalaxy.com": "DropGalaxy",
@@ -210,6 +212,14 @@ def _resolve_bzzhr_direct(url: str, max_retries: int = 5) -> str:
     return url
 
 
+def _bypass_pixeldrain_url(url: str) -> str:
+    """Convert PixelDrain view/API URL to bypassed direct CDN link (cdn.pixeldrain.eu.cc/<id>)."""
+    m = re.search(r"pixeldrain\.com/(?:u|api/file|d)/([a-zA-Z0-9_-]+)", url)
+    if m:
+        return f"https://cdn.pixeldrain.eu.cc/{m.group(1)}"
+    return url
+
+
 def _gamebounty_state() -> str:
     """Generate the 30-second time-window HMAC token required by GameBounty's API."""
     step = int(time.time() / 30)
@@ -325,6 +335,10 @@ def _extract_gamebounty_details_sync(slug: str) -> Optional[Dict[str, Any]]:
                         if resolved:
                             target_url = resolved
 
+                    # Auto-bypass PixelDrain links if present
+                    if "pixeldrain.com" in target_url:
+                        target_url = _bypass_pixeldrain_url(target_url)
+
                     if target_url in seen_urls:
                         continue
                     seen_urls.add(target_url)
@@ -342,6 +356,8 @@ def _extract_gamebounty_details_sync(slug: str) -> Optional[Dict[str, Any]]:
 
                     if any(k in host_label.lower() or k in target_url.lower() for k in ["bzzhr", "buzzheavier"]):
                         host_label = "BZZHR"
+                    elif any(k in host_label.lower() or k in target_url.lower() for k in ["pixeldrain"]):
+                        host_label = "PixelDrain"
 
                     if is_multipart:
                         host_label = f"{host_label} (Part {idx + 1})"
@@ -604,6 +620,10 @@ class GameDL(commands.Cog):
                 if direct_cdn_resolved := direct_bzzhr:
                     raw_url = direct_cdn_resolved
 
+            # Auto-bypass PixelDrain links to direct CDN download (cdn.pixeldrain.eu.cc/<id>)
+            if "pixeldrain.com" in raw_url:
+                raw_url = _bypass_pixeldrain_url(raw_url)
+
             if raw_url in seen_urls:
                 continue
             seen_urls.add(raw_url)
@@ -647,9 +667,11 @@ class GameDL(commands.Cog):
             update_m = re.search(r'<strong>\s*(Update(?:\s+Only)?\s*[-–—]\s*[^<]+)</strong>', preceding, re.I)
             part_m = re.search(r'<strong>\s*(Part\s+\d+)\s*</strong>', preceding, re.I)
 
-            # Normalize Buzzheavier / BZZHR label to BZZHR
+            # Normalize Buzzheavier / BZZHR label to BZZHR and PixelDrain label
             if any(k in host_label.lower() or k in raw_url.lower() for k in ["bzzhr", "buzzheavier"]):
                 host_label = "BZZHR"
+            elif any(k in host_label.lower() or k in raw_url.lower() for k in ["pixeldrain"]):
+                host_label = "PixelDrain"
 
             if update_m:
                 up_text = re.sub(r'<[^>]+>', '', update_m.group(1)).strip()
