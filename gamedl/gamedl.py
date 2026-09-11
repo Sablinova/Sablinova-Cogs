@@ -395,6 +395,45 @@ def _is_same_game(t1: str, t2: str) -> bool:
     return s1 == s2 or s1 in s2 or s2 in s1
 
 
+def _query_relevance_score(query: str, title: str) -> float:
+    """Calculate relevance between user search query and game title (0.0 to 1.5).
+
+    Returns 0.0 if there is zero overlap/relevance (e.g. false-positive WordPress search results).
+    """
+    q_clean = "".join(c for c in query.lower() if c.isalnum() or c.isspace()).strip()
+    t_clean = "".join(c for c in title.lower() if c.isalnum() or c.isspace()).strip()
+    if not q_clean or not t_clean:
+        return 0.0
+
+    q_norm = "".join(c for c in q_clean if c.isalnum())
+    t_norm = "".join(c for c in t_clean if c.isalnum())
+
+    if q_norm == t_norm:
+        return 1.5
+    if q_norm in t_norm:
+        return 1.2
+    if t_norm in q_norm:
+        return 1.1
+
+    q_words = set(q_clean.split())
+    t_words = set(t_clean.split())
+    stop_words = {"the", "a", "an", "of", "and", "in", "on", "for", "to", "with", "edition", "remastered"}
+    sig_q = q_words - stop_words or q_words
+    sig_t = t_words - stop_words or t_words
+    common = sig_q & sig_t
+    if common:
+        return len(common) / max(len(sig_q), 1)
+
+    # Acronym / initials check (e.g., gta -> Grand Theft Auto, cod -> Call of Duty)
+    all_words = [w for w in t_clean.split() if w]
+    initials_all = "".join(w[0] for w in all_words)
+    initials_sig = "".join(w[0] for w in all_words if w not in stop_words)
+    if q_norm and (q_norm in (initials_all, initials_sig) or initials_all.startswith(q_norm) or initials_sig.startswith(q_norm)):
+        return 0.8
+
+    return 0.0
+
+
 class GameDL(commands.Cog):
     """Search and extract game direct download links from SteamRIP and GameBounty."""
 
@@ -462,7 +501,16 @@ class GameDL(commands.Cog):
                     "source": "steamrip",
                 })
 
-        return results, None
+        # Filter and rank results by query relevance to discard false-positive comment matches
+        filtered_results: List[Dict[str, Any]] = []
+        for r in results:
+            score = _query_relevance_score(query, r["title"])
+            if score > 0.0:
+                r["score"] = score
+                filtered_results.append(r)
+
+        filtered_results.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+        return filtered_results, None
 
     async def _extract_details(self, page_url: str, default_image: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Extract SteamRIP game title, size, version, cover art, and direct download links."""
@@ -633,7 +681,14 @@ class GameDL(commands.Cog):
         """Search GameBounty for games matching query."""
         try:
             results = await asyncio.to_thread(_search_gamebounty_sync, query)
-            return results, None
+            filtered: List[Dict[str, Any]] = []
+            for r in results:
+                score = _query_relevance_score(query, r["title"])
+                if score > 0.0:
+                    r["score"] = score
+                    filtered.append(r)
+            filtered.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+            return filtered, None
         except Exception as exc:
             log.warning("GameBounty search error: %s", exc)
             return [], str(exc)
@@ -854,14 +909,27 @@ class GameDL(commands.Cog):
                     else:
                         details = sr_det or gb_det
                 else:
-                    # Top games differ: prioritize SteamRIP match, list GameBounty top in others
-                    details = await self._extract_details(sr_top["url"], default_image=sr_top.get("portrait_image"))
-                    if not details:
+                    # Top games differ: pick the source with higher query relevance score
+                    sr_score = sr_top.get("score", _query_relevance_score(clean_q, sr_top["title"]))
+                    gb_score = gb_top.get("score", _query_relevance_score(clean_q, gb_top["title"]))
+                    if gb_score > sr_score:
                         details = await self._extract_gamebounty_details(gb_top["slug"])
+                        if not details:
+                            details = await self._extract_details(sr_top["url"], default_image=sr_top.get("portrait_image"))
+                    else:
+                        details = await self._extract_details(sr_top["url"], default_image=sr_top.get("portrait_image"))
+                        if not details:
+                            details = await self._extract_gamebounty_details(gb_top["slug"])
 
                 # Compile other matches from both sources
                 seen_other: Set[str] = set()
-                for item in sr_results[1:5] + gb_results[1:5]:
+                candidate_others = []
+                if not _is_same_game(sr_top["title"], gb_top["title"]):
+                    runner_up = sr_top if gb_score > sr_score else gb_top
+                    candidate_others.append(runner_up)
+                candidate_others.extend(sr_results[1:5] + gb_results[1:5])
+
+                for item in candidate_others:
                     c_title = _clean_game_title(item["title"])
                     if details and _is_same_game(c_title, details["title"]):
                         continue
