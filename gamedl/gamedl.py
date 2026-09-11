@@ -352,7 +352,7 @@ class GameDL(commands.Cog):
 
             # Determine host label
             start_pos = m.start()
-            preceding = body[max(0, start_pos - 250) : start_pos]
+            preceding = body[max(0, start_pos - 400) : start_pos]
             label_matches = re.findall(
                 r'<strong>(?:<span[^>]*>)?([^<]+?)(?:</span>)?</strong>',
                 preceding,
@@ -385,9 +385,23 @@ class GameDL(commands.Cog):
             if not host_label:
                 host_label = KNOWN_DOMAINS.get(domain, domain or "Direct Download")
 
+            # Check if this link is for an Update or specific Part
+            update_m = re.search(r'<strong>\s*(Update(?:\s+Only)?\s*[-–—]\s*[^<]+)</strong>', preceding, re.I)
+            part_m = re.search(r'<strong>\s*(Part\s+\d+)\s*</strong>', preceding, re.I)
+
             # Normalize Buzzheavier / BZZHR label to BZZHR
             if any(k in host_label.lower() or k in raw_url.lower() for k in ["bzzhr", "buzzheavier"]):
                 host_label = "BZZHR"
+
+            if update_m:
+                up_text = re.sub(r'<[^>]+>', '', update_m.group(1)).strip()
+                ver_in_up = re.search(r'v?\d+(?:\.\d+)+', up_text)
+                if ver_in_up:
+                    host_label = f"{host_label} (Update {ver_in_up.group(0)})"
+                else:
+                    host_label = f"{host_label} (Update)"
+            elif part_m:
+                host_label = f"{host_label} ({part_m.group(1)})"
 
             downloads.append({"host": host_label, "url": raw_url})
 
@@ -486,16 +500,35 @@ class GameDL(commands.Cog):
                     host_name = item["host"]
                     link_url = item["url"]
                     is_bzzhr = any(k in host_name.lower() or k in link_url.lower() for k in ["buzzheavier", "bzzhr"])
-                    display_host = "BZZHR" if is_bzzhr else host_name
-                    if is_bzzhr:
+                    display_host = host_name
+                    if is_bzzhr and "⭐" not in display_host:
                         dl_lines.append(f"• [**{display_host}**]({link_url}) ⭐ *(Recommended)*")
                     else:
                         dl_lines.append(f"• [**{display_host}**]({link_url})")
-                embed.add_field(
-                    name="📥 Direct Download Links",
-                    value="\n".join(dl_lines),
-                    inline=False,
-                )
+
+                # Chunk download lines so each field strictly respects Discord's 1024-char limit
+                field_chunks: List[List[str]] = []
+                current_chunk: List[str] = []
+                current_len = 0
+                for line in dl_lines:
+                    line_len = len(line) + 1
+                    if current_chunk and (current_len + line_len > 900):
+                        field_chunks.append(current_chunk)
+                        current_chunk = [line]
+                        current_len = line_len
+                    else:
+                        current_chunk.append(line)
+                        current_len += line_len
+                if current_chunk:
+                    field_chunks.append(current_chunk)
+
+                for idx, chunk in enumerate(field_chunks):
+                    name = "📥 Direct Download Links" if idx == 0 else f"📥 Direct Download Links (Part {idx + 1})"
+                    embed.add_field(
+                        name=name,
+                        value="\n".join(chunk),
+                        inline=False,
+                    )
             else:
                 embed.add_field(
                     name="📥 Download Links",
@@ -506,9 +539,12 @@ class GameDL(commands.Cog):
             # Other search results (if available, with Free Download removed)
             if len(results) > 1:
                 other_titles = [f"• {_clean_game_title(item['title'])}" for item in results[1:5]]
+                other_text = "\n".join(other_titles)
+                if len(other_text) > 1000:
+                    other_text = other_text[:990] + "..."
                 embed.add_field(
                     name="🔍 Other Matches",
-                    value="\n".join(other_titles),
+                    value=other_text,
                     inline=False,
                 )
 
@@ -521,7 +557,7 @@ class GameDL(commands.Cog):
                 icon_url=ctx.author.display_avatar.url if ctx.author.display_avatar else None,
             )
 
-            # Interactive Link Buttons View
+            # Interactive Link Buttons View (Discord allows max 5 buttons per row, 25 total)
             view = discord.ui.View()
 
             # Add download link buttons (up to 4, with BZZHR recommended star)
@@ -529,26 +565,58 @@ class GameDL(commands.Cog):
                 host_label = item["host"][:18]
                 is_bzzhr = any(k in host_label.lower() or k in item["url"].lower() for k in ["buzzheavier", "bzzhr"])
                 btn_text = "⭐ Download (BZZHR)" if is_bzzhr else f"Download ({host_label})"
+                if len(item["url"]) <= 512:
+                    view.add_item(
+                        discord.ui.Button(
+                            label=btn_text[:80],
+                            url=item["url"],
+                            style=discord.ButtonStyle.link,
+                        )
+                    )
+
+            # Button to visit the Steam Store page
+            store_button_label = "Steam Store" if details.get("is_steam") else "Game Page"
+            if len(details["url"]) <= 512:
                 view.add_item(
                     discord.ui.Button(
-                        label=btn_text,
-                        url=item["url"],
+                        label=store_button_label[:80],
+                        url=details["url"],
                         style=discord.ButtonStyle.link,
                     )
                 )
 
-            # Button to visit the Steam Store page
-            store_button_label = "Steam Store" if details.get("is_steam") else "Game Page"
-            view.add_item(
-                discord.ui.Button(
-                    label=store_button_label,
-                    url=details["url"],
-                    style=discord.ButtonStyle.link,
-                )
-            )
+            # Safe embed sender that guarantees field values <= 1000 chars
+            def _sanitize_embed(emb: discord.Embed) -> discord.Embed:
+                for f_idx, field in enumerate(emb.fields):
+                    if len(field.value) > 1000:
+                        emb.set_field_at(
+                            f_idx,
+                            name=field.name[:250],
+                            value=field.value[:990] + "...",
+                            inline=field.inline,
+                        )
+                return emb
+
+            embed = _sanitize_embed(embed)
 
             try:
                 await ctx.send(embed=embed, view=view)
             except Exception as send_err:
-                log.warning("Sending with View failed (%s), falling back to embed only", send_err)
-                await ctx.send(embed=embed)
+                log.warning("Sending with View failed (%s), attempting embed only", send_err)
+                try:
+                    await ctx.send(embed=embed)
+                except Exception as final_err:
+                    log.error("Failed to send embed: %s", final_err)
+                    # Absolute emergency fallback: stripped plain embed
+                    safe_embed = discord.Embed(
+                        title=f"🎮 {details['title'][:250]}",
+                        url=details["url"][:512],
+                        description=f"📦 **Game Size:** `{details['size']}`",
+                        color=discord.Color.blurple(),
+                    )
+                    safe_embed.add_field(
+                        name="📥 Store Page",
+                        value=f"[Click here to view game page]({details['url']})",
+                        inline=False,
+                    )
+                    await ctx.send(embed=safe_embed)
