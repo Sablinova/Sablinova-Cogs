@@ -51,6 +51,14 @@ KNOWN_DOMAINS: Dict[str, str] = {
 }
 
 
+def _clean_game_title(title: str) -> str:
+    """Remove HTML entities and trailing SteamRIP branding."""
+    clean = html.unescape(title)
+    clean = re.sub(r"[\s»\-|–—]+\s*SteamRIP.*$", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"\bSteamRIP\b", "", clean, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", clean).strip()
+
+
 def _sync_fetch(url: str, timeout: int = 15) -> str:
     """Synchronous HTTP GET with browser headers to avoid anti-bot blocks."""
     req = urllib.request.Request(url, headers=HEADERS)
@@ -59,7 +67,7 @@ def _sync_fetch(url: str, timeout: int = 15) -> str:
 
 
 class GameDL(commands.Cog):
-    """Search SteamRIP and extract game download links, size, and metadata."""
+    """Search and extract game direct download links, size, and metadata."""
 
     def __init__(self, bot: Red):
         self.bot = bot
@@ -73,30 +81,62 @@ class GameDL(commands.Cog):
             log.warning("Failed to fetch %s: %s", url, exc)
             return None
 
-    async def _search_steamrip(self, query: str) -> Tuple[List[Tuple[str, str]], Optional[str]]:
-        """Search SteamRIP for games matching query. Returns [(title, url), ...] or error."""
+    async def _search_games(self, query: str) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        """Search for games matching query. Returns list of game dicts or error."""
         search_url = f"https://steamrip.com/?s={urllib.parse.quote(query)}"
         html_content = await self._fetch_html(search_url)
         if not html_content:
-            return [], "Could not connect to SteamRIP. The site may be down or unreachable."
+            return [], "Could not connect to the game database. Please try again later."
 
-        raw_posts = re.findall(
-            r'<h2[^>]*>\s*<a[^>]*href=[\"\']([^\"\']+)[\"\'][^>]*>([^<]+)</a>',
+        # Extract post-element cards which contain portrait image, title, and link
+        cards = re.findall(
+            r'<div[^>]+class=[\"\'][^\"\']*post-element[^\"\']*[\"\'][^>]*>(.*?)</div>\s*</div>',
             html_content,
+            re.DOTALL,
         )
-        if not raw_posts:
-            return [], None
 
-        results: List[Tuple[str, str]] = []
-        for href, title in raw_posts:
-            clean_title = html.unescape(title).strip()
+        results: List[Dict[str, Any]] = []
+        for card in cards:
+            title_m = re.search(r'<h2[^>]*><a[^>]+href=[\"\']([^\"\']+)[\"\'][^>]*>([^<]+)</a>', card)
+            if not title_m:
+                continue
+            href = title_m.group(1).strip()
+            raw_title = title_m.group(2).strip()
+            clean_title = _clean_game_title(raw_title)
             full_url = urllib.parse.urljoin("https://steamrip.com/", href)
-            results.append((clean_title, full_url))
+
+            img_m = re.search(r'data-back=[\"\']([^\"\']+)[\"\']', card)
+            if not img_m:
+                img_m = re.search(r'data-back-webp=[\"\']([^\"\']+)[\"\']', card)
+            portrait_img = img_m.group(1).strip() if img_m else None
+            if portrait_img and portrait_img.startswith("//"):
+                portrait_img = "https:" + portrait_img
+
+            results.append({
+                "title": clean_title,
+                "url": full_url,
+                "portrait_image": portrait_img,
+            })
+
+        # Fallback if card pattern fails
+        if not results:
+            raw_posts = re.findall(
+                r'<h2[^>]*>\s*<a[^>]*href=[\"\']([^\"\']+)[\"\'][^>]*>([^<]+)</a>',
+                html_content,
+            )
+            for href, title in raw_posts:
+                clean_title = _clean_game_title(title)
+                full_url = urllib.parse.urljoin("https://steamrip.com/", href)
+                results.append({
+                    "title": clean_title,
+                    "url": full_url,
+                    "portrait_image": None,
+                })
 
         return results, None
 
-    async def _extract_details(self, page_url: str) -> Optional[Dict[str, Any]]:
-        """Extract game title, size, version, cover image, and direct download links."""
+    async def _extract_details(self, page_url: str, default_image: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Extract game title, size, version, portrait cover image, and direct download links."""
         body = await self._fetch_html(page_url)
         if not body:
             return None
@@ -107,15 +147,28 @@ class GameDL(commands.Cog):
             body,
             re.IGNORECASE,
         )
-        title = html.unescape(og_title.group(1)).strip() if og_title else "Unknown Game"
+        if og_title:
+            title = _clean_game_title(og_title.group(1))
+        else:
+            title = "Unknown Game"
 
-        # Image
-        og_img = re.search(
-            r'<meta\s+property=[\"\']og:image[\"\']\s+content=[\"\']([^\"\']+)[\"\']',
-            body,
-            re.IGNORECASE,
-        )
-        image = og_img.group(1).strip() if og_img else None
+        # Image priority: portrait from search card -> portrait/poster in page -> og:image
+        image = default_image
+        if not image:
+            portrait_match = re.search(
+                r'(https?://steamrip\.com/wp-content/uploads/[^\s\"\'<>]*(?:portrait|poster|torrent)[^\s\"\'<>]*\.(?:jpg|png|webp))',
+                body,
+                re.IGNORECASE,
+            )
+            if portrait_match:
+                image = portrait_match.group(1)
+            else:
+                og_img = re.search(
+                    r'<meta\s+property=[\"\']og:image[\"\']\s+content=[\"\']([^\"\']+)[\"\']',
+                    body,
+                    re.IGNORECASE,
+                )
+                image = og_img.group(1).strip() if og_img else None
 
         # Size
         size_match = re.search(
@@ -133,7 +186,7 @@ class GameDL(commands.Cog):
         )
         version = ver_match.group(1).strip() if ver_match else None
 
-        # Find shortc-button links (SteamRIP download buttons)
+        # Direct download links (shortc-button links)
         button_matches = list(
             re.finditer(
                 r'<a[^>]+href=[\"\']([^\"\']+)[\"\'][^>]*class=[\"\'][^\"\']*shortc-button[^\"\']*[\"\'][^>]*>(.*?)</a>',
@@ -150,7 +203,7 @@ class GameDL(commands.Cog):
             if raw_url.startswith("//"):
                 raw_url = "https:" + raw_url
 
-            # Skip self-links or navigation
+            # Skip self-links
             if "steamrip.com" in raw_url:
                 continue
 
@@ -207,12 +260,12 @@ class GameDL(commands.Cog):
     @commands.hybrid_command(
         name="gamedl",
         aliases=["steamrip"],
-        description="Search SteamRIP and extract direct game download links.",
+        description="Search for a PC game and extract direct download links.",
     )
     @app_commands.describe(game="The name of the game to search for")
     @commands.cooldown(1, 3.0, commands.BucketType.user)
     async def gamedl(self, ctx: commands.Context, *, game: str):
-        """Search SteamRIP for a PC game and extract direct download links.
+        """Search for a PC game and extract direct download links.
 
         Example:
             [p]gamedl portal 2
@@ -220,11 +273,11 @@ class GameDL(commands.Cog):
         """
         async with ctx.typing():
             async with self._lock:
-                results, error = await self._search_steamrip(game)
+                results, error = await self._search_games(game)
 
             if error:
                 embed = discord.Embed(
-                    title="❌ SteamRIP Error",
+                    title="❌ Search Error",
                     description=error,
                     color=discord.Color.red(),
                 )
@@ -234,15 +287,19 @@ class GameDL(commands.Cog):
             if not results:
                 embed = discord.Embed(
                     title="🔍 Game Not Found",
-                    description=f"No results found on SteamRIP matching **{game}**.\nTry searching with a shorter or alternative title.",
+                    description=f"No results found matching **{game}**.\nTry searching with a shorter or alternative title.",
                     color=discord.Color.orange(),
                 )
                 await ctx.send(embed=embed)
                 return
 
-            top_title, top_url = results[0]
+            top_game = results[0]
+            top_title = top_game["title"]
+            top_url = top_game["url"]
+            top_portrait = top_game.get("portrait_image")
+
             async with self._lock:
-                details = await self._extract_details(top_url)
+                details = await self._extract_details(top_url, default_image=top_portrait)
 
             if not details:
                 embed = discord.Embed(
@@ -253,16 +310,11 @@ class GameDL(commands.Cog):
                 await ctx.send(embed=embed)
                 return
 
-            # Construct Embed
+            # Construct Embed (No author header / no broken icon / no SteamRIP branding)
             embed = discord.Embed(
                 title=f"🎮 {details['title']}",
                 url=details["url"],
-                color=discord.Color.from_rgb(147, 51, 234),  # Royal SteamRIP purple
-            )
-            embed.set_author(
-                name="SteamRIP Game Downloader",
-                url="https://steamrip.com/",
-                icon_url="https://steamrip.com/favicon.ico",
+                color=discord.Color.from_rgb(147, 51, 234),
             )
 
             desc_lines = []
@@ -271,7 +323,7 @@ class GameDL(commands.Cog):
             desc_lines.append(f"📦 **Game Size:** `{details['size']}`")
             embed.description = "\n".join(desc_lines)
 
-            # Download links section
+            # Direct Download Links
             if details["downloads"]:
                 dl_lines = []
                 for item in details["downloads"]:
@@ -286,32 +338,32 @@ class GameDL(commands.Cog):
             else:
                 embed.add_field(
                     name="📥 Download Links",
-                    value=f"Visit the [SteamRIP Page]({details['url']}) directly for links.",
+                    value=f"Visit the [Game Page]({details['url']}) directly for links.",
                     inline=False,
                 )
 
             # Other search results (if available)
             if len(results) > 1:
-                other_titles = [f"• [{t}]({u})" for t, u in results[1:5]]
+                other_titles = [f"• [{item['title']}]({item['url']})" for item in results[1:5]]
                 embed.add_field(
                     name="🔍 Other Matches",
                     value="\n".join(other_titles),
                     inline=False,
                 )
 
+            # Set portrait game picture thumbnail
             if details["image"]:
                 embed.set_thumbnail(url=details["image"])
 
             embed.set_footer(
-                text=f"Requested by {ctx.author.display_name} • Powered by SteamRIP",
+                text=f"Requested by {ctx.author.display_name}",
                 icon_url=ctx.author.display_avatar.url if ctx.author.display_avatar else None,
             )
 
             # Interactive Link Buttons View
             view = discord.ui.View()
-            added_buttons = 0
 
-            # Add buttons for download links (up to 4 so it leaves room for SteamRIP link on 1 row)
+            # Add download link buttons (up to 4)
             for item in details["downloads"][:4]:
                 host_label = item["host"][:20]
                 view.add_item(
@@ -321,12 +373,11 @@ class GameDL(commands.Cog):
                         style=discord.ButtonStyle.link,
                     )
                 )
-                added_buttons += 1
 
-            # Button to view on SteamRIP
+            # Button to visit the game page (neutral label without SteamRIP)
             view.add_item(
                 discord.ui.Button(
-                    label="SteamRIP Page",
+                    label="Game Page",
                     url=details["url"],
                     style=discord.ButtonStyle.link,
                 )
