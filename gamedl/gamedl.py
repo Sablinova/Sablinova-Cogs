@@ -152,8 +152,27 @@ def _find_working_steam_image(appid: Union[int, str], tiny_image: Optional[str] 
     return tiny_image or f"https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/{aid}/library_hero.jpg"
 
 
+def _find_working_steam_banner(appid: Union[int, str]) -> Optional[str]:
+    """Find a verified, fast-loading wide Steam hero banner (1920x620) for Discord embed."""
+    aid = str(appid).strip()
+    candidates = [
+        f"https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/{aid}/library_hero.jpg",
+        f"https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/{aid}/header.jpg",
+        f"https://cdn.cloudflare.steamstatic.com/steam/apps/{aid}/header.jpg",
+    ]
+    for url in candidates:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": HEADERS["User-Agent"]}, method="HEAD")
+            with urllib.request.urlopen(req, timeout=1.5) as resp:
+                if resp.status == 200:
+                    return url
+        except Exception:
+            continue
+    return f"https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/{aid}/library_hero.jpg"
+
+
 def _resolve_steam_data_sync(game_title: str) -> Optional[Dict[str, Any]]:
-    """Search Steam store API for the official game page, clean name, and verified fast-loading cover art."""
+    """Search Steam store API for the official game page, clean name, verified cover art, and wide banner."""
     search_term = _clean_for_steam(game_title)
     if not search_term:
         return None
@@ -167,11 +186,13 @@ def _resolve_steam_data_sync(game_title: str) -> Optional[Dict[str, Any]]:
                 top = items[0]
                 appid = top["id"]
                 image_url = _find_working_steam_image(appid, top.get("tiny_image"))
+                banner_url = _find_working_steam_banner(appid)
                 return {
                     "appid": appid,
                     "name": top["name"],
                     "steam_url": f"https://store.steampowered.com/app/{appid}/",
                     "portrait_url": image_url,
+                    "banner_url": banner_url,
                 }
     except Exception as exc:
         log.debug("Steam store lookup failed for %s: %s", search_term, exc)
@@ -315,21 +336,25 @@ def _extract_gamebounty_details_sync(slug: str) -> Optional[Dict[str, Any]]:
             container = data.get("container", {}).get("data", {})
             size = container.get("sizeHuman", "Unknown")
 
-            # Cover art and store URL
-            gb_image = data.get("library_capsule") or data.get("banner")
+            # Cover art and wide banner
+            gb_image = data.get("library_capsule")
+            gb_banner = data.get("banner")
             if appid:
                 game_url = f"https://store.steampowered.com/app/{appid}/"
                 image = gb_image or _find_working_steam_image(appid)
+                banner = gb_banner or _find_working_steam_banner(appid)
                 is_steam = True
             else:
                 steam_info = _resolve_steam_data_sync(title)
                 if steam_info:
                     game_url = steam_info["steam_url"]
                     image = gb_image or steam_info["portrait_url"]
+                    banner = gb_banner or steam_info.get("banner_url")
                     is_steam = True
                 else:
                     game_url = f"https://gamebounty.world/{slug}-free-pc-download"
-                    image = gb_image
+                    image = gb_image or gb_banner
+                    banner = gb_banner
                     is_steam = False
 
             downloads: List[Dict[str, str]] = []
@@ -395,6 +420,7 @@ def _extract_gamebounty_details_sync(slug: str) -> Optional[Dict[str, Any]]:
                 "title": title,
                 "url": game_url,
                 "image": image,
+                "banner": banner,
                 "size": size,
                 "version": version,
                 "downloads": downloads,
@@ -600,6 +626,9 @@ class GameDL(commands.Cog):
                     )
                     image = og_img.group(1).strip() if og_img else None
 
+        # Wide landscape hero banner
+        banner = steam_info.get("banner_url") if steam_info else None
+
         # Size
         size_match = re.search(
             r'<strong>(?:Game\s+)?Size:\s*</strong>\s*([^<]+)',
@@ -720,6 +749,7 @@ class GameDL(commands.Cog):
             "title": title,
             "url": game_page_url,
             "image": image,
+            "banner": banner,
             "size": size,
             "version": version,
             "downloads": downloads,
@@ -828,6 +858,9 @@ class GameDL(commands.Cog):
 
         if details.get("image"):
             embed.set_thumbnail(url=details["image"])
+
+        if details.get("banner"):
+            embed.set_image(url=details["banner"])
 
         embed.set_footer(
             text=f"Requested by {ctx.author.display_name}",
@@ -963,6 +996,9 @@ class GameDL(commands.Cog):
                             or "steamrip.com" in str(details.get("image", ""))
                         ):
                             details["image"] = gb_det["image"]
+                        # Merge banner if missing
+                        if gb_det.get("banner") and not details.get("banner"):
+                            details["banner"] = gb_det["banner"]
                     else:
                         details = sr_det or gb_det
                 else:
