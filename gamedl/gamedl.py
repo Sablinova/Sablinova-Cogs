@@ -352,7 +352,7 @@ class GameDL(commands.Cog):
 
             # Determine host label
             start_pos = m.start()
-            preceding = body[max(0, start_pos - 400) : start_pos]
+            preceding = html.unescape(body[max(0, start_pos - 400) : start_pos])
             label_matches = re.findall(
                 r'<strong>(?:<span[^>]*>)?([^<]+?)(?:</span>)?</strong>',
                 preceding,
