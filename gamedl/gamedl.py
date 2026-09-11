@@ -10,7 +10,7 @@ import struct
 import time
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import discord
 from discord import app_commands
@@ -127,8 +127,33 @@ def _lookup_appid_sync(appid: str) -> Optional[str]:
     return None
 
 
+def _find_working_steam_image(appid: Union[int, str], tiny_image: Optional[str] = None) -> Optional[str]:
+    """Find a verified, fast-loading Steam CDN image that will never 404 or hang in Discord."""
+    aid = str(appid).strip()
+    candidates = [
+        f"https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/{aid}/library_600x900.jpg",
+        f"https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/{aid}/library_hero.jpg",
+        f"https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/{aid}/header.jpg",
+    ]
+    if tiny_image:
+        prefix = tiny_image.rsplit("/", 1)[0]
+        candidates.insert(1, f"{prefix}/library_600x900.jpg")
+        candidates.append(tiny_image)
+
+    for url in candidates:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": HEADERS["User-Agent"]}, method="HEAD")
+            with urllib.request.urlopen(req, timeout=1.5) as resp:
+                if resp.status == 200:
+                    return url
+        except Exception:
+            continue
+
+    return tiny_image or f"https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/{aid}/library_hero.jpg"
+
+
 def _resolve_steam_data_sync(game_title: str) -> Optional[Dict[str, Any]]:
-    """Search Steam store API for the official game page, clean name, and 600x900 vertical portrait art."""
+    """Search Steam store API for the official game page, clean name, and verified fast-loading cover art."""
     search_term = _clean_for_steam(game_title)
     if not search_term:
         return None
@@ -141,11 +166,12 @@ def _resolve_steam_data_sync(game_title: str) -> Optional[Dict[str, Any]]:
             if items:
                 top = items[0]
                 appid = top["id"]
+                image_url = _find_working_steam_image(appid, top.get("tiny_image"))
                 return {
                     "appid": appid,
                     "name": top["name"],
                     "steam_url": f"https://store.steampowered.com/app/{appid}/",
-                    "portrait_url": f"https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/{appid}/library_600x900.jpg",
+                    "portrait_url": image_url,
                 }
     except Exception as exc:
         log.debug("Steam store lookup failed for %s: %s", search_term, exc)
@@ -290,19 +316,20 @@ def _extract_gamebounty_details_sync(slug: str) -> Optional[Dict[str, Any]]:
             size = container.get("sizeHuman", "Unknown")
 
             # Cover art and store URL
+            gb_image = data.get("library_capsule") or data.get("banner")
             if appid:
                 game_url = f"https://store.steampowered.com/app/{appid}/"
-                image = f"https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/{appid}/library_600x900.jpg"
+                image = gb_image or _find_working_steam_image(appid)
                 is_steam = True
             else:
                 steam_info = _resolve_steam_data_sync(title)
                 if steam_info:
                     game_url = steam_info["steam_url"]
-                    image = steam_info["portrait_url"]
+                    image = gb_image or steam_info["portrait_url"]
                     is_steam = True
                 else:
                     game_url = f"https://gamebounty.world/{slug}-free-pc-download"
-                    image = data.get("library_capsule") or data.get("banner")
+                    image = gb_image
                     is_steam = False
 
             downloads: List[Dict[str, str]] = []
@@ -928,6 +955,14 @@ class GameDL(commands.Cog):
                             details["version"] = gb_det["version"]
                         if (not details.get("size") or details.get("size") == "Unknown") and gb_det.get("size"):
                             details["size"] = gb_det["size"]
+                        # Prefer verified Steam CDN cover from GameBounty (e.g. hashed library_600x900)
+                        if gb_det.get("image") and (
+                            "library_600x900" in gb_det["image"]
+                            or "steamstatic" in gb_det["image"]
+                            or not details.get("image")
+                            or "steamrip.com" in str(details.get("image", ""))
+                        ):
+                            details["image"] = gb_det["image"]
                     else:
                         details = sr_det or gb_det
                 else:
