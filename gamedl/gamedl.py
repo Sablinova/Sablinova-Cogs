@@ -27,8 +27,7 @@ HEADERS = {
     "Referer": "https://steamrip.com/",
     "Sec-Fetch-Dest": "document",
     "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "same-origin",
-    "Sec-Fetch-User": "?1",
+    "Sec-Fetch-Site": "cross-site",
     "Upgrade-Insecure-Requests": "1",
 }
 
@@ -66,6 +65,41 @@ def _sync_fetch(url: str, timeout: int = 15) -> str:
         return resp.read().decode("utf-8", errors="replace")
 
 
+def _resolve_bzzhr_direct(url: str) -> str:
+    """Resolve BZZHR/Buzzheavier anti-hotlink links directly to the CDN file download URL."""
+    try:
+        req = urllib.request.Request(url, headers=HEADERS)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            html_text = resp.read().decode("utf-8", errors="replace")
+
+        m = re.search(r'hx-get=[\"\'](/[^/]+/download\?[^\"\']+)[\"\']', html_text)
+        if not m:
+            m = re.search(r'copyDownloadLink\([\'\"]\\?(/[^/]+/download\?[^\'\"]+)[\'\"]\)', html_text)
+        if not m:
+            return url
+
+        dl_path = m.group(1).replace(r"\/", "/")
+        parsed = urllib.parse.urlparse(url)
+        base = f"{parsed.scheme}://{parsed.netloc}"
+        dl_url = urllib.parse.urljoin(base, dl_path)
+
+        req_dl = urllib.request.Request(
+            dl_url,
+            headers={
+                "User-Agent": HEADERS["User-Agent"],
+                "HX-Request": "true",
+                "Referer": url,
+            },
+        )
+        with urllib.request.urlopen(req_dl, timeout=10) as dl_resp:
+            direct_cdn = dl_resp.headers.get("Hx-Redirect") or dl_resp.headers.get("Location")
+            if direct_cdn:
+                return direct_cdn
+    except Exception as exc:
+        log.debug("Could not resolve BZZHR direct link for %s: %s", url, exc)
+    return url
+
+
 class GameDL(commands.Cog):
     """Search and extract game direct download links, size, and metadata."""
 
@@ -88,7 +122,6 @@ class GameDL(commands.Cog):
         if not html_content:
             return [], "Could not connect to the game database. Please try again later."
 
-        # Extract post-element cards which contain portrait image, title, and link
         cards = re.findall(
             r'<div[^>]+class=[\"\'][^\"\']*post-element[^\"\']*[\"\'][^>]*>(.*?)</div>\s*</div>',
             html_content,
@@ -118,7 +151,6 @@ class GameDL(commands.Cog):
                 "portrait_image": portrait_img,
             })
 
-        # Fallback if card pattern fails
         if not results:
             raw_posts = re.findall(
                 r'<h2[^>]*>\s*<a[^>]*href=[\"\']([^\"\']+)[\"\'][^>]*>([^<]+)</a>',
@@ -206,6 +238,12 @@ class GameDL(commands.Cog):
             # Skip self-links
             if "steamrip.com" in raw_url:
                 continue
+
+            # Auto-resolve BZZHR / Buzzheavier anti-hotlink redirect links to direct CDN downloads
+            if "bzzhr.to" in raw_url or "buzzheavier.com" in raw_url:
+                direct_bzzhr = await asyncio.to_thread(_resolve_bzzhr_direct, raw_url)
+                if direct_cdn_resolved := direct_bzzhr:
+                    raw_url = direct_cdn_resolved
 
             if raw_url in seen_urls:
                 continue
