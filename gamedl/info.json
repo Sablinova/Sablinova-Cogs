@@ -1,10 +1,10 @@
 {
     "$schema": "https://raw.githubusercontent.com/Cog-Creators/Red-DiscordBot/refs/heads/V3/develop/schema/red_cog.schema.json",
     "author": ["Sablinova"],
-    "install_msg": "Thank you for installing GameDL!\nUse `[p]gamedl <game name>` to search and extract SteamRIP download links.",
+    "install_msg": "Thank you for installing GameDL!\nUse `[p]gamedl <game name>` to search and extract PC game download links across SteamRIP and GameBounty.",
     "name": "GameDL",
-    "short": "Search and extract SteamRIP direct download links.",
-    "description": "Searches steamrip.com for PC games and extracts direct download links (Gofile, Buzzheavier, MegaDB, 1Fichier, FileDitch, etc.), file size, and version info with rich Discord embeds and interactive download buttons.",
+    "short": "Search and extract SteamRIP & GameBounty direct download links.",
+    "description": "Searches steamrip.com and gamebounty.world for PC games and extracts direct download links (BZZHR, Gofile, PixelDrain, MegaDB, FileDitch, 1Fichier, FileQ, etc.), file size, and version info with rich Discord embeds and interactive download buttons.",
     "end_user_data_statement": "This cog does not persistently store end user data.",
     "hidden": false,
     "disabled": false,
@@ -13,6 +13,7 @@
     "requirements": [],
     "tags": [
         "steamrip",
+        "gamebounty",
         "games",
         "download",
         "scraper",

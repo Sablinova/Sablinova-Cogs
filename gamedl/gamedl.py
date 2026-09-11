@@ -1,11 +1,16 @@
 import asyncio
+import base64
+import hashlib
+import hmac
 import html
 import json
 import logging
 import re
+import struct
+import time
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import discord
 from discord import app_commands
@@ -49,6 +54,8 @@ BZZHR_HEADERS = {
     "Upgrade-Insecure-Requests": "1",
 }
 
+GAMEBOUNTY_SECRET = "sYcRjbpmNLTKNgzGvjaPfPeJxpEHIbSWthvDHxNehxcITTCpmA"
+
 KNOWN_DOMAINS: Dict[str, str] = {
     "gofile.io": "Gofile",
     "bzzhr.to": "BZZHR",
@@ -57,6 +64,7 @@ KNOWN_DOMAINS: Dict[str, str] = {
     "megadb.net": "MegaDB",
     "1fichier.com": "1Fichier",
     "fileditchfiles.me": "FileDitch",
+    "fileditchfiles.st": "FileDitch",
     "fileditch.com": "FileDitch",
     "qiwi.gg": "Qiwi",
     "datanodes.to": "DataNodes",
@@ -66,15 +74,18 @@ KNOWN_DOMAINS: Dict[str, str] = {
     "dropgalaxy.com": "DropGalaxy",
     "krakenfiles.com": "KrakenFiles",
     "rapidgator.net": "RapidGator",
+    "fileq.net": "FileQ",
+    "0807.st": "0807",
 }
 
 
 def _clean_game_title(title: str) -> str:
-    """Remove HTML entities, 'Free Download', versions, builds, and trailing SteamRIP branding."""
+    """Remove HTML entities, 'Free Download', versions, builds, and trailing branding."""
     clean = html.unescape(title)
     clean = re.sub(r"\bFree\s+Download\b", "", clean, flags=re.IGNORECASE)
     clean = re.sub(r"[\s»\-|–—]+\s*SteamRIP.*$", "", clean, flags=re.IGNORECASE)
     clean = re.sub(r"\bSteamRIP\b", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"\bGameBounty\b", "", clean, flags=re.IGNORECASE)
     # Remove parenthesized versions/builds like (v1.4.5.8 + Co-op) or (Build 123)
     clean = re.sub(r"\s*\([^)]*\)", "", clean)
     # Remove bracketed versions like [v2.12] or [Build 100]
@@ -99,6 +110,19 @@ def _sync_fetch(url: str, headers: Optional[Dict[str, str]] = None, timeout: int
     req = urllib.request.Request(url, headers=headers or HEADERS)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.read().decode("utf-8", errors="replace")
+
+
+def _lookup_appid_sync(appid: str) -> Optional[str]:
+    """If search query is a numeric Steam AppID, look up the official game name."""
+    url = f"https://store.steampowered.com/api/appdetails?appids={appid}"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": HEADERS["User-Agent"]})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return data.get(appid, {}).get("data", {}).get("name")
+    except Exception as exc:
+        log.debug("AppID lookup failed for %s: %s", appid, exc)
+    return None
 
 
 def _resolve_steam_data_sync(game_title: str) -> Optional[Dict[str, Any]]:
@@ -133,7 +157,6 @@ def _resolve_bzzhr_direct(url: str, max_retries: int = 5) -> str:
     Resolving the link directly to the ts.bzzhr.to CDN URL allows users to download
     without any anti-hotlink redirects or browser warnings.
     """
-    import time
     for attempt in range(max_retries):
         ua = USER_AGENTS[attempt % len(USER_AGENTS)]
         headers = {
@@ -187,8 +210,191 @@ def _resolve_bzzhr_direct(url: str, max_retries: int = 5) -> str:
     return url
 
 
+def _gamebounty_state() -> str:
+    """Generate the 30-second time-window HMAC token required by GameBounty's API."""
+    step = int(time.time() / 30)
+    msg = struct.pack(">Q", step)
+    return hmac.new(GAMEBOUNTY_SECRET.encode("utf-8"), msg, hashlib.sha256).hexdigest()
+
+
+def _search_gamebounty_sync(query: str) -> List[Dict[str, Any]]:
+    """Query GameBounty API for matching games."""
+    sig = _gamebounty_state()
+    url = f"https://gamebounty.world/api/v1/search?q={urllib.parse.quote(query)}&page=1&size=10"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": HEADERS["User-Agent"],
+            "Accept": "application/json",
+            "x-gb-state": sig,
+            "Referer": f"https://gamebounty.world/search?q={urllib.parse.quote(query)}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            results = data.get("data", {}).get("results", [])
+            parsed = []
+            for r in results:
+                parsed.append({
+                    "title": _clean_game_title(r.get("title", "")),
+                    "slug": r.get("slug"),
+                    "appid": r.get("appid"),
+                    "version": r.get("version"),
+                    "size": r.get("size_human"),
+                    "library_capsule": r.get("library_capsule"),
+                    "source": "gamebounty",
+                })
+            return parsed
+    except Exception as exc:
+        log.debug("GameBounty search failed for %s: %s", query, exc)
+    return []
+
+
+def _extract_gamebounty_details_sync(slug: str) -> Optional[Dict[str, Any]]:
+    """Fetch game details and direct mirrors from GameBounty."""
+    sig = _gamebounty_state()
+    url = f"https://gamebounty.world/api/v1/posts/{urllib.parse.quote(slug)}"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": HEADERS["User-Agent"],
+            "Accept": "application/json",
+            "x-gb-state": sig,
+            "Referer": f"https://gamebounty.world/{slug}-free-pc-download",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            raw_data = json.loads(resp.read().decode("utf-8"))
+            data = raw_data.get("data", {})
+            if not data:
+                return None
+
+            title = _clean_game_title(data.get("title", "Unknown Game"))
+            appid = data.get("appid")
+            version = data.get("version")
+            container = data.get("container", {}).get("data", {})
+            size = container.get("sizeHuman", "Unknown")
+
+            # Cover art and store URL
+            if appid:
+                game_url = f"https://store.steampowered.com/app/{appid}/"
+                image = f"https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/{appid}/library_600x900.jpg"
+                is_steam = True
+            else:
+                steam_info = _resolve_steam_data_sync(title)
+                if steam_info:
+                    game_url = steam_info["steam_url"]
+                    image = steam_info["portrait_url"]
+                    is_steam = True
+                else:
+                    game_url = f"https://gamebounty.world/{slug}-free-pc-download"
+                    image = data.get("library_capsule") or data.get("banner")
+                    is_steam = False
+
+            downloads: List[Dict[str, str]] = []
+            seen_urls = set()
+
+            for mirror in container.get("mirrors", []):
+                raw_m_name = mirror.get("name", "Direct Download")
+                links = mirror.get("links", [])
+                is_multipart = len(links) > 1
+
+                for idx, link_obj in enumerate(links):
+                    raw_dl_url = link_obj.get("url", "")
+                    if not raw_dl_url:
+                        continue
+
+                    # Decode base64 payload from /api/dl/<slug>/<base64>
+                    target_url = raw_dl_url
+                    b64_part = raw_dl_url.split("/")[-1]
+                    try:
+                        padded = b64_part + "=" * (-len(b64_part) % 4)
+                        decoded = base64.urlsafe_b64decode(padded).decode("utf-8")
+                        if decoded.startswith("http://") or decoded.startswith("https://"):
+                            target_url = decoded
+                    except Exception:
+                        pass
+
+                    # Auto-resolve BZZHR links if present
+                    if "bzzhr.to" in target_url or "buzzheavier.com" in target_url:
+                        resolved = _resolve_bzzhr_direct(target_url)
+                        if resolved:
+                            target_url = resolved
+
+                    if target_url in seen_urls:
+                        continue
+                    seen_urls.add(target_url)
+
+                    # Determine host label
+                    parsed = urllib.parse.urlparse(target_url)
+                    domain = parsed.netloc.lower()
+                    if domain.startswith("www."):
+                        domain = domain[4:]
+
+                    host_label = KNOWN_DOMAINS.get(domain)
+                    if not host_label:
+                        m_clean = raw_m_name.lower().replace("www.", "")
+                        host_label = KNOWN_DOMAINS.get(m_clean, domain.split(".")[0].capitalize() if domain else "Direct Download")
+
+                    if any(k in host_label.lower() or k in target_url.lower() for k in ["bzzhr", "buzzheavier"]):
+                        host_label = "BZZHR"
+
+                    if is_multipart:
+                        host_label = f"{host_label} (Part {idx + 1})"
+
+                    downloads.append({"host": host_label, "url": target_url})
+
+            return {
+                "title": title,
+                "url": game_url,
+                "image": image,
+                "size": size,
+                "version": version,
+                "downloads": downloads,
+                "is_steam": is_steam,
+                "slug": slug,
+            }
+    except Exception as exc:
+        log.warning("GameBounty details failed for %s: %s", slug, exc)
+    return None
+
+
+def _download_sort_key(item: Dict[str, str]) -> int:
+    """Prioritize BZZHR first, followed by top fast direct hosts."""
+    h = item["host"].lower()
+    u = item["url"].lower()
+    if any(k in h or k in u for k in ["buzzheavier", "bzzhr"]):
+        return 0
+    if "gofile" in h or "gofile" in u:
+        return 1
+    if "pixeldrain" in h or "pixeldrain" in u:
+        return 2
+    if "fileditch" in h or "fileditch" in u:
+        return 3
+    if "megadb" in h or "megadb" in u:
+        return 4
+    if "1fichier" in h or "1fichier" in u:
+        return 5
+    if "fileq" in h or "fileq" in u:
+        return 6
+    if "datanodes" in h or "datanodes" in u:
+        return 7
+    if "0807" in h or "0807" in u:
+        return 8
+    return 10
+
+
+def _is_same_game(t1: str, t2: str) -> bool:
+    """Check if two game titles likely represent the exact same game."""
+    s1 = "".join(c for c in t1.lower() if c.isalnum())
+    s2 = "".join(c for c in t2.lower() if c.isalnum())
+    return s1 == s2 or s1 in s2 or s2 in s1
+
+
 class GameDL(commands.Cog):
-    """Search and extract game direct download links, size, and Steam metadata."""
+    """Search and extract game direct download links from SteamRIP and GameBounty."""
 
     def __init__(self, bot: Red):
         self.bot = bot
@@ -203,11 +409,11 @@ class GameDL(commands.Cog):
             return None
 
     async def _search_games(self, query: str) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-        """Search for games matching query. Returns list of game dicts or error."""
+        """Search SteamRIP for games matching query."""
         search_url = f"https://steamrip.com/?s={urllib.parse.quote(query)}"
         html_content = await self._fetch_html(search_url)
         if not html_content:
-            return [], "Could not connect to the game database. Please try again later."
+            return [], "Could not connect to SteamRIP database. Please try again later."
 
         cards = re.findall(
             r'<div[^>]+class=[\"\'][^\"\']*post-element[^\"\']*[\"\'][^>]*>(.*?)</div>\s*</div>',
@@ -236,6 +442,7 @@ class GameDL(commands.Cog):
                 "title": clean_title,
                 "url": full_url,
                 "portrait_image": portrait_img,
+                "source": "steamrip",
             })
 
         if not results:
@@ -250,12 +457,13 @@ class GameDL(commands.Cog):
                     "title": clean_title,
                     "url": full_url,
                     "portrait_image": None,
+                    "source": "steamrip",
                 })
 
         return results, None
 
     async def _extract_details(self, page_url: str, default_image: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        """Extract game title, size, version, cover art, and direct download links."""
+        """Extract SteamRIP game title, size, version, cover art, and direct download links."""
         body = await self._fetch_html(page_url)
         if not body:
             return None
@@ -405,14 +613,6 @@ class GameDL(commands.Cog):
 
             downloads.append({"host": host_label, "url": raw_url})
 
-        # Sort download links so Buzzheavier / BZZHR is prioritized first
-        def _is_bzzhr(item: Dict[str, str]) -> bool:
-            h = item["host"].lower()
-            u = item["url"].lower()
-            return any(k in h or k in u for k in ["buzzheavier", "bzzhr"])
-
-        downloads.sort(key=lambda x: 0 if _is_bzzhr(x) else 1)
-
         # Game store page (defaults to Steam if matched)
         game_page_url = steam_info["steam_url"] if steam_info else page_url
         is_steam = bool(steam_info)
@@ -427,196 +627,359 @@ class GameDL(commands.Cog):
             "is_steam": is_steam,
         }
 
+    async def _search_gamebounty(self, query: str) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        """Search GameBounty for games matching query."""
+        try:
+            results = await asyncio.to_thread(_search_gamebounty_sync, query)
+            return results, None
+        except Exception as exc:
+            log.warning("GameBounty search error: %s", exc)
+            return [], str(exc)
+
+    async def _extract_gamebounty_details(self, slug: str) -> Optional[Dict[str, Any]]:
+        """Extract GameBounty game details and mirrors."""
+        try:
+            return await asyncio.to_thread(_extract_gamebounty_details_sync, slug)
+        except Exception as exc:
+            log.warning("GameBounty details error for %s: %s", slug, exc)
+            return None
+
+    async def _send_game_card(
+        self,
+        ctx: commands.Context,
+        details: Dict[str, Any],
+        other_matches: Optional[List[str]] = None,
+    ):
+        """Construct embed with field chunking, buttons, and send safely to Discord."""
+        embed = discord.Embed(
+            title=f"🎮 {details['title'][:250]}",
+            url=details["url"][:512],
+            color=discord.Color.from_rgb(147, 51, 234),
+        )
+
+        desc_lines = []
+        if details.get("version"):
+            desc_lines.append(f"🏷️ **Version:** `{details['version']}`")
+        if details.get("size") and details["size"] != "Unknown":
+            desc_lines.append(f"📦 **Game Size:** `{details['size']}`")
+        if desc_lines:
+            embed.description = "\n".join(desc_lines)[:4000]
+
+        # Sort downloads: BZZHR first, then fast mirrors (Gofile, PixelDrain, FileDitch, MegaDB, etc.)
+        downloads = sorted(details.get("downloads", []), key=_download_sort_key)
+
+        if downloads:
+            dl_lines = []
+            for item in downloads:
+                host_name = item["host"]
+                link_url = item["url"]
+                is_bzzhr = any(k in host_name.lower() or k in link_url.lower() for k in ["buzzheavier", "bzzhr"])
+                display_host = host_name
+                if is_bzzhr and "⭐" not in display_host:
+                    dl_lines.append(f"• [**{display_host}**]({link_url}) ⭐ *(Recommended)*")
+                else:
+                    dl_lines.append(f"• [**{display_host}**]({link_url})")
+
+            # Chunk download lines so each field strictly respects Discord's 1024-char limit
+            field_chunks: List[List[str]] = []
+            current_chunk: List[str] = []
+            current_len = 0
+            for line in dl_lines:
+                line_len = len(line) + 1
+                if current_chunk and (current_len + line_len > 900):
+                    field_chunks.append(current_chunk)
+                    current_chunk = [line]
+                    current_len = line_len
+                else:
+                    current_chunk.append(line)
+                    current_len += line_len
+            if current_chunk:
+                field_chunks.append(current_chunk)
+
+            for idx, chunk in enumerate(field_chunks):
+                name = "📥 Direct Download Links" if idx == 0 else f"📥 Direct Download Links (Part {idx + 1})"
+                embed.add_field(
+                    name=name,
+                    value="\n".join(chunk)[:1020],
+                    inline=False,
+                )
+        else:
+            embed.add_field(
+                name="📥 Download Links",
+                value=f"Visit the [Store Page]({details['url']}) for details.",
+                inline=False,
+            )
+
+        if other_matches:
+            other_text = "\n".join(other_matches)
+            if len(other_text) > 1000:
+                other_text = other_text[:990] + "..."
+            embed.add_field(
+                name="🔍 Other Matches",
+                value=other_text,
+                inline=False,
+            )
+
+        if details.get("image"):
+            embed.set_thumbnail(url=details["image"])
+
+        embed.set_footer(
+            text=f"Requested by {ctx.author.display_name}",
+            icon_url=ctx.author.display_avatar.url if ctx.author.display_avatar else None,
+        )
+
+        # Interactive Link Buttons View (Discord allows max 5 buttons per row)
+        view = discord.ui.View()
+        for item in downloads[:4]:
+            host_label = item["host"][:18]
+            is_bzzhr = any(k in host_label.lower() or k in item["url"].lower() for k in ["buzzheavier", "bzzhr"])
+            btn_text = "⭐ Download (BZZHR)" if is_bzzhr else f"Download ({host_label})"
+            if len(item["url"]) <= 512:
+                view.add_item(
+                    discord.ui.Button(
+                        label=btn_text[:80],
+                        url=item["url"],
+                        style=discord.ButtonStyle.link,
+                    )
+                )
+
+        store_button_label = "Steam Store" if details.get("is_steam") else "Game Page"
+        if len(details["url"]) <= 512:
+            view.add_item(
+                discord.ui.Button(
+                    label=store_button_label[:80],
+                    url=details["url"],
+                    style=discord.ButtonStyle.link,
+                )
+            )
+
+        # Sanitize embed field lengths
+        for f_idx, field in enumerate(embed.fields):
+            if len(field.value) > 1000:
+                embed.set_field_at(
+                    f_idx,
+                    name=field.name[:250],
+                    value=field.value[:990] + "...",
+                    inline=field.inline,
+                )
+
+        try:
+            await ctx.send(embed=embed, view=view)
+        except Exception as send_err:
+            log.warning("Sending with View failed (%s), attempting embed only", send_err)
+            try:
+                await ctx.send(embed=embed)
+            except Exception as final_err:
+                log.error("Failed to send embed: %s", final_err)
+                safe_embed = discord.Embed(
+                    title=f"🎮 {details['title'][:250]}",
+                    url=details["url"][:512],
+                    description=f"📦 **Game Size:** `{details.get('size', 'Unknown')}`",
+                    color=discord.Color.blurple(),
+                )
+                safe_embed.add_field(
+                    name="📥 Store Page",
+                    value=f"[Click here to view game page]({details['url']})",
+                    inline=False,
+                )
+                await ctx.send(embed=safe_embed)
+
     @commands.hybrid_command(
         name="gamedl",
-        aliases=["steamrip"],
-        description="Search for a PC game and extract direct download links.",
+        aliases=["gdl"],
+        description="Search for a PC game across SteamRIP and GameBounty.",
     )
-    @app_commands.describe(game="The name of the game to search for")
+    @app_commands.describe(game="The name of the game or numeric Steam AppID to search for")
     @commands.cooldown(1, 3.0, commands.BucketType.user)
     async def gamedl(self, ctx: commands.Context, *, game: str):
-        """Search for a PC game and extract direct download links.
+        """Search for a PC game across SteamRIP and GameBounty with merged direct mirrors.
 
         Example:
-            [p]gamedl portal 2
-            [p]gamedl elden ring
+            [p]gamedl terraria
+            [p]gamedl cyberpunk 2077
+            [p]gamedl 2651280
         """
         async with ctx.typing():
-            async with self._lock:
-                results, error = await self._search_games(game)
+            # If query is a numeric AppID, resolve to official title first
+            clean_q = game.strip()
+            if clean_q.isdigit():
+                steam_name = await asyncio.to_thread(_lookup_appid_sync, clean_q)
+                if steam_name:
+                    clean_q = steam_name
 
-            if error:
-                embed = discord.Embed(
-                    title="❌ Search Error",
-                    description=error,
-                    color=discord.Color.red(),
-                )
-                await ctx.send(embed=embed)
-                return
+            # Concurrently search SteamRIP and GameBounty
+            sr_task = self._search_games(clean_q)
+            gb_task = self._search_gamebounty(clean_q)
+            (sr_results, sr_err), (gb_results, gb_err) = await asyncio.gather(sr_task, gb_task)
 
-            if not results:
+            if not sr_results and not gb_results:
+                msg = f"No results found matching **{clean_q}** on SteamRIP or GameBounty.\nTry searching with a shorter or alternative title."
                 embed = discord.Embed(
                     title="🔍 Game Not Found",
-                    description=f"No results found matching **{game}**.\nTry searching with a shorter or alternative title.",
+                    description=msg,
                     color=discord.Color.orange(),
                 )
                 await ctx.send(embed=embed)
                 return
 
-            top_game = results[0]
-            top_title = top_game["title"]
-            top_url = top_game["url"]
-            top_portrait = top_game.get("portrait_image")
+            details: Optional[Dict[str, Any]] = None
+            other_titles: List[str] = []
 
-            async with self._lock:
-                details = await self._extract_details(top_url, default_image=top_portrait)
+            # Case 1: Both sources returned matches
+            if sr_results and gb_results:
+                sr_top = sr_results[0]
+                gb_top = gb_results[0]
+
+                # Check if top results represent the same game
+                if _is_same_game(sr_top["title"], gb_top["title"]):
+                    sr_det_task = self._extract_details(sr_top["url"], default_image=sr_top.get("portrait_image"))
+                    gb_det_task = self._extract_gamebounty_details(gb_top["slug"])
+                    sr_det, gb_det = await asyncio.gather(sr_det_task, gb_det_task)
+
+                    if sr_det and gb_det:
+                        details = sr_det
+                        # Merge GameBounty mirrors into SteamRIP downloads
+                        seen_urls = {d["url"] for d in details.get("downloads", [])}
+                        for gb_dl in gb_det.get("downloads", []):
+                            if gb_dl["url"] not in seen_urls:
+                                seen_urls.add(gb_dl["url"])
+                                details["downloads"].append(gb_dl)
+                        # Pick best version/size if one is missing
+                        if not details.get("version") and gb_det.get("version"):
+                            details["version"] = gb_det["version"]
+                        if (not details.get("size") or details.get("size") == "Unknown") and gb_det.get("size"):
+                            details["size"] = gb_det["size"]
+                    else:
+                        details = sr_det or gb_det
+                else:
+                    # Top games differ: prioritize SteamRIP match, list GameBounty top in others
+                    details = await self._extract_details(sr_top["url"], default_image=sr_top.get("portrait_image"))
+                    if not details:
+                        details = await self._extract_gamebounty_details(gb_top["slug"])
+
+                # Compile other matches from both sources
+                seen_other: Set[str] = set()
+                for item in sr_results[1:5] + gb_results[1:5]:
+                    c_title = _clean_game_title(item["title"])
+                    if details and _is_same_game(c_title, details["title"]):
+                        continue
+                    if c_title not in seen_other:
+                        seen_other.add(c_title)
+                        other_titles.append(f"• {c_title}")
+
+            # Case 2: Only SteamRIP returned matches
+            elif sr_results:
+                sr_top = sr_results[0]
+                details = await self._extract_details(sr_top["url"], default_image=sr_top.get("portrait_image"))
+                for item in sr_results[1:5]:
+                    c_title = _clean_game_title(item["title"])
+                    other_titles.append(f"• {c_title}")
+
+            # Case 3: Only GameBounty returned matches
+            elif gb_results:
+                gb_top = gb_results[0]
+                details = await self._extract_gamebounty_details(gb_top["slug"])
+                for item in gb_results[1:5]:
+                    c_title = _clean_game_title(item["title"])
+                    other_titles.append(f"• {c_title}")
 
             if not details:
                 embed = discord.Embed(
-                    title="❌ Failed to Load Game Page",
-                    description=f"Found [{top_title}]({top_url}) but could not fetch details.",
+                    title="❌ Failed to Load Game Details",
+                    description=f"Found games matching **{clean_q}**, but could not retrieve download links.",
                     color=discord.Color.red(),
                 )
                 await ctx.send(embed=embed)
                 return
 
-            # Construct Embed (Clean game name, links to Steam, no SteamRIP branding)
-            embed = discord.Embed(
-                title=f"🎮 {details['title']}",
-                url=details["url"],
-                color=discord.Color.from_rgb(147, 51, 234),
-            )
+            await self._send_game_card(ctx, details, other_titles[:6])
 
-            desc_lines = []
-            if details["version"]:
-                desc_lines.append(f"🏷️ **Version:** `{details['version']}`")
-            desc_lines.append(f"📦 **Game Size:** `{details['size']}`")
-            embed.description = "\n".join(desc_lines)
+    @commands.hybrid_command(
+        name="gamebounty",
+        aliases=["gb"],
+        description="Search GameBounty specifically for PC game direct downloads.",
+    )
+    @app_commands.describe(game="The name of the game to search GameBounty for")
+    @commands.cooldown(1, 3.0, commands.BucketType.user)
+    async def gamebounty(self, ctx: commands.Context, *, game: str):
+        """Search GameBounty specifically for direct game download links.
 
-            # Direct Download Links with BZZHR recommended sign
-            if details["downloads"]:
-                dl_lines = []
-                for item in details["downloads"]:
-                    host_name = item["host"]
-                    link_url = item["url"]
-                    is_bzzhr = any(k in host_name.lower() or k in link_url.lower() for k in ["buzzheavier", "bzzhr"])
-                    display_host = host_name
-                    if is_bzzhr and "⭐" not in display_host:
-                        dl_lines.append(f"• [**{display_host}**]({link_url}) ⭐ *(Recommended)*")
-                    else:
-                        dl_lines.append(f"• [**{display_host}**]({link_url})")
+        Example:
+            [p]gamebounty cyberpunk 2077
+            [p]gb elden ring
+        """
+        async with ctx.typing():
+            clean_q = game.strip()
+            if clean_q.isdigit():
+                steam_name = await asyncio.to_thread(_lookup_appid_sync, clean_q)
+                if steam_name:
+                    clean_q = steam_name
 
-                # Chunk download lines so each field strictly respects Discord's 1024-char limit
-                field_chunks: List[List[str]] = []
-                current_chunk: List[str] = []
-                current_len = 0
-                for line in dl_lines:
-                    line_len = len(line) + 1
-                    if current_chunk and (current_len + line_len > 900):
-                        field_chunks.append(current_chunk)
-                        current_chunk = [line]
-                        current_len = line_len
-                    else:
-                        current_chunk.append(line)
-                        current_len += line_len
-                if current_chunk:
-                    field_chunks.append(current_chunk)
-
-                for idx, chunk in enumerate(field_chunks):
-                    name = "📥 Direct Download Links" if idx == 0 else f"📥 Direct Download Links (Part {idx + 1})"
-                    embed.add_field(
-                        name=name,
-                        value="\n".join(chunk),
-                        inline=False,
-                    )
-            else:
-                embed.add_field(
-                    name="📥 Download Links",
-                    value=f"Visit the [Store Page]({details['url']}) for details.",
-                    inline=False,
+            results, err = await self._search_gamebounty(clean_q)
+            if not results:
+                embed = discord.Embed(
+                    title="🔍 Game Not Found on GameBounty",
+                    description=f"No results found on GameBounty matching **{clean_q}**.",
+                    color=discord.Color.orange(),
                 )
+                await ctx.send(embed=embed)
+                return
 
-            # Other search results (if available, with Free Download removed)
-            if len(results) > 1:
-                other_titles = [f"• {_clean_game_title(item['title'])}" for item in results[1:5]]
-                other_text = "\n".join(other_titles)
-                if len(other_text) > 1000:
-                    other_text = other_text[:990] + "..."
-                embed.add_field(
-                    name="🔍 Other Matches",
-                    value=other_text,
-                    inline=False,
+            top = results[0]
+            details = await self._extract_gamebounty_details(top["slug"])
+            if not details:
+                embed = discord.Embed(
+                    title="❌ Failed to Load Game Details",
+                    description=f"Could not load details for [{top['title']}](https://gamebounty.world/{top['slug']}-free-pc-download).",
+                    color=discord.Color.red(),
                 )
+                await ctx.send(embed=embed)
+                return
 
-            # Set Steam portrait cover art
-            if details["image"]:
-                embed.set_thumbnail(url=details["image"])
+            other_titles = [f"• {_clean_game_title(r['title'])}" for r in results[1:5]]
+            await self._send_game_card(ctx, details, other_titles)
 
-            embed.set_footer(
-                text=f"Requested by {ctx.author.display_name}",
-                icon_url=ctx.author.display_avatar.url if ctx.author.display_avatar else None,
-            )
+    @commands.hybrid_command(
+        name="steamrip",
+        aliases=["srip"],
+        description="Search SteamRIP specifically for PC game direct downloads.",
+    )
+    @app_commands.describe(game="The name of the game to search SteamRIP for")
+    @commands.cooldown(1, 3.0, commands.BucketType.user)
+    async def steamrip(self, ctx: commands.Context, *, game: str):
+        """Search SteamRIP specifically for direct game download links.
 
-            # Interactive Link Buttons View (Discord allows max 5 buttons per row, 25 total)
-            view = discord.ui.View()
+        Example:
+            [p]steamrip terraria
+            [p]srip portal 2
+        """
+        async with ctx.typing():
+            clean_q = game.strip()
+            if clean_q.isdigit():
+                steam_name = await asyncio.to_thread(_lookup_appid_sync, clean_q)
+                if steam_name:
+                    clean_q = steam_name
 
-            # Add download link buttons (up to 4, with BZZHR recommended star)
-            for item in details["downloads"][:4]:
-                host_label = item["host"][:18]
-                is_bzzhr = any(k in host_label.lower() or k in item["url"].lower() for k in ["buzzheavier", "bzzhr"])
-                btn_text = "⭐ Download (BZZHR)" if is_bzzhr else f"Download ({host_label})"
-                if len(item["url"]) <= 512:
-                    view.add_item(
-                        discord.ui.Button(
-                            label=btn_text[:80],
-                            url=item["url"],
-                            style=discord.ButtonStyle.link,
-                        )
-                    )
-
-            # Button to visit the Steam Store page
-            store_button_label = "Steam Store" if details.get("is_steam") else "Game Page"
-            if len(details["url"]) <= 512:
-                view.add_item(
-                    discord.ui.Button(
-                        label=store_button_label[:80],
-                        url=details["url"],
-                        style=discord.ButtonStyle.link,
-                    )
+            results, err = await self._search_games(clean_q)
+            if not results:
+                embed = discord.Embed(
+                    title="🔍 Game Not Found on SteamRIP",
+                    description=f"No results found on SteamRIP matching **{clean_q}**.",
+                    color=discord.Color.orange(),
                 )
+                await ctx.send(embed=embed)
+                return
 
-            # Safe embed sender that guarantees field values <= 1000 chars
-            def _sanitize_embed(emb: discord.Embed) -> discord.Embed:
-                for f_idx, field in enumerate(emb.fields):
-                    if len(field.value) > 1000:
-                        emb.set_field_at(
-                            f_idx,
-                            name=field.name[:250],
-                            value=field.value[:990] + "...",
-                            inline=field.inline,
-                        )
-                return emb
+            top = results[0]
+            details = await self._extract_details(top["url"], default_image=top.get("portrait_image"))
+            if not details:
+                embed = discord.Embed(
+                    title="❌ Failed to Load Game Details",
+                    description=f"Could not load details for [{top['title']}]({top['url']}).",
+                    color=discord.Color.red(),
+                )
+                await ctx.send(embed=embed)
+                return
 
-            embed = _sanitize_embed(embed)
-
-            try:
-                await ctx.send(embed=embed, view=view)
-            except Exception as send_err:
-                log.warning("Sending with View failed (%s), attempting embed only", send_err)
-                try:
-                    await ctx.send(embed=embed)
-                except Exception as final_err:
-                    log.error("Failed to send embed: %s", final_err)
-                    # Absolute emergency fallback: stripped plain embed
-                    safe_embed = discord.Embed(
-                        title=f"🎮 {details['title'][:250]}",
-                        url=details["url"][:512],
-                        description=f"📦 **Game Size:** `{details['size']}`",
-                        color=discord.Color.blurple(),
-                    )
-                    safe_embed.add_field(
-                        name="📥 Store Page",
-                        value=f"[Click here to view game page]({details['url']})",
-                        inline=False,
-                    )
-                    await ctx.send(embed=safe_embed)
+            other_titles = [f"• {_clean_game_title(r['title'])}" for r in results[1:5]]
+            await self._send_game_card(ctx, details, other_titles)
