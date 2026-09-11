@@ -171,6 +171,47 @@ def _find_working_steam_banner(appid: Union[int, str]) -> Optional[str]:
     return f"https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/{aid}/library_hero.jpg"
 
 
+def _pick_best_steam_item(search_term: str, items: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Select the Steam item that best matches the search term, preventing sequels (e.g. Subnautica 2) from hijacking base games."""
+    if not items:
+        return None
+    st_norm = "".join(c for c in search_term.lower() if c.isalnum())
+    st_words = set(re.findall(r"[a-z0-9]+", search_term.lower()))
+    has_number = any(w.isdigit() or w in ["ii", "iii", "iv", "v"] for w in st_words)
+
+    best_item = None
+    best_score = -1.0
+
+    for it in items:
+        name = it.get("name", "")
+        n_norm = "".join(c for c in name.lower() if c.isalnum())
+        n_words = set(re.findall(r"[a-z0-9]+", name.lower()))
+
+        score = 0.0
+        # Exact match (e.g. "subnautica" == "subnautica")
+        if n_norm == st_norm:
+            score = 100.0
+        # If user searched base game without number, penalize sequels (e.g. "2", "3")
+        elif not has_number and any(w.isdigit() or w in ["ii", "iii", "iv", "v"] for w in (n_words - st_words)):
+            score = 10.0
+        # Substring or word overlap
+        elif st_norm in n_norm:
+            score = 50.0 - (len(n_norm) - len(st_norm))
+        else:
+            common = st_words & n_words
+            score = len(common) * 10.0
+
+        # Penalize soundtracks, DLCs, and skin packs
+        if any(bad in name.lower() for bad in ["soundtrack", "dlc", "expansion", "pack", "artbook", "ost"]):
+            score -= 30.0
+
+        if score > best_score:
+            best_score = score
+            best_item = it
+
+    return best_item or items[0]
+
+
 def _resolve_steam_data_sync(game_title: str) -> Optional[Dict[str, Any]]:
     """Search Steam store API for the official game page, clean name, verified cover art, and wide banner."""
     search_term = _clean_for_steam(game_title)
@@ -183,7 +224,7 @@ def _resolve_steam_data_sync(game_title: str) -> Optional[Dict[str, Any]]:
             data = json.loads(resp.read().decode("utf-8"))
             items = data.get("items", [])
             if items:
-                top = items[0]
+                top = _pick_best_steam_item(search_term, items) or items[0]
                 appid = top["id"]
                 image_url = _find_working_steam_image(appid, top.get("tiny_image"))
                 banner_url = _find_working_steam_banner(appid)
@@ -461,7 +502,29 @@ def _is_same_game(t1: str, t2: str) -> bool:
     """Check if two game titles likely represent the exact same game."""
     s1 = "".join(c for c in t1.lower() if c.isalnum())
     s2 = "".join(c for c in t2.lower() if c.isalnum())
-    return s1 == s2 or s1 in s2 or s2 in s1
+    if s1 == s2:
+        return True
+
+    # If numbers/sequels differ (e.g. Subnautica vs Subnautica 2), they are DIFFERENT games
+    nums1 = re.findall(r"\d+", s1)
+    nums2 = re.findall(r"\d+", s2)
+    if nums1 != nums2:
+        return False
+
+    # Check Roman numerals
+    romans = {"ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"}
+    w1 = set(re.findall(r"[a-z0-9]+", t1.lower()))
+    w2 = set(re.findall(r"[a-z0-9]+", t2.lower()))
+    if (w1 & romans) != (w2 & romans):
+        return False
+
+    # Check standalone subtitles: if one has distinct subtitle words that are not common edition terms
+    edition_words = {"the", "a", "an", "of", "and", "in", "on", "for", "to", "with", "edition", "remastered", "deluxe", "complete", "goty", "vr", "cut", "directors", "anniversary", "enhanced"}
+    diff = (w1 ^ w2) - edition_words
+    if len(diff) >= 2:
+        return False
+
+    return s1 in s2 or s2 in s1
 
 
 def _query_relevance_score(query: str, title: str) -> float:
@@ -599,8 +662,8 @@ class GameDL(commands.Cog):
         # Lookup Steam Store info for official portrait art, clean title, and store page
         steam_info = await asyncio.to_thread(_resolve_steam_data_sync, cleaned_name)
 
-        # Title: Prefer official clean Steam title (e.g. 'Portal 2'), else pure game name without (Build...)
-        if steam_info and steam_info.get("name"):
+        # Title: Prefer official clean Steam title (if matching), else pure game name without (Build...)
+        if steam_info and steam_info.get("name") and _is_same_game(cleaned_name, steam_info["name"]):
             title = steam_info["name"]
         else:
             title = cleaned_name
