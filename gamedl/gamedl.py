@@ -236,9 +236,11 @@ def _search_gamebounty_sync(query: str) -> List[Dict[str, Any]]:
             results = data.get("data", {}).get("results", [])
             parsed = []
             for r in results:
+                slug = r.get("slug")
                 parsed.append({
                     "title": _clean_game_title(r.get("title", "")),
-                    "slug": r.get("slug"),
+                    "slug": slug,
+                    "url": f"https://gamebounty.world/{slug}-free-pc-download" if slug else "",
                     "appid": r.get("appid"),
                     "version": r.get("version"),
                     "size": r.get("size_human"),
