@@ -1,5 +1,6 @@
 import asyncio
 import html
+import json
 import logging
 import re
 import urllib.parse
@@ -24,6 +25,20 @@ HEADERS = {
         "image/avif,image/webp,*/*;q=0.8"
     ),
     "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://steamrip.com/",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "cross-site",
+    "Upgrade-Insecure-Requests": "1",
+}
+
+BZZHR_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/128.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Referer": "https://steamrip.com/",
     "Sec-Fetch-Dest": "document",
     "Sec-Fetch-Mode": "navigate",
@@ -58,17 +73,53 @@ def _clean_game_title(title: str) -> str:
     return re.sub(r"\s+", " ", clean).strip()
 
 
-def _sync_fetch(url: str, timeout: int = 15) -> str:
-    """Synchronous HTTP GET with browser headers to avoid anti-bot blocks."""
-    req = urllib.request.Request(url, headers=HEADERS)
+def _clean_for_steam(raw_title: str) -> str:
+    """Extract core game title suitable for Steam store search."""
+    clean = _clean_game_title(raw_title)
+    clean = re.sub(r"\(.*?\)", "", clean)
+    clean = re.sub(r"\[.*?\]", "", clean)
+    clean = re.sub(r"\bFree\s+Download\b.*", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"[-–—:]?\s*(?:Digital\s+)?Deluxe\s+Edition.*", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"[\s»\-|–—]+$", "", clean)
+    return re.sub(r"\s+", " ", clean).strip()
+
+
+def _sync_fetch(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = 15) -> str:
+    """Synchronous HTTP GET with headers."""
+    req = urllib.request.Request(url, headers=headers or HEADERS)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.read().decode("utf-8", errors="replace")
+
+
+def _resolve_steam_data_sync(game_title: str) -> Optional[Dict[str, Any]]:
+    """Search Steam store API for the official game page and 600x900 vertical portrait art."""
+    search_term = _clean_for_steam(game_title)
+    if not search_term:
+        return None
+    url = f"https://store.steampowered.com/api/storesearch/?term={urllib.parse.quote(search_term)}&l=english&cc=US"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": HEADERS["User-Agent"]})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            items = data.get("items", [])
+            if items:
+                top = items[0]
+                appid = top["id"]
+                return {
+                    "appid": appid,
+                    "name": top["name"],
+                    "steam_url": f"https://store.steampowered.com/app/{appid}/",
+                    "portrait_url": f"https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/{appid}/library_600x900.jpg",
+                }
+    except Exception as exc:
+        log.debug("Steam store lookup failed for %s: %s", search_term, exc)
+    return None
 
 
 def _resolve_bzzhr_direct(url: str) -> str:
     """Resolve BZZHR/Buzzheavier anti-hotlink links directly to the CDN file download URL."""
     try:
-        req = urllib.request.Request(url, headers=HEADERS)
+        req = urllib.request.Request(url, headers=BZZHR_HEADERS)
         with urllib.request.urlopen(req, timeout=10) as resp:
             html_text = resp.read().decode("utf-8", errors="replace")
 
@@ -86,9 +137,13 @@ def _resolve_bzzhr_direct(url: str) -> str:
         req_dl = urllib.request.Request(
             dl_url,
             headers={
-                "User-Agent": HEADERS["User-Agent"],
+                "User-Agent": BZZHR_HEADERS["User-Agent"],
                 "HX-Request": "true",
+                "HX-Current-URL": url,
                 "Referer": url,
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-origin",
             },
         )
         with urllib.request.urlopen(req_dl, timeout=10) as dl_resp:
@@ -101,7 +156,7 @@ def _resolve_bzzhr_direct(url: str) -> str:
 
 
 class GameDL(commands.Cog):
-    """Search and extract game direct download links, size, and metadata."""
+    """Search and extract game direct download links, size, and Steam metadata."""
 
     def __init__(self, bot: Red):
         self.bot = bot
@@ -168,7 +223,7 @@ class GameDL(commands.Cog):
         return results, None
 
     async def _extract_details(self, page_url: str, default_image: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        """Extract game title, size, version, portrait cover image, and direct download links."""
+        """Extract game title, size, version, cover art, and direct download links."""
         body = await self._fetch_html(page_url)
         if not body:
             return None
@@ -184,23 +239,29 @@ class GameDL(commands.Cog):
         else:
             title = "Unknown Game"
 
-        # Image priority: portrait from search card -> portrait/poster in page -> og:image
-        image = default_image
-        if not image:
-            portrait_match = re.search(
-                r'(https?://steamrip\.com/wp-content/uploads/[^\s\"\'<>]*(?:portrait|poster|torrent)[^\s\"\'<>]*\.(?:jpg|png|webp))',
-                body,
-                re.IGNORECASE,
-            )
-            if portrait_match:
-                image = portrait_match.group(1)
-            else:
-                og_img = re.search(
-                    r'<meta\s+property=[\"\']og:image[\"\']\s+content=[\"\']([^\"\']+)[\"\']',
+        # Lookup Steam Store info for official portrait art and store page
+        steam_info = await asyncio.to_thread(_resolve_steam_data_sync, title)
+
+        # Image priority: Steam official portrait cover -> search card portrait -> page image
+        if steam_info and steam_info.get("portrait_url"):
+            image = steam_info["portrait_url"]
+        else:
+            image = default_image
+            if not image:
+                portrait_match = re.search(
+                    r'(https?://steamrip\.com/wp-content/uploads/[^\s\"\'<>]*(?:portrait|poster|torrent)[^\s\"\'<>]*\.(?:jpg|png|webp))',
                     body,
                     re.IGNORECASE,
                 )
-                image = og_img.group(1).strip() if og_img else None
+                if portrait_match:
+                    image = portrait_match.group(1)
+                else:
+                    og_img = re.search(
+                        r'<meta\s+property=[\"\']og:image[\"\']\s+content=[\"\']([^\"\']+)[\"\']',
+                        body,
+                        re.IGNORECASE,
+                    )
+                    image = og_img.group(1).strip() if og_img else None
 
         # Size
         size_match = re.search(
@@ -286,13 +347,18 @@ class GameDL(commands.Cog):
 
             downloads.append({"host": host_label, "url": raw_url})
 
+        # Game store page (defaults to Steam if matched)
+        game_page_url = steam_info["steam_url"] if steam_info else page_url
+        is_steam = bool(steam_info)
+
         return {
             "title": title,
-            "url": page_url,
+            "url": game_page_url,
             "image": image,
             "size": size,
             "version": version,
             "downloads": downloads,
+            "is_steam": is_steam,
         }
 
     @commands.hybrid_command(
@@ -348,7 +414,7 @@ class GameDL(commands.Cog):
                 await ctx.send(embed=embed)
                 return
 
-            # Construct Embed (No author header / no broken icon / no SteamRIP branding)
+            # Construct Embed (Links to Steam, no SteamRIP branding)
             embed = discord.Embed(
                 title=f"🎮 {details['title']}",
                 url=details["url"],
@@ -376,20 +442,20 @@ class GameDL(commands.Cog):
             else:
                 embed.add_field(
                     name="📥 Download Links",
-                    value=f"Visit the [Game Page]({details['url']}) directly for links.",
+                    value=f"Visit the [Store Page]({details['url']}) for details.",
                     inline=False,
                 )
 
             # Other search results (if available)
             if len(results) > 1:
-                other_titles = [f"• [{item['title']}]({item['url']})" for item in results[1:5]]
+                other_titles = [f"• {item['title']}" for item in results[1:5]]
                 embed.add_field(
                     name="🔍 Other Matches",
                     value="\n".join(other_titles),
                     inline=False,
                 )
 
-            # Set portrait game picture thumbnail
+            # Set Steam portrait cover art
             if details["image"]:
                 embed.set_thumbnail(url=details["image"])
 
@@ -412,10 +478,11 @@ class GameDL(commands.Cog):
                     )
                 )
 
-            # Button to visit the game page (neutral label without SteamRIP)
+            # Button to visit the Steam Store page
+            store_button_label = "Steam Store" if details.get("is_steam") else "Game Page"
             view.add_item(
                 discord.ui.Button(
-                    label="Game Page",
+                    label=store_button_label,
                     url=details["url"],
                     style=discord.ButtonStyle.link,
                 )
