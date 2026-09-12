@@ -641,10 +641,13 @@ def _search_gog_sync(query: str) -> List[Dict[str, Any]]:
         slug = game.get("slug", "")
         score = _query_relevance_score(query, title)
         if score > 0.0 or (q_norm and q_norm in re.sub(r"[^\w\s]", "", title.lower())):
+            clean_slug = re.sub(r"_(?:game|base)$", "", slug) if slug else ""
+            store_url = f"https://www.gog.com/en/game/{clean_slug}" if clean_slug else "https://www.gog.com"
             results.append({
                 "title": title,
                 "slug": slug,
                 "url": f"https://gog-rev.com/games/{slug}/",
+                "store_url": store_url,
                 "version": game.get("currentVersion", "N/A"),
                 "size": game.get("downloadSizeBadge", "Unknown"),
                 "cover": game.get("coverImage", ""),
@@ -835,9 +838,21 @@ def _extract_gog_details_sync(page_url: str, meta: Optional[Dict[str, Any]] = No
     cover = meta.get("cover", "") if meta else ""
     platforms = meta.get("platforms", {}) if meta else {}
 
+    # Official GOG store URL
+    slug = meta.get("slug") if meta and meta.get("slug") else ""
+    if not slug:
+        slug_m = re.search(r"/games/([^/]+)", page_url)
+        if slug_m:
+            slug = slug_m.group(1)
+
+    clean_slug = re.sub(r"_(?:game|base)$", "", slug) if slug else ""
+    store_url = meta.get("store_url") if meta and meta.get("store_url") else (f"https://www.gog.com/en/game/{clean_slug}" if clean_slug else "https://www.gog.com")
+
     return {
         "title": title,
-        "url": page_url,
+        "url": store_url,
+        "internal_url": page_url,
+        "slug": slug,
         "version": version,
         "size": size,
         "cover": cover,
@@ -1043,11 +1058,11 @@ class GogView(discord.ui.View):
                     )
                     break
 
-        # GOG page button
+        # Official GOG Store button
         if gog_details.get("url") and len(gog_details["url"]) <= 512:
             self.add_item(
                 discord.ui.Button(
-                    label="GOG Page",
+                    label="GOG Store",
                     url=gog_details["url"],
                     style=discord.ButtonStyle.link,
                 )
@@ -1090,7 +1105,13 @@ class GameDLMainView(discord.ui.View):
                 added_rec += 1
 
         # 2. Store / Game Page button
-        store_button_label = "Steam Store" if details.get("is_steam") else "Game Page"
+        if details.get("is_steam"):
+            store_button_label = "Steam Store"
+        elif details.get("source") == "gog":
+            store_button_label = "GOG Store"
+        else:
+            store_button_label = "Game Page"
+
         if len(details.get("url", "")) <= 512 and details.get("url"):
             self.add_item(
                 discord.ui.Button(
