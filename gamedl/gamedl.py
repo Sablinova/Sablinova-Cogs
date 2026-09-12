@@ -71,6 +71,12 @@ KNOWN_DOMAINS: Dict[str, str] = {
     "pixeldrain.com": "PixelDrain",
     "cdn.pixeldrain.eu.cc": "PixelDrain",
     "pixeldrain.eu.cc": "PixelDrain",
+    "pd-by.projectsablinova.workers.dev": "PixelDrain",
+    "pd-node1.projectsablinova.workers.dev": "PixelDrain",
+    "pd-node2.projectsablinova.workers.dev": "PixelDrain",
+    "pd-node3.projectsablinova.workers.dev": "PixelDrain",
+    "pd-node4.projectsablinova.workers.dev": "PixelDrain",
+    "pd-node5.projectsablinova.workers.dev": "PixelDrain",
     "mediafire.com": "MediaFire",
     "mega.nz": "MEGA",
     "dropgalaxy.com": "DropGalaxy",
@@ -300,14 +306,20 @@ def _resolve_bzzhr_direct(url: str, max_retries: int = 5) -> str:
     return url
 
 
+PIXELDRAIN_BYPASS_WORKER = "https://pd-by.projectsablinova.workers.dev"
+
+
 def _clean_pixeldrain_url(url: str) -> str:
-    """Normalize any PixelDrain link back to official clean URL (https://pixeldrain.com/u/<id>)."""
+    """Rewrite PixelDrain links to user rotating bypass worker (https://pd-by.projectsablinova.workers.dev/<id>)."""
     m = re.search(r"pixeldrain\.(?:com|eu\.cc|net|org)/(?:u|api/file|d)/([a-zA-Z0-9_-]+)", url)
     if m:
-        return f"https://pixeldrain.com/u/{m.group(1)}"
+        return f"{PIXELDRAIN_BYPASS_WORKER}/{m.group(1)}"
     m2 = re.search(r"cdn\.pixeldrain\.eu\.cc/([a-zA-Z0-9_-]+)", url)
     if m2:
-        return f"https://pixeldrain.com/u/{m2.group(1)}"
+        return f"{PIXELDRAIN_BYPASS_WORKER}/{m2.group(1)}"
+    m3 = re.search(r"projectsablinova\.workers\.dev/([a-zA-Z0-9_-]+)", url)
+    if m3:
+        return f"{PIXELDRAIN_BYPASS_WORKER}/{m3.group(1)}"
     return url
 
 
@@ -316,6 +328,8 @@ def _is_pixeldrain_alive(url: str) -> bool:
     m = re.search(r"pixeldrain\.(?:com|eu\.cc|net|org)/(?:u|api/file|d)/([a-zA-Z0-9_-]+)", url)
     if not m:
         m = re.search(r"cdn\.pixeldrain\.eu\.cc/([a-zA-Z0-9_-]+)", url)
+    if not m:
+        m = re.search(r"projectsablinova\.workers\.dev/([a-zA-Z0-9_-]+)", url)
     if not m:
         return True
     file_id = m.group(1)
@@ -484,7 +498,7 @@ def _extract_gamebounty_details_sync(slug: str) -> Optional[Dict[str, Any]]:
 
                     if any(k in host_label.lower() or k in target_url.lower() for k in ["bzzhr", "buzzheavier"]):
                         host_label = "BZZHR"
-                    elif any(k in host_label.lower() or k in target_url.lower() for k in ["pixeldrain"]):
+                    elif any(k in host_label.lower() or k in target_url.lower() for k in ["pixeldrain", "projectsablinova", "pd-by", "pd-node"]):
                         host_label = "PixelDrain"
 
                     if is_multipart:
@@ -514,7 +528,7 @@ def _download_sort_key(item: Dict[str, str]) -> int:
     u = item["url"].lower()
     if any(k in h or k in u for k in ["buzzheavier", "bzzhr"]):
         return 0
-    if "pixeldrain" in h or "pixeldrain" in u:
+    if any(k in h or k in u for k in ["pixeldrain", "projectsablinova", "pd-by", "pd-node"]):
         return 1
     if "gofile" in h or "gofile" in u:
         return 2
@@ -827,7 +841,7 @@ class GameDL(commands.Cog):
             # Normalize Buzzheavier / BZZHR label to BZZHR and PixelDrain label
             if any(k in host_label.lower() or k in raw_url.lower() for k in ["bzzhr", "buzzheavier"]):
                 host_label = "BZZHR"
-            elif any(k in host_label.lower() or k in raw_url.lower() for k in ["pixeldrain"]):
+            elif any(k in host_label.lower() or k in raw_url.lower() for k in ["pixeldrain", "projectsablinova", "pd-by", "pd-node"]):
                 host_label = "PixelDrain"
 
             if update_m:
@@ -910,7 +924,7 @@ class GameDL(commands.Cog):
             for item in downloads:
                 host_name = item["host"]
                 link_url = item["url"]
-                is_recommended = any(k in host_name.lower() or k in link_url.lower() for k in ["buzzheavier", "bzzhr", "pixeldrain"])
+                is_recommended = any(k in host_name.lower() or k in link_url.lower() for k in ["buzzheavier", "bzzhr", "pixeldrain", "projectsablinova", "pd-by", "pd-node"])
                 display_host = host_name
                 if is_recommended and "⭐" not in display_host:
                     dl_lines.append(f"• [**{display_host}**]({link_url}) ⭐ *(Recommended)*")
@@ -972,7 +986,7 @@ class GameDL(commands.Cog):
         view = discord.ui.View()
         for item in downloads[:4]:
             host_label = item["host"][:18]
-            is_recommended = any(k in host_label.lower() or k in item["url"].lower() for k in ["buzzheavier", "bzzhr", "pixeldrain"])
+            is_recommended = any(k in host_label.lower() or k in item["url"].lower() for k in ["buzzheavier", "bzzhr", "pixeldrain", "projectsablinova", "pd-by", "pd-node"])
             btn_text = f"⭐ Download ({host_label})" if is_recommended else f"Download ({host_label})"
             if len(item["url"]) <= 512:
                 view.add_item(
