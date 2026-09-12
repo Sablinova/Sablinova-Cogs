@@ -879,8 +879,165 @@ def _query_relevance_score(query: str, title: str) -> float:
     return 0.0
 
 
+class GogView(discord.ui.View):
+    """Ephemeral view providing quick links for GOG downloads."""
+
+    def __init__(self, gog_details: Dict[str, Any], timeout: float = 600.0):
+        super().__init__(timeout=timeout)
+        self.gog_details = gog_details
+
+        # Recommended download button for GOG
+        downloads = gog_details.get("downloads", [])
+        for d in downloads:
+            host = d.get("host", "")
+            url = d.get("url", "")
+            is_rec = any(
+                k in host.lower() or k in url.lower()
+                for k in ["pixeldrain", "buzzheavier", "bzzhr", "projectsablinova", "pd-by", "pd-node"]
+            )
+            if is_rec and len(url) <= 512:
+                self.add_item(
+                    discord.ui.Button(
+                        label=f"⭐ Download ({host[:16]})",
+                        url=url,
+                        style=discord.ButtonStyle.link,
+                    )
+                )
+                break
+
+        # GOG page button
+        if gog_details.get("url") and len(gog_details["url"]) <= 512:
+            self.add_item(
+                discord.ui.Button(
+                    label="GOG Page",
+                    url=gog_details["url"],
+                    style=discord.ButtonStyle.link,
+                )
+            )
+
+
+class GameDLMainView(discord.ui.View):
+    """Interactive button view for GameDL main embed."""
+
+    def __init__(
+        self,
+        downloads: List[Dict[str, Any]],
+        details: Dict[str, Any],
+        gog_details: Optional[Dict[str, Any]] = None,
+        timeout: float = 600.0,
+    ):
+        super().__init__(timeout=timeout)
+        self.details = details
+        self.gog_details = gog_details
+
+        # 1. Add ONLY recommended download buttons (user request: "remove all buttons except recommended")
+        added_rec = 0
+        for item in downloads:
+            host_label = item["host"][:18]
+            is_recommended = any(
+                k in host_label.lower() or k in item["url"].lower()
+                for k in ["buzzheavier", "bzzhr", "pixeldrain", "projectsablinova", "pd-by", "pd-node"]
+            )
+            if not is_recommended:
+                continue
+            if len(item["url"]) <= 512 and added_rec < 3:
+                btn_text = f"⭐ Download ({host_label})"
+                self.add_item(
+                    discord.ui.Button(
+                        label=btn_text[:80],
+                        url=item["url"],
+                        style=discord.ButtonStyle.link,
+                    )
+                )
+                added_rec += 1
+
+        # 2. Store / Game Page button
+        store_button_label = "Steam Store" if details.get("is_steam") else "Game Page"
+        if len(details.get("url", "")) <= 512 and details.get("url"):
+            self.add_item(
+                discord.ui.Button(
+                    label=store_button_label[:80],
+                    url=details["url"],
+                    style=discord.ButtonStyle.link,
+                )
+            )
+
+        # 3. GOG button (user request: "add gog button shows gog info and links if no gog then button wont show")
+        if self.gog_details and self.gog_details.get("downloads"):
+            gog_btn = discord.ui.Button(
+                label="GOG Version",
+                style=discord.ButtonStyle.secondary,
+                emoji="💿",
+            )
+            gog_btn.callback = self.on_gog_click
+            self.add_item(gog_btn)
+
+    async def on_gog_click(self, interaction: discord.Interaction):
+        if not self.gog_details:
+            await interaction.response.send_message("No GOG release available for this game.", ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title=f"💿 {self.gog_details.get('title', 'Game')} (GOG / DRM-Free)",
+            url=self.gog_details.get("url"),
+            description="📦 Standalone DRM-free installer release from GOG.",
+            color=discord.Color.gold(),
+        )
+        if self.gog_details.get("cover"):
+            embed.set_thumbnail(url=self.gog_details["cover"])
+
+        embed.add_field(
+            name="ℹ️ Version",
+            value=f"`{self.gog_details.get('version', 'N/A')}`",
+            inline=True,
+        )
+        embed.add_field(
+            name="💾 File Size",
+            value=f"`{self.gog_details.get('size', 'Unknown')}`",
+            inline=True,
+        )
+        if self.gog_details.get("platforms"):
+            plats = [k.capitalize() for k, v in self.gog_details["platforms"].items() if v]
+            if plats:
+                embed.add_field(
+                    name="🖥️ Platforms",
+                    value=", ".join(plats),
+                    inline=True,
+                )
+
+        downloads = self.gog_details.get("downloads", [])
+        if downloads:
+            links_text = []
+            for d in downloads:
+                host = d.get("host", "Direct")
+                url = d.get("url", "")
+                is_rec = any(
+                    k in host.lower() or k in url.lower()
+                    for k in ["pixeldrain", "buzzheavier", "bzzhr", "projectsablinova", "pd-by", "pd-node"]
+                )
+                badge = " ⭐ *(Recommended)*" if is_rec else ""
+                links_text.append(f"• [{host}]({url}){badge}")
+
+            embed.add_field(
+                name="📥 GOG Download Mirrors",
+                value="\n".join(links_text)[:1000],
+                inline=False,
+            )
+        else:
+            embed.add_field(
+                name="📥 GOG Download Mirrors",
+                value="*No direct download links available.*",
+                inline=False,
+            )
+
+        embed.set_footer(text="DRM-Free Offline Installer")
+
+        sub_view = GogView(self.gog_details)
+        await interaction.response.send_message(embed=embed, view=sub_view, ephemeral=True)
+
+
 class GameDL(commands.Cog):
-    """Search and extract game direct download links from SteamRIP and GameBounty."""
+    """Search and extract game direct download links."""
 
     def __init__(self, bot: Red):
         self.bot = bot
@@ -1401,163 +1558,6 @@ class GameDL(commands.Cog):
         except Exception as exc:
             log.warning("GOG details error for %s: %s", page_url, exc)
             return None
-
-
-class GogView(discord.ui.View):
-    """Ephemeral view providing quick links for GOG downloads."""
-
-    def __init__(self, gog_details: Dict[str, Any], timeout: float = 600.0):
-        super().__init__(timeout=timeout)
-        self.gog_details = gog_details
-
-        # Recommended download button for GOG
-        downloads = gog_details.get("downloads", [])
-        for d in downloads:
-            host = d.get("host", "")
-            url = d.get("url", "")
-            is_rec = any(
-                k in host.lower() or k in url.lower()
-                for k in ["pixeldrain", "buzzheavier", "bzzhr", "projectsablinova", "pd-by", "pd-node"]
-            )
-            if is_rec and len(url) <= 512:
-                self.add_item(
-                    discord.ui.Button(
-                        label=f"⭐ Download ({host[:16]})",
-                        url=url,
-                        style=discord.ButtonStyle.link,
-                    )
-                )
-                break
-
-        # GOG page button
-        if gog_details.get("url") and len(gog_details["url"]) <= 512:
-            self.add_item(
-                discord.ui.Button(
-                    label="GOG Page",
-                    url=gog_details["url"],
-                    style=discord.ButtonStyle.link,
-                )
-            )
-
-
-class GameDLMainView(discord.ui.View):
-    """Interactive button view for GameDL main embed."""
-
-    def __init__(
-        self,
-        downloads: List[Dict[str, Any]],
-        details: Dict[str, Any],
-        gog_details: Optional[Dict[str, Any]] = None,
-        timeout: float = 600.0,
-    ):
-        super().__init__(timeout=timeout)
-        self.details = details
-        self.gog_details = gog_details
-
-        # 1. Add ONLY recommended download buttons (user request: "remove all buttons except recommended")
-        added_rec = 0
-        for item in downloads:
-            host_label = item["host"][:18]
-            is_recommended = any(
-                k in host_label.lower() or k in item["url"].lower()
-                for k in ["buzzheavier", "bzzhr", "pixeldrain", "projectsablinova", "pd-by", "pd-node"]
-            )
-            if not is_recommended:
-                continue
-            if len(item["url"]) <= 512 and added_rec < 3:
-                btn_text = f"⭐ Download ({host_label})"
-                self.add_item(
-                    discord.ui.Button(
-                        label=btn_text[:80],
-                        url=item["url"],
-                        style=discord.ButtonStyle.link,
-                    )
-                )
-                added_rec += 1
-
-        # 2. Store / Game Page button
-        store_button_label = "Steam Store" if details.get("is_steam") else "Game Page"
-        if len(details.get("url", "")) <= 512 and details.get("url"):
-            self.add_item(
-                discord.ui.Button(
-                    label=store_button_label[:80],
-                    url=details["url"],
-                    style=discord.ButtonStyle.link,
-                )
-            )
-
-        # 3. GOG button (user request: "add gog button shows gog info and links if no gog then button wont show")
-        if self.gog_details and self.gog_details.get("downloads"):
-            gog_btn = discord.ui.Button(
-                label="GOG Version",
-                style=discord.ButtonStyle.secondary,
-                emoji="💿",
-            )
-            gog_btn.callback = self.on_gog_click
-            self.add_item(gog_btn)
-
-    async def on_gog_click(self, interaction: discord.Interaction):
-        if not self.gog_details:
-            await interaction.response.send_message("No GOG release available for this game.", ephemeral=True)
-            return
-
-        embed = discord.Embed(
-            title=f"💿 {self.gog_details.get('title', 'Game')} (GOG / DRM-Free)",
-            url=self.gog_details.get("url"),
-            description="📦 Standalone DRM-free installer release from GOG.",
-            color=discord.Color.gold(),
-        )
-        if self.gog_details.get("cover"):
-            embed.set_thumbnail(url=self.gog_details["cover"])
-
-        embed.add_field(
-            name="ℹ️ Version",
-            value=f"`{self.gog_details.get('version', 'N/A')}`",
-            inline=True,
-        )
-        embed.add_field(
-            name="💾 File Size",
-            value=f"`{self.gog_details.get('size', 'Unknown')}`",
-            inline=True,
-        )
-        if self.gog_details.get("platforms"):
-            plats = [k.capitalize() for k, v in self.gog_details["platforms"].items() if v]
-            if plats:
-                embed.add_field(
-                    name="🖥️ Platforms",
-                    value=", ".join(plats),
-                    inline=True,
-                )
-
-        downloads = self.gog_details.get("downloads", [])
-        if downloads:
-            links_text = []
-            for d in downloads:
-                host = d.get("host", "Direct")
-                url = d.get("url", "")
-                is_rec = any(
-                    k in host.lower() or k in url.lower()
-                    for k in ["pixeldrain", "buzzheavier", "bzzhr", "projectsablinova", "pd-by", "pd-node"]
-                )
-                badge = " ⭐ *(Recommended)*" if is_rec else ""
-                links_text.append(f"• [{host}]({url}){badge}")
-
-            embed.add_field(
-                name="📥 GOG Download Mirrors",
-                value="\n".join(links_text)[:1000],
-                inline=False,
-            )
-        else:
-            embed.add_field(
-                name="📥 GOG Download Mirrors",
-                value="*No direct download links available.*",
-                inline=False,
-            )
-
-        embed.set_footer(text="DRM-Free Offline Installer")
-
-        sub_view = GogView(self.gog_details)
-        await interaction.response.send_message(embed=embed, view=sub_view, ephemeral=True)
 
     async def _send_game_card(
         self,
