@@ -687,7 +687,7 @@ def _unseal_gog_link(payload: str, key: List[int]) -> str:
 
 
 def _extract_gog_details_sync(page_url: str, meta: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
-    """Extract and unseal GOG Revived direct download mirrors, version, and info."""
+    """Extract and unseal GOG Revived grouped content (Base Game, DLC, Patches, Goodies, etc.)."""
     if not page_url.endswith("/"):
         page_url += "/"
     body = _sync_fetch(page_url, timeout=15)
@@ -705,39 +705,129 @@ def _extract_gog_details_sync(page_url: str, meta: Optional[Dict[str, Any]] = No
         return None
     attr_name = attr_m.group(1)
 
-    downloads = []
-    seen = set()
+    # Parse grouped download containers (each contains a distinct file / package)
+    group_chunks = re.split(r'<div\s+class=[\"\x27]download-group[\"\x27]', body)
+    parsed_groups = []
+    all_downloads = []
+    global_seen = set()
 
-    # Unseal mirror links
-    button_pattern = re.compile(rf"<a[^>]+{attr_name}=[\"\x27]([^\"]+)[\"\x27][^>]*>", re.DOTALL)
-    for m in button_pattern.finditer(body):
-        tag = m.group(0)
-        payload = m.group(1)
-        host_m = re.search(r"data-host=[\"\x27]([^\"]+)[\"\x27]", tag)
-        raw_host = host_m.group(1) if host_m else "Direct"
-        link = _unseal_gog_link(payload, key)
-        if link and link not in seen and link.startswith("http"):
-            if "pixeldrain" in link or "pd-" in link:
-                link = _clean_pixeldrain_url(link)
-                if not _is_pixeldrain_alive(link):
-                    continue
-            domain = _extract_domain(link)
-            host_clean = KNOWN_DOMAINS.get(domain)
-            if not host_clean:
-                host_clean = raw_host.capitalize() if raw_host else "Direct"
-            seen.add(link)
-            downloads.append({"host": host_clean, "url": link})
+    for chunk in group_chunks[1:]:
+        sec_m = re.search(r'class=[\"\x27]section-divider-text[\"\x27][^>]*>(.*?)</span>', chunk, re.DOTALL)
+        raw_sec = re.sub(r'<[^>]+>', '', sec_m.group(1)).strip() if sec_m else "Download"
+        sec_upper = raw_sec.upper()
+        if "ARCHIVE" in sec_upper:
+            continue
 
-    # Unseal torrent / magnet links
-    magnet_pattern = re.compile(rf"<button[^>]+copy-magnet-btn[^>]+{attr_name}=[\"\x27]([^\"]+)[\"\x27]", re.DOTALL)
-    for m in magnet_pattern.finditer(body):
-        payload = m.group(1)
-        link = _unseal_gog_link(payload, key)
-        if link and link not in seen and link.startswith("magnet:"):
-            seen.add(link)
-            downloads.append({"host": "Magnet", "url": link})
+        if "TORRENT" in sec_upper:
+            cat = "Torrent / Magnet"
+            icon = "🧲"
+        elif "DLC" in sec_upper:
+            cat = "DLC"
+            icon = "🧩"
+        elif "PATCH" in sec_upper:
+            cat = "Patch / Update"
+            icon = "🩹"
+        elif "GOODIE" in sec_upper or "EXTRA" in sec_upper:
+            cat = "Goodies / Extras"
+            icon = "🎁"
+        elif "GAME" in sec_upper:
+            cat = "Base Game"
+            icon = "🎮"
+        else:
+            cat = raw_sec.title()
+            icon = "📦"
 
-    downloads.sort(key=_download_sort_key)
+        # Target filename
+        file_m = re.search(r'class=[\"\x27]download-mirror-label[\"\x27][^>]*>.*?<span[^>]*>(.*?)</span>', chunk, re.DOTALL)
+        filename = re.sub(r'<[^>]+>', '', file_m.group(1)).strip() if file_m else ""
+
+        # Size badge
+        size_m = re.search(r'class=[\"\x27]download-size-badge[^\"]*[\"\x27][^>]*>(.*?)</span>', chunk, re.DOTALL)
+        size_str = re.sub(r'<[^>]+>', '', size_m.group(1)).strip() if size_m else ""
+
+        # Platform detection from filename
+        fn_lower = filename.lower()
+        if fn_lower.endswith(".pkg") or ".pkg." in fn_lower or "macos" in fn_lower:
+            cat += " (macOS)"
+            icon = "🍎"
+        elif fn_lower.endswith(".sh") or fn_lower.endswith(".tar.gz") or "linux" in fn_lower:
+            cat += " (Linux)"
+            icon = "🐧"
+
+        group_downloads = []
+        group_seen = set()
+
+        # 1. Unseal direct download mirror links
+        button_pattern = re.compile(rf'<a[^>]+{attr_name}=[\"\x27]([^\"]+)[\"\x27][^>]*>', re.DOTALL)
+        for bm in button_pattern.finditer(chunk):
+            tag = bm.group(0)
+            payload = bm.group(1)
+            host_m = re.search(r'data-host=[\"\x27]([^\"]+)[\"\x27]', tag)
+            raw_host = host_m.group(1) if host_m else "Direct"
+            link = _unseal_gog_link(payload, key)
+            if link and link not in group_seen and link.startswith("http"):
+                if "bzzhr.to" in link or "buzzheavier.com" in link:
+                    resolved = _resolve_bzzhr_direct(link)
+                    if resolved:
+                        link = resolved
+                if "pixeldrain" in link or "pd-" in link:
+                    link = _clean_pixeldrain_url(link)
+                    if not _is_pixeldrain_alive(link):
+                        continue
+                domain = _extract_domain(link)
+                host_clean = KNOWN_DOMAINS.get(domain)
+                if not host_clean:
+                    m_clean = raw_host.lower().replace("www.", "")
+                    host_clean = KNOWN_DOMAINS.get(m_clean, raw_host.capitalize() if raw_host else domain.split(".")[0].capitalize())
+                if any(k in host_clean.lower() or k in link.lower() for k in ["bzzhr", "buzzheavier"]):
+                    host_clean = "BZZHR"
+                elif any(k in host_clean.lower() or k in link.lower() for k in ["pixeldrain", "projectsablinova", "pd-by", "pd-node"]):
+                    host_clean = "PixelDrain"
+
+                group_seen.add(link)
+                group_downloads.append({"host": host_clean, "url": link})
+
+        # 2. Unseal torrent / magnet links
+        magnet_pattern = re.compile(rf'copy-magnet-btn[^>]*{attr_name}=[\"\x27]([^\"]+)[\"\x27]', re.DOTALL)
+        for mm in magnet_pattern.finditer(chunk):
+            payload = mm.group(1)
+            link = _unseal_gog_link(payload, key)
+            if link and link not in group_seen and link.startswith("magnet:"):
+                group_seen.add(link)
+                group_downloads.append({"host": "Magnet", "url": link})
+
+        group_downloads.sort(key=_download_sort_key)
+        if group_downloads:
+            parsed_groups.append({
+                "category": cat,
+                "icon": icon,
+                "filename": filename,
+                "size": size_str,
+                "downloads": group_downloads,
+            })
+            for d in group_downloads:
+                if d["url"] not in global_seen:
+                    global_seen.add(d["url"])
+                    all_downloads.append(d)
+
+    # Fallback if no groups matched: extract flat links
+    if not parsed_groups:
+        button_pattern = re.compile(rf'<a[^>]+{attr_name}=[\"\x27]([^\"]+)[\"\x27][^>]*>', re.DOTALL)
+        for m in button_pattern.finditer(body):
+            tag = m.group(0)
+            payload = m.group(1)
+            host_m = re.search(r'data-host=[\"\x27]([^\"]+)[\"\x27]', tag)
+            raw_host = host_m.group(1) if host_m else "Direct"
+            link = _unseal_gog_link(payload, key)
+            if link and link not in global_seen and link.startswith("http"):
+                if "pixeldrain" in link or "pd-" in link:
+                    link = _clean_pixeldrain_url(link)
+                    if not _is_pixeldrain_alive(link):
+                        continue
+                domain = _extract_domain(link)
+                host_clean = KNOWN_DOMAINS.get(domain, raw_host.capitalize() if raw_host else "Direct")
+                global_seen.add(link)
+                all_downloads.append({"host": host_clean, "url": link})
 
     title = meta.get("title") if meta and meta.get("title") else "Game"
     version = meta.get("version", "N/A") if meta else "N/A"
@@ -752,7 +842,8 @@ def _extract_gog_details_sync(page_url: str, meta: Optional[Dict[str, Any]] = No
         "size": size,
         "cover": cover,
         "platforms": platforms,
-        "downloads": downloads,
+        "groups": parsed_groups,
+        "downloads": all_downloads,
         "source": "gog",
     }
 
@@ -886,24 +977,71 @@ class GogView(discord.ui.View):
         super().__init__(timeout=timeout)
         self.gog_details = gog_details
 
-        # Recommended download button for GOG
-        downloads = gog_details.get("downloads", [])
-        for d in downloads:
-            host = d.get("host", "")
-            url = d.get("url", "")
-            is_rec = any(
-                k in host.lower() or k in url.lower()
-                for k in ["pixeldrain", "buzzheavier", "bzzhr", "projectsablinova", "pd-by", "pd-node"]
-            )
-            if is_rec and len(url) <= 512:
-                self.add_item(
-                    discord.ui.Button(
-                        label=f"⭐ Download ({host[:16]})",
-                        url=url,
-                        style=discord.ButtonStyle.link,
+        # Recommended download buttons: prioritize Base Game, then other packages
+        groups = gog_details.get("groups", [])
+        added_rec = 0
+
+        # Check Base Game first
+        for g in groups:
+            if "Base Game" in g.get("category", ""):
+                for d in g.get("downloads", []):
+                    host = d.get("host", "")
+                    url = d.get("url", "")
+                    is_rec = any(
+                        k in host.lower() or k in url.lower()
+                        for k in ["pixeldrain", "buzzheavier", "bzzhr", "projectsablinova", "pd-by", "pd-node"]
                     )
+                    if is_rec and len(url) <= 512 and added_rec < 2:
+                        self.add_item(
+                            discord.ui.Button(
+                                label=f"⭐ Base Game ({host[:14]})",
+                                url=url,
+                                style=discord.ButtonStyle.link,
+                            )
+                        )
+                        added_rec += 1
+                        break
+
+        # Check other groups if no base game recommended button added
+        if added_rec == 0:
+            for g in groups:
+                for d in g.get("downloads", []):
+                    host = d.get("host", "")
+                    url = d.get("url", "")
+                    is_rec = any(
+                        k in host.lower() or k in url.lower()
+                        for k in ["pixeldrain", "buzzheavier", "bzzhr", "projectsablinova", "pd-by", "pd-node"]
+                    )
+                    if is_rec and len(url) <= 512 and added_rec < 2:
+                        cat_label = g.get("category", "Game")[:10]
+                        self.add_item(
+                            discord.ui.Button(
+                                label=f"⭐ {cat_label} ({host[:12]})",
+                                url=url,
+                                style=discord.ButtonStyle.link,
+                            )
+                        )
+                        added_rec += 1
+                        break
+
+        # Fallback if no groups: check downloads directly
+        if added_rec == 0 and not groups:
+            for d in gog_details.get("downloads", []):
+                host = d.get("host", "")
+                url = d.get("url", "")
+                is_rec = any(
+                    k in host.lower() or k in url.lower()
+                    for k in ["pixeldrain", "buzzheavier", "bzzhr", "projectsablinova", "pd-by", "pd-node"]
                 )
-                break
+                if is_rec and len(url) <= 512:
+                    self.add_item(
+                        discord.ui.Button(
+                            label=f"⭐ Download ({host[:16]})",
+                            url=url,
+                            style=discord.ButtonStyle.link,
+                        )
+                    )
+                    break
 
         # GOG page button
         if gog_details.get("url") and len(gog_details["url"]) <= 512:
@@ -963,7 +1101,7 @@ class GameDLMainView(discord.ui.View):
             )
 
         # 3. GOG button (user request: "add gog button shows gog info and links if no gog then button wont show")
-        if self.gog_details and self.gog_details.get("downloads"):
+        if self.gog_details and (self.gog_details.get("groups") or self.gog_details.get("downloads")):
             gog_btn = discord.ui.Button(
                 label="GOG Version",
                 style=discord.ButtonStyle.secondary,
@@ -980,7 +1118,7 @@ class GameDLMainView(discord.ui.View):
         embed = discord.Embed(
             title=f"💿 {self.gog_details.get('title', 'Game')} (GOG / DRM-Free)",
             url=self.gog_details.get("url"),
-            description="📦 Standalone DRM-free installer release from GOG.",
+            description="📦 Standalone DRM-free installer & content from GOG.",
             color=discord.Color.gold(),
         )
         if self.gog_details.get("cover"):
@@ -1005,10 +1143,52 @@ class GameDLMainView(discord.ui.View):
                     inline=True,
                 )
 
-        downloads = self.gog_details.get("downloads", [])
-        if downloads:
+        groups = self.gog_details.get("groups", [])
+        if groups:
+            for g in groups:
+                cat = g.get("category", "Downloads")
+                icon = g.get("icon", "📦")
+                fn = g.get("filename", "")
+                sz = g.get("size", "")
+                dls = g.get("downloads", [])
+                if not dls:
+                    continue
+
+                header = f"{icon} {cat}"
+                if sz:
+                    header += f" ({sz})"
+                field_name = header[:256]
+
+                lines = []
+                if fn:
+                    lines.append(f"📁 `{fn}`")
+
+                link_items = []
+                for d in dls:
+                    host = d.get("host", "Direct")
+                    url = d.get("url", "")
+                    is_rec = any(
+                        k in host.lower() or k in url.lower()
+                        for k in ["pixeldrain", "buzzheavier", "bzzhr", "projectsablinova", "pd-by", "pd-node"]
+                    )
+                    badge = " ⭐" if is_rec else ""
+                    if url.startswith("magnet:"):
+                        link_items.append(f"[Magnet Link]({url})")
+                    else:
+                        link_items.append(f"[{host}]({url}){badge}")
+
+                if link_items:
+                    lines.append(" • ".join(link_items))
+
+                field_val = "\n".join(lines) if lines else "*No links*"
+                embed.add_field(
+                    name=field_name,
+                    value=field_val[:1024],
+                    inline=False,
+                )
+        elif self.gog_details.get("downloads"):
             links_text = []
-            for d in downloads:
+            for d in self.gog_details["downloads"]:
                 host = d.get("host", "Direct")
                 url = d.get("url", "")
                 is_rec = any(
@@ -1584,7 +1764,50 @@ class GameDL(commands.Cog):
         # Sort downloads: Recommended first (BZZHR, PixelDrain), then fast mirrors (Gofile, FileDitch, MegaDB, etc.)
         downloads = sorted(details.get("downloads", []), key=_download_sort_key)
 
-        if downloads:
+        # Render categorized content groups if present (e.g. from GOG)
+        if details.get("groups"):
+            for g in details["groups"]:
+                cat = g.get("category", "Downloads")
+                icon = g.get("icon", "📦")
+                fn = g.get("filename", "")
+                sz = g.get("size", "")
+                dls = g.get("downloads", [])
+                if not dls:
+                    continue
+
+                header = f"{icon} {cat}"
+                if sz:
+                    header += f" ({sz})"
+                field_name = header[:256]
+
+                lines = []
+                if fn:
+                    lines.append(f"📁 `{fn}`")
+
+                link_items = []
+                for d in dls:
+                    host = d.get("host", "Direct")
+                    url = d.get("url", "")
+                    is_rec = any(
+                        k in host.lower() or k in url.lower()
+                        for k in ["buzzheavier", "bzzhr", "pixeldrain", "projectsablinova", "pd-by", "pd-node"]
+                    )
+                    badge = " ⭐ *(Recommended)*" if is_rec else ""
+                    if url.startswith("magnet:"):
+                        link_items.append(f"[Magnet Link]({url})")
+                    else:
+                        link_items.append(f"[**{host}**]({url}){badge}")
+
+                if link_items:
+                    lines.append(" • ".join(link_items))
+
+                field_val = "\n".join(lines) if lines else "*No links*"
+                embed.add_field(
+                    name=field_name,
+                    value=field_val[:1020],
+                    inline=False,
+                )
+        elif downloads:
             dl_lines = []
             for item in downloads:
                 host_name = item["host"]
@@ -1643,7 +1866,7 @@ class GameDL(commands.Cog):
             embed.set_image(url=details["banner"])
 
         footer_parts = [f"Requested by {ctx.author.display_name}"]
-        if gog_details and gog_details.get("downloads"):
+        if gog_details and (gog_details.get("groups") or gog_details.get("downloads")):
             footer_parts.append("💿 GOG version available! Click the GOG button below.")
         embed.set_footer(
             text=" • ".join(footer_parts),
@@ -1732,7 +1955,7 @@ class GameDL(commands.Cog):
                 if gog_results:
                     gog_top = gog_results[0]
                     gog_det = await self._extract_gog_details(gog_top["url"], meta=gog_top)
-                    if gog_det and gog_det.get("downloads"):
+                    if gog_det and (gog_det.get("groups") or gog_det.get("downloads")):
                         await self._send_game_card(ctx, gog_det, other_matches=None, gog_details=None)
                         return
 
@@ -1785,7 +2008,7 @@ class GameDL(commands.Cog):
             valid_details = [d for d in extracted_list if d]
 
             if not valid_details:
-                if gog_details and gog_details.get("downloads"):
+                if gog_details and (gog_details.get("groups") or gog_details.get("downloads")):
                     await self._send_game_card(ctx, gog_details, other_matches=None, gog_details=None)
                     return
                 embed = discord.Embed(
