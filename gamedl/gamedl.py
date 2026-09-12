@@ -306,20 +306,17 @@ def _resolve_bzzhr_direct(url: str, max_retries: int = 5) -> str:
     return url
 
 
-PIXELDRAIN_BYPASS_WORKER = "https://pd-by.projectsablinova.workers.dev"
-
-
 def _clean_pixeldrain_url(url: str) -> str:
-    """Rewrite PixelDrain links to user rotating bypass worker (https://pd-by.projectsablinova.workers.dev/<id>)."""
+    """Normalize any PixelDrain link back to official clean URL (https://pixeldrain.com/u/<id>)."""
     m = re.search(r"pixeldrain\.(?:com|eu\.cc|net|org)/(?:u|api/file|d)/([a-zA-Z0-9_-]+)", url)
     if m:
-        return f"{PIXELDRAIN_BYPASS_WORKER}/{m.group(1)}"
+        return f"https://pixeldrain.com/u/{m.group(1)}"
     m2 = re.search(r"cdn\.pixeldrain\.eu\.cc/([a-zA-Z0-9_-]+)", url)
     if m2:
-        return f"{PIXELDRAIN_BYPASS_WORKER}/{m2.group(1)}"
+        return f"https://pixeldrain.com/u/{m2.group(1)}"
     m3 = re.search(r"projectsablinova\.workers\.dev/([a-zA-Z0-9_-]+)", url)
     if m3:
-        return f"{PIXELDRAIN_BYPASS_WORKER}/{m3.group(1)}"
+        return f"https://pixeldrain.com/u/{m3.group(1)}"
     return url
 
 
