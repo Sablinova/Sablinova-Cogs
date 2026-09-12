@@ -300,12 +300,45 @@ def _resolve_bzzhr_direct(url: str, max_retries: int = 5) -> str:
     return url
 
 
-def _bypass_pixeldrain_url(url: str) -> str:
-    """Convert PixelDrain view/API URL to bypassed direct CDN link (cdn.pixeldrain.eu.cc/<id>)."""
-    m = re.search(r"pixeldrain\.com/(?:u|api/file|d)/([a-zA-Z0-9_-]+)", url)
+def _clean_pixeldrain_url(url: str) -> str:
+    """Normalize any PixelDrain link back to official clean URL (https://pixeldrain.com/u/<id>)."""
+    m = re.search(r"pixeldrain\.(?:com|eu\.cc|net|org)/(?:u|api/file|d)/([a-zA-Z0-9_-]+)", url)
     if m:
-        return f"https://cdn.pixeldrain.eu.cc/{m.group(1)}"
+        return f"https://pixeldrain.com/u/{m.group(1)}"
+    m2 = re.search(r"cdn\.pixeldrain\.eu\.cc/([a-zA-Z0-9_-]+)", url)
+    if m2:
+        return f"https://pixeldrain.com/u/{m2.group(1)}"
     return url
+
+
+def _is_pixeldrain_alive(url: str) -> bool:
+    """Check if a PixelDrain file is active and not removed for legal/DMCA reasons or deleted."""
+    m = re.search(r"pixeldrain\.(?:com|eu\.cc|net|org)/(?:u|api/file|d)/([a-zA-Z0-9_-]+)", url)
+    if not m:
+        m = re.search(r"cdn\.pixeldrain\.eu\.cc/([a-zA-Z0-9_-]+)", url)
+    if not m:
+        return True
+    file_id = m.group(1)
+    try:
+        req = urllib.request.Request(
+            f"https://pixeldrain.com/api/file/{file_id}/info",
+            headers={"User-Agent": HEADERS["User-Agent"]},
+        )
+        with urllib.request.urlopen(req, timeout=2.5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            if not data.get("success", True):
+                return False
+            if data.get("can_download") is False:
+                return False
+            if data.get("availability") in ("unavailable_for_legal_reasons", "deleted"):
+                return False
+            return True
+    except urllib.error.HTTPError as err:
+        if err.code in (404, 410, 451):
+            return False
+        return True
+    except Exception:
+        return True
 
 
 def _gamebounty_state() -> str:
@@ -428,9 +461,11 @@ def _extract_gamebounty_details_sync(slug: str) -> Optional[Dict[str, Any]]:
                         if resolved:
                             target_url = resolved
 
-                    # Auto-bypass PixelDrain links if present
-                    if "pixeldrain.com" in target_url:
-                        target_url = _bypass_pixeldrain_url(target_url)
+                    # Clean PixelDrain links and filter out dead/DMCA files
+                    if any(k in target_url.lower() for k in ["pixeldrain", "pixeldrain.eu.cc"]):
+                        target_url = _clean_pixeldrain_url(target_url)
+                        if not _is_pixeldrain_alive(target_url):
+                            continue
 
                     if target_url in seen_urls:
                         continue
@@ -739,9 +774,12 @@ class GameDL(commands.Cog):
                 if direct_cdn_resolved := direct_bzzhr:
                     raw_url = direct_cdn_resolved
 
-            # Auto-bypass PixelDrain links to direct CDN download (cdn.pixeldrain.eu.cc/<id>)
-            if "pixeldrain.com" in raw_url:
-                raw_url = _bypass_pixeldrain_url(raw_url)
+            # Clean PixelDrain links and filter out dead/DMCA files
+            if any(k in raw_url.lower() for k in ["pixeldrain", "pixeldrain.eu.cc"]):
+                raw_url = _clean_pixeldrain_url(raw_url)
+                is_alive = await asyncio.to_thread(_is_pixeldrain_alive, raw_url)
+                if not is_alive:
+                    continue
 
             if raw_url in seen_urls:
                 continue
