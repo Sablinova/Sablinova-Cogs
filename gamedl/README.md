@@ -15,6 +15,6 @@ A Red-DiscordBot cog to quickly search [SteamRIP](https://steamrip.com/), [GameB
 
 ## Commands
 
-- `[p]gamedl <game name or AppID>` - Unified search across all supported sources with merged mirrors (aliases: `[p]dl`, `[p]gdl`).
+- `[p]gamedl <game name or AppID>` - Unified search across all supported sources with merged mirrors (aliases: `[p]gdl`, `[p]steamrip`).
 - `/gamedl <game name or AppID>` - Slash command version.
 

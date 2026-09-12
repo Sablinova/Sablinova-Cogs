@@ -1358,7 +1358,7 @@ class GameDL(commands.Cog):
 
     @commands.hybrid_command(
         name="gamedl",
-        aliases=["gdl", "dl", "steamrip"],
+        aliases=["gdl", "steamrip"],
         description="Search for a PC game across SteamRIP, GameBounty, SteamUnderground, and WorldOfPCGames.",
     )
     @app_commands.describe(game="The name of the game or numeric Steam AppID to search for")
