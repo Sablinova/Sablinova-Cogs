@@ -77,6 +77,7 @@ KNOWN_DOMAINS: Dict[str, str] = {
     "pd-node3.projectsablinova.workers.dev": "PixelDrain",
     "pd-node4.projectsablinova.workers.dev": "PixelDrain",
     "pd-node5.projectsablinova.workers.dev": "PixelDrain",
+    "filekeeper.net": "FileKeeper",
     "mediafire.com": "MediaFire",
     "mega.nz": "MEGA",
     "dropgalaxy.com": "DropGalaxy",
@@ -91,9 +92,12 @@ def _clean_game_title(title: str) -> str:
     """Remove HTML entities, 'Free Download', versions, builds, and trailing branding."""
     clean = html.unescape(title)
     clean = re.sub(r"\bFree\s+Download\b", "", clean, flags=re.IGNORECASE)
-    clean = re.sub(r"[\s»\-|–—]+\s*SteamRIP.*$", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"[\s»\-|–—]+\s*(?:SteamRIP|SteamUnderground|WorldOfPCGames).*$", "", clean, flags=re.IGNORECASE)
     clean = re.sub(r"\bSteamRIP\b", "", clean, flags=re.IGNORECASE)
     clean = re.sub(r"\bGameBounty\b", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"\bSteamUnderground(?:\.net)?\b", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"\bWorld\s*Of\s*PC\s*Games(?:\.com)?\b", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"\b(?:PC\s*(?:Game|Download)|Steam\s*Game|Direct\s*Download)\b", "", clean, flags=re.IGNORECASE)
     # Remove parenthesized versions/builds like (v1.4.5.8 + Co-op) or (Build 123)
     clean = re.sub(r"\s*\([^)]*\)", "", clean)
     # Remove bracketed versions like [v2.12] or [Build 100]
@@ -113,11 +117,44 @@ def _clean_for_steam(raw_title: str) -> str:
     return re.sub(r"\s+", " ", clean).strip()
 
 
+def _extract_domain(url: str) -> str:
+    """Extract normalized domain without www. from a URL."""
+    parsed = urllib.parse.urlparse(url)
+    domain = parsed.netloc.lower()
+    if domain.startswith("www."):
+        domain = domain[4:]
+    return domain
+
+
+def _sync_fetch_ipv4(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = 15) -> str:
+    """Fallback HTTP GET forcing IPv4 address family to avoid IPv6 unreachable errors on container networks."""
+    import socket
+    orig_gai = socket.getaddrinfo
+
+    def _gai_ipv4(*args, **kwargs):
+        res = orig_gai(*args, **kwargs)
+        v4 = [r for r in res if r[0] == socket.AF_INET]
+        return v4 if v4 else res
+
+    socket.getaddrinfo = _gai_ipv4
+    try:
+        req = urllib.request.Request(url, headers=headers or HEADERS)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read().decode("utf-8", errors="replace")
+    finally:
+        socket.getaddrinfo = orig_gai
+
+
 def _sync_fetch(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = 15) -> str:
-    """Synchronous HTTP GET with headers."""
+    """Synchronous HTTP GET with headers and automatic IPv4 fallback."""
     req = urllib.request.Request(url, headers=headers or HEADERS)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read().decode("utf-8", errors="replace")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read().decode("utf-8", errors="replace")
+    except OSError as exc:
+        if getattr(exc, "errno", None) == 101 or "unreachable" in str(exc).lower():
+            return _sync_fetch_ipv4(url, headers, timeout)
+        raise
 
 
 def _lookup_appid_sync(appid: str) -> Optional[str]:
@@ -535,13 +572,71 @@ def _download_sort_key(item: Dict[str, str]) -> int:
         return 4
     if "1fichier" in h or "1fichier" in u:
         return 5
-    if "fileq" in h or "fileq" in u:
-        return 6
     if "datanodes" in h or "datanodes" in u:
+        return 6
+    if "filekeeper" in h or "filekeeper" in u:
         return 7
-    if "0807" in h or "0807" in u:
+    if "fileq" in h or "fileq" in u:
         return 8
-    return 10
+    if "torrent" in h or "torrent" in u or "trnt" in u:
+        return 9
+    if "0807" in h or "0807" in u:
+        return 10
+    return 15
+
+
+def _search_steamunderground_sync(query: str) -> List[Dict[str, Any]]:
+    """Search steamunderground.net via WordPress REST API."""
+    search_url = f"https://steamunderground.net/wp-json/wp/v2/posts?search={urllib.parse.quote(query)}&per_page=10"
+    try:
+        content = _sync_fetch(search_url, timeout=10)
+        posts = json.loads(content)
+        results: List[Dict[str, Any]] = []
+        for p in posts:
+            raw_title = p.get("title", {}).get("rendered", "")
+            clean_title = _clean_game_title(raw_title)
+            img_url = None
+            if p.get("yoast_head_json") and p["yoast_head_json"].get("og_image"):
+                og_imgs = p["yoast_head_json"]["og_image"]
+                if isinstance(og_imgs, list) and og_imgs:
+                    img_url = og_imgs[0].get("url")
+            results.append({
+                "title": clean_title,
+                "raw_title": raw_title,
+                "url": p.get("link", ""),
+                "portrait_image": img_url,
+                "source": "steamunderground",
+            })
+        return results
+    except Exception as exc:
+        log.warning("SteamUnderground search error: %s", exc)
+        return []
+
+
+def _search_worldofpcgames_sync(query: str) -> List[Dict[str, Any]]:
+    """Search worldofpcgames.com via WordPress REST API."""
+    search_url = f"https://worldofpcgames.com/wp-json/wp/v2/posts?search={urllib.parse.quote(query)}&per_page=10"
+    try:
+        content = _sync_fetch(search_url, timeout=10)
+        posts = json.loads(content)
+        results: List[Dict[str, Any]] = []
+        for p in posts:
+            raw_title = p.get("title", {}).get("rendered", "")
+            clean_title = _clean_game_title(raw_title)
+            img_url = None
+            if p.get("aioseo_head_json") and p["aioseo_head_json"].get("og:image"):
+                img_url = p["aioseo_head_json"]["og:image"]
+            results.append({
+                "title": clean_title,
+                "raw_title": raw_title,
+                "url": p.get("link", ""),
+                "portrait_image": img_url,
+                "source": "worldofpcgames",
+            })
+        return results
+    except Exception as exc:
+        log.warning("WorldOfPCGames search error: %s", exc)
+        return []
 
 
 def _is_same_game(t1: str, t2: str) -> bool:
@@ -892,6 +987,232 @@ class GameDL(commands.Cog):
             log.warning("GameBounty details error for %s: %s", slug, exc)
             return None
 
+    async def _search_steamunderground(self, query: str) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        """Search SteamUnderground for games matching query."""
+        try:
+            results = await asyncio.to_thread(_search_steamunderground_sync, query)
+            filtered: List[Dict[str, Any]] = []
+            for r in results:
+                score = _query_relevance_score(query, r["title"])
+                if score > 0.0:
+                    r["score"] = score
+                    filtered.append(r)
+            filtered.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+            return filtered, None
+        except Exception as exc:
+            log.warning("SteamUnderground search error: %s", exc)
+            return [], str(exc)
+
+    async def _extract_steamunderground_details(self, page_url: str, meta: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        """Extract SteamUnderground game title, size, version, cover art, and direct download links."""
+        body = await self._fetch_html(page_url)
+        if not body:
+            return None
+
+        raw_name = meta.get("raw_title") if meta and meta.get("raw_title") else (meta.get("title") if meta and meta.get("title") else "Unknown Game")
+        og_title = re.search(
+            r'<meta\s+property=[\"\']og:title[\"\']\s+content=[\"\']([^\"\']+)[\"\']',
+            body,
+            re.IGNORECASE,
+        )
+        if og_title:
+            raw_name = og_title.group(1)
+        cleaned_name = _clean_game_title(raw_name)
+
+        steam_info = await asyncio.to_thread(_resolve_steam_data_sync, cleaned_name)
+        if steam_info and steam_info.get("name") and _is_same_game(cleaned_name, steam_info["name"]):
+            title = steam_info["name"]
+        else:
+            title = cleaned_name
+
+        if steam_info and steam_info.get("portrait_url"):
+            image = steam_info["portrait_url"]
+        else:
+            image = meta.get("portrait_image") if meta else None
+            if not image:
+                og_img = re.search(
+                    r'<meta\s+property=[\"\']og:image[\"\']\s+content=[\"\']([^\"\']+)[\"\']',
+                    body,
+                    re.IGNORECASE,
+                )
+                image = og_img.group(1).strip() if og_img else None
+
+        banner = steam_info.get("banner_url") if steam_info else None
+
+        ver_m = re.search(r'class=[\"\'][^\"\']*gameVersionValue[^\"\']*[\"\'][^>]*>([^<]+)<', body)
+        if not ver_m:
+            ver_m = re.search(r'\((?:v\s*|Build\s*)([0-9\.\_a-zA-Z\s\+]+)[^)]*\)', raw_name)
+        version = html.unescape(ver_m.group(1).strip()) if ver_m else ""
+
+        size_m = re.search(r'Size\s*:\s*([0-9\.]+\s*(?:GB|MB))', body, re.I)
+        if not size_m:
+            size_m = re.search(r'<strong>(?:Game\s+)?Size:\s*</strong>\s*([^<]+)', body, re.I)
+        size = size_m.group(1).strip() if size_m else "Unknown"
+
+        downloads = []
+        seen_urls = set()
+        buttons = re.findall(r'<a\s+[^>]*href=[\"\']([^\"\']+)[\"\'][^>]*>(.*?)</a>', body, re.DOTALL)
+        for href, text in buttons:
+            raw_url = href.strip()
+            btn_text = re.sub(r'<[^>]+>', '', text).strip()
+            if not raw_url.startswith("http"):
+                continue
+            if any(ign in raw_url for ign in ["steamunderground.net", "facebook.com", "twitter.com", "pinterest.com", "predb.net", "steampowered.com", "disqus.com"]):
+                continue
+
+            domain = _extract_domain(raw_url)
+            host_label = KNOWN_DOMAINS.get(domain)
+            if not host_label:
+                if "torrent" in btn_text.lower() or "trnt" in raw_url.lower():
+                    host_label = "Torrent"
+                else:
+                    continue
+
+            if "torrent" in btn_text.lower() or "-trnt" in raw_url.lower() or "_trnt" in raw_url.lower():
+                host_label = "Torrent"
+
+            if "bzzhr" in raw_url.lower() or "buzzheavier" in raw_url.lower():
+                res_bzzhr = _resolve_bzzhr_direct(raw_url)
+                if res_bzzhr:
+                    raw_url = res_bzzhr
+                    host_label = "BZZHR"
+
+            if "pixeldrain" in raw_url.lower():
+                raw_url = _clean_pixeldrain_url(raw_url)
+                if not _is_pixeldrain_alive(raw_url):
+                    continue
+                host_label = "PixelDrain"
+
+            if raw_url not in seen_urls:
+                seen_urls.add(raw_url)
+                downloads.append({"host": host_label, "url": raw_url})
+
+        game_page_url = steam_info["steam_url"] if steam_info else page_url
+        return {
+            "title": title,
+            "url": game_page_url,
+            "image": image,
+            "banner": banner,
+            "size": size,
+            "version": version,
+            "downloads": downloads,
+            "is_steam": bool(steam_info),
+            "source": "steamunderground",
+        }
+
+    async def _search_worldofpcgames(self, query: str) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        """Search WorldOfPCGames for games matching query."""
+        try:
+            results = await asyncio.to_thread(_search_worldofpcgames_sync, query)
+            filtered: List[Dict[str, Any]] = []
+            for r in results:
+                score = _query_relevance_score(query, r["title"])
+                if score > 0.0:
+                    r["score"] = score
+                    filtered.append(r)
+            filtered.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+            return filtered, None
+        except Exception as exc:
+            log.warning("WorldOfPCGames search error: %s", exc)
+            return [], str(exc)
+
+    async def _extract_worldofpcgames_details(self, page_url: str, meta: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        """Extract WorldOfPCGames game title, size, version, cover art, and direct download links."""
+        body = await self._fetch_html(page_url)
+        if not body:
+            return None
+
+        raw_name = meta.get("raw_title") if meta and meta.get("raw_title") else (meta.get("title") if meta and meta.get("title") else "Unknown Game")
+        og_title = re.search(
+            r'<meta\s+property=[\"\']og:title[\"\']\s+content=[\"\']([^\"\']+)[\"\']',
+            body,
+            re.IGNORECASE,
+        )
+        if og_title:
+            raw_name = og_title.group(1)
+        cleaned_name = _clean_game_title(raw_name)
+
+        steam_info = await asyncio.to_thread(_resolve_steam_data_sync, cleaned_name)
+        if steam_info and steam_info.get("name") and _is_same_game(cleaned_name, steam_info["name"]):
+            title = steam_info["name"]
+        else:
+            title = cleaned_name
+
+        if steam_info and steam_info.get("portrait_url"):
+            image = steam_info["portrait_url"]
+        else:
+            image = meta.get("portrait_image") if meta else None
+            if not image:
+                og_img = re.search(
+                    r'<meta\s+property=[\"\']og:image[\"\']\s+content=[\"\']([^\"\']+)[\"\']',
+                    body,
+                    re.IGNORECASE,
+                )
+                image = og_img.group(1).strip() if og_img else None
+
+        banner = steam_info.get("banner_url") if steam_info else None
+
+        ver_m = re.search(r'class=[\"\'][^\"\']*gameVersionValue[^\"\']*[\"\'][^>]*>([^<]+)<', body)
+        if not ver_m:
+            ver_m = re.search(r'\((?:v\s*|Build\s*)([0-9\.\_a-zA-Z\s\+]+)[^)]*\)', raw_name)
+        version = html.unescape(ver_m.group(1).strip()) if ver_m else ""
+
+        size_m = re.search(r'(?:Game\s+)?Size\s*:\s*([0-9\.]+\s*(?:GB|MB))', body, re.I)
+        if not size_m:
+            size_m = re.search(r'([0-9\.]+\s*(?:GB|MB))\s*(?:available space|storage)', body, re.I)
+        size = size_m.group(1).strip() if size_m else "Unknown"
+
+        downloads = []
+        seen_urls = set()
+        buttons = re.findall(r'<a\s+[^>]*href=[\"\']([^\"\']+)[\"\'][^>]*>(.*?)</a>', body, re.DOTALL)
+        for href, text in buttons:
+            raw_url = href.strip()
+            btn_text = re.sub(r'<[^>]+>', '', text).strip()
+            if not raw_url.startswith("http"):
+                continue
+            if any(ign in raw_url for ign in ["worldofpcgames.com", "facebook.com", "twitter.com", "pinterest.com", "steampowered.com", "disqus.com"]):
+                continue
+
+            domain = _extract_domain(raw_url)
+            host_label = KNOWN_DOMAINS.get(domain)
+            if not host_label:
+                if "torrent" in btn_text.lower() or "trnt" in raw_url.lower():
+                    host_label = "Torrent"
+                else:
+                    continue
+
+            if "torrent" in btn_text.lower() or "-trnt" in raw_url.lower() or "_trnt" in raw_url.lower():
+                host_label = "Torrent"
+
+            if "bzzhr" in raw_url.lower() or "buzzheavier" in raw_url.lower():
+                res_bzzhr = _resolve_bzzhr_direct(raw_url)
+                if res_bzzhr:
+                    raw_url = res_bzzhr
+                    host_label = "BZZHR"
+
+            if "pixeldrain" in raw_url.lower():
+                raw_url = _clean_pixeldrain_url(raw_url)
+                if not _is_pixeldrain_alive(raw_url):
+                    continue
+                host_label = "PixelDrain"
+
+            if raw_url not in seen_urls:
+                seen_urls.add(raw_url)
+                downloads.append({"host": host_label, "url": raw_url})
+
+        game_page_url = steam_info["steam_url"] if steam_info else page_url
+        return {
+            "title": title,
+            "url": game_page_url,
+            "image": image,
+            "banner": banner,
+            "size": size,
+            "version": version,
+            "downloads": downloads,
+            "is_steam": bool(steam_info),
+            "source": "worldofpcgames",
+        }
+
     async def _send_game_card(
         self,
         ctx: commands.Context,
@@ -1037,13 +1358,13 @@ class GameDL(commands.Cog):
 
     @commands.hybrid_command(
         name="gamedl",
-        aliases=["gdl"],
-        description="Search for a PC game across SteamRIP and GameBounty.",
+        aliases=["gdl", "dl", "steamrip"],
+        description="Search for a PC game across SteamRIP, GameBounty, SteamUnderground, and WorldOfPCGames.",
     )
     @app_commands.describe(game="The name of the game or numeric Steam AppID to search for")
     @commands.cooldown(1, 3.0, commands.BucketType.user)
     async def gamedl(self, ctx: commands.Context, *, game: str):
-        """Search for a PC game across SteamRIP and GameBounty with merged direct mirrors.
+        """Search for a PC game across SteamRIP, GameBounty, SteamUnderground, and WorldOfPCGames with merged direct mirrors.
 
         Example:
             [p]gamedl terraria
@@ -1058,13 +1379,27 @@ class GameDL(commands.Cog):
                 if steam_name:
                     clean_q = steam_name
 
-            # Concurrently search SteamRIP and GameBounty
+            # Concurrently search all 4 sources: SteamRIP, GameBounty, SteamUnderground, WorldOfPCGames
             sr_task = self._search_games(clean_q)
             gb_task = self._search_gamebounty(clean_q)
-            (sr_results, sr_err), (gb_results, gb_err) = await asyncio.gather(sr_task, gb_task)
+            su_task = self._search_steamunderground(clean_q)
+            wp_task = self._search_worldofpcgames(clean_q)
+            (
+                (sr_results, sr_err),
+                (gb_results, gb_err),
+                (su_results, su_err),
+                (wp_results, wp_err),
+            ) = await asyncio.gather(sr_task, gb_task, su_task, wp_task)
 
-            if not sr_results and not gb_results:
-                msg = f"No results found matching **{clean_q}** on SteamRIP or GameBounty.\nTry searching with a shorter or alternative title."
+            all_sources = {
+                "steamrip": sr_results,
+                "gamebounty": gb_results,
+                "steamunderground": su_results,
+                "worldofpcgames": wp_results,
+            }
+
+            if not any(all_sources.values()):
+                msg = f"No results found matching **{clean_q}** across SteamRIP, GameBounty, SteamUnderground, or WorldOfPCGames.\nTry searching with a shorter or alternative title."
                 embed = discord.Embed(
                     title="🔍 Game Not Found",
                     description=msg,
@@ -1073,92 +1408,33 @@ class GameDL(commands.Cog):
                 await ctx.send(embed=embed)
                 return
 
-            details: Optional[Dict[str, Any]] = None
-            other_titles: List[str] = []
+            # Pick the top result from each source and score query relevance
+            top_candidates = []
+            for src, r_list in all_sources.items():
+                if r_list:
+                    top = r_list[0]
+                    score = top.get("score", _query_relevance_score(clean_q, top["title"]))
+                    top_candidates.append((score, src, top))
 
-            # Case 1: Both sources returned matches
-            if sr_results and gb_results:
-                sr_top = sr_results[0]
-                gb_top = gb_results[0]
+            # Highest relevance score determines our best match
+            top_candidates.sort(key=lambda x: x[0], reverse=True)
+            best_score, best_src, best_top = top_candidates[0]
 
-                # Check if top results represent the same game
-                if _is_same_game(sr_top["title"], gb_top["title"]):
-                    sr_det_task = self._extract_details(sr_top["url"], default_image=sr_top.get("portrait_image"))
-                    gb_det_task = self._extract_gamebounty_details(gb_top["slug"])
-                    sr_det, gb_det = await asyncio.gather(sr_det_task, gb_det_task)
+            # Extract details for all sources that match this target game
+            extract_tasks = []
+            if sr_results and _is_same_game(sr_results[0]["title"], best_top["title"]):
+                extract_tasks.append(self._extract_details(sr_results[0]["url"], default_image=sr_results[0].get("portrait_image")))
+            if gb_results and _is_same_game(gb_results[0]["title"], best_top["title"]):
+                extract_tasks.append(self._extract_gamebounty_details(gb_results[0]["slug"]))
+            if su_results and _is_same_game(su_results[0]["title"], best_top["title"]):
+                extract_tasks.append(self._extract_steamunderground_details(su_results[0]["url"], meta=su_results[0]))
+            if wp_results and _is_same_game(wp_results[0]["title"], best_top["title"]):
+                extract_tasks.append(self._extract_worldofpcgames_details(wp_results[0]["url"], meta=wp_results[0]))
 
-                    if sr_det and gb_det:
-                        details = sr_det
-                        # Merge GameBounty mirrors into SteamRIP downloads
-                        seen_urls = {d["url"] for d in details.get("downloads", [])}
-                        for gb_dl in gb_det.get("downloads", []):
-                            if gb_dl["url"] not in seen_urls:
-                                seen_urls.add(gb_dl["url"])
-                                details["downloads"].append(gb_dl)
-                        # Pick best version/size if one is missing
-                        if not details.get("version") and gb_det.get("version"):
-                            details["version"] = gb_det["version"]
-                        if (not details.get("size") or details.get("size") == "Unknown") and gb_det.get("size"):
-                            details["size"] = gb_det["size"]
-                        # Prefer verified Steam CDN cover from GameBounty (e.g. hashed library_600x900)
-                        if gb_det.get("image") and (
-                            "library_600x900" in gb_det["image"]
-                            or "steamstatic" in gb_det["image"]
-                            or not details.get("image")
-                            or "steamrip.com" in str(details.get("image", ""))
-                        ):
-                            details["image"] = gb_det["image"]
-                        # Merge banner if missing
-                        if gb_det.get("banner") and not details.get("banner"):
-                            details["banner"] = gb_det["banner"]
-                    else:
-                        details = sr_det or gb_det
-                else:
-                    # Top games differ: pick the source with higher query relevance score
-                    sr_score = sr_top.get("score", _query_relevance_score(clean_q, sr_top["title"]))
-                    gb_score = gb_top.get("score", _query_relevance_score(clean_q, gb_top["title"]))
-                    if gb_score > sr_score:
-                        details = await self._extract_gamebounty_details(gb_top["slug"])
-                        if not details:
-                            details = await self._extract_details(sr_top["url"], default_image=sr_top.get("portrait_image"))
-                    else:
-                        details = await self._extract_details(sr_top["url"], default_image=sr_top.get("portrait_image"))
-                        if not details:
-                            details = await self._extract_gamebounty_details(gb_top["slug"])
+            extracted_list = await asyncio.gather(*extract_tasks)
+            valid_details = [d for d in extracted_list if d]
 
-                # Compile other matches from both sources
-                seen_other: Set[str] = set()
-                candidate_others = []
-                if not _is_same_game(sr_top["title"], gb_top["title"]):
-                    runner_up = sr_top if gb_score > sr_score else gb_top
-                    candidate_others.append(runner_up)
-                candidate_others.extend(sr_results[1:5] + gb_results[1:5])
-
-                for item in candidate_others:
-                    c_title = _clean_game_title(item["title"])
-                    if details and _is_same_game(c_title, details["title"]):
-                        continue
-                    if c_title not in seen_other:
-                        seen_other.add(c_title)
-                        other_titles.append(f"• {c_title}")
-
-            # Case 2: Only SteamRIP returned matches
-            elif sr_results:
-                sr_top = sr_results[0]
-                details = await self._extract_details(sr_top["url"], default_image=sr_top.get("portrait_image"))
-                for item in sr_results[1:5]:
-                    c_title = _clean_game_title(item["title"])
-                    other_titles.append(f"• {c_title}")
-
-            # Case 3: Only GameBounty returned matches
-            elif gb_results:
-                gb_top = gb_results[0]
-                details = await self._extract_gamebounty_details(gb_top["slug"])
-                for item in gb_results[1:5]:
-                    c_title = _clean_game_title(item["title"])
-                    other_titles.append(f"• {c_title}")
-
-            if not details:
+            if not valid_details:
                 embed = discord.Embed(
                     title="❌ Failed to Load Game Details",
                     description=f"Found games matching **{clean_q}**, but could not retrieve download links.",
@@ -1166,5 +1442,52 @@ class GameDL(commands.Cog):
                 )
                 await ctx.send(embed=embed)
                 return
+
+            # Merge all valid sources into primary details
+            details = valid_details[0]
+            seen_urls = {d["url"] for d in details.get("downloads", [])}
+
+            for other in valid_details[1:]:
+                for dl in other.get("downloads", []):
+                    if dl["url"] not in seen_urls:
+                        seen_urls.add(dl["url"])
+                        details["downloads"].append(dl)
+
+                if not details.get("version") and other.get("version"):
+                    details["version"] = other["version"]
+
+                if (not details.get("size") or details.get("size") == "Unknown") and other.get("size"):
+                    details["size"] = other["size"]
+
+                if other.get("image") and (
+                    "library_600x900" in other["image"]
+                    or "steamstatic" in other["image"]
+                    or not details.get("image")
+                    or "steamrip.com" in str(details.get("image", ""))
+                ):
+                    details["image"] = other["image"]
+
+                if other.get("banner") and not details.get("banner"):
+                    details["banner"] = other["banner"]
+
+            # Compile other matches
+            other_titles: List[str] = []
+            seen_other: Set[str] = set()
+
+            for score, src, top in top_candidates[1:]:
+                c_title = _clean_game_title(top["title"])
+                if not _is_same_game(c_title, details["title"]):
+                    if c_title not in seen_other:
+                        seen_other.add(c_title)
+                        other_titles.append(f"• {c_title}")
+
+            all_tail = sr_results[1:4] + gb_results[1:4] + su_results[1:4] + wp_results[1:4]
+            for item in all_tail:
+                c_title = _clean_game_title(item["title"])
+                if _is_same_game(c_title, details["title"]):
+                    continue
+                if c_title not in seen_other:
+                    seen_other.add(c_title)
+                    other_titles.append(f"• {c_title}")
 
             await self._send_game_card(ctx, details, other_titles[:6])
