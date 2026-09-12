@@ -82,9 +82,12 @@ KNOWN_DOMAINS: Dict[str, str] = {
     "mega.nz": "MEGA",
     "dropgalaxy.com": "DropGalaxy",
     "krakenfiles.com": "KrakenFiles",
-    "rapidgator.net": "RapidGator",
     "fileq.net": "FileQ",
     "0807.st": "0807",
+    "mocha.my": "Mocha",
+    "vikingfile.com": "VikingFile",
+    "dropdrive.org": "DropDrive",
+    "transfer.it": "TransferIt",
 }
 
 
@@ -576,13 +579,182 @@ def _download_sort_key(item: Dict[str, str]) -> int:
         return 6
     if "filekeeper" in h or "filekeeper" in u:
         return 7
-    if "fileq" in h or "fileq" in u:
+    if "mocha" in h or "mocha" in u:
         return 8
-    if "torrent" in h or "torrent" in u or "trnt" in u:
+    if "fileq" in h or "fileq" in u:
         return 9
-    if "0807" in h or "0807" in u:
+    if "vikingfile" in h or "vikingfile" in u:
         return 10
+    if "dropdrive" in h or "dropdrive" in u:
+        return 11
+    if "transfer" in h or "transfer" in u:
+        return 12
+    if "0807" in h or "0807" in u:
+        return 13
+    if "torrent" in h or "torrent" in u or "trnt" in u or "magnet:" in u:
+        return 14
     return 15
+
+
+_GOG_CACHE: Optional[List[Dict[str, Any]]] = None
+_GOG_CACHE_TIME: float = 0.0
+_GOG_CACHE_TTL: float = 3600.0  # 1 hour in-memory cache
+
+
+def _fetch_gog_catalog_sync() -> List[Dict[str, Any]]:
+    """Fetch and cache the full GOG Revived game catalog embedded in /search/."""
+    global _GOG_CACHE, _GOG_CACHE_TIME
+    now = time.time()
+    if _GOG_CACHE is not None and (now - _GOG_CACHE_TIME) < _GOG_CACHE_TTL:
+        return _GOG_CACHE
+
+    url = "https://gog-rev.com/search/"
+    try:
+        body = _sync_fetch(url, timeout=15)
+        if not body:
+            return _GOG_CACHE or []
+        m = re.search(r"initialGames\s*=\s*(\[.*?\]);", body)
+        if m:
+            data = json.loads(m.group(1))
+            _GOG_CACHE = data
+            _GOG_CACHE_TIME = now
+            log.info("Fetched GOG catalog with %d games", len(data))
+            return data
+    except Exception as exc:
+        log.warning("Failed to fetch GOG catalog: %s", exc)
+
+    return _GOG_CACHE or []
+
+
+def _search_gog_sync(query: str) -> List[Dict[str, Any]]:
+    """Search GOG Revived catalog using query relevance scoring."""
+    catalog = _fetch_gog_catalog_sync()
+    if not catalog:
+        return []
+
+    q_lower = query.lower().strip()
+    q_norm = re.sub(r"[^\w\s]", "", q_lower)
+    results: List[Dict[str, Any]] = []
+
+    for game in catalog:
+        title = game.get("title", "")
+        slug = game.get("slug", "")
+        score = _query_relevance_score(query, title)
+        if score > 0.0 or (q_norm and q_norm in re.sub(r"[^\w\s]", "", title.lower())):
+            results.append({
+                "title": title,
+                "slug": slug,
+                "url": f"https://gog-rev.com/games/{slug}/",
+                "version": game.get("currentVersion", "N/A"),
+                "size": game.get("downloadSizeBadge", "Unknown"),
+                "cover": game.get("coverImage", ""),
+                "platforms": game.get("platforms", {}),
+                "score": score if score > 0.0 else 0.5,
+                "source": "gog",
+            })
+
+    results.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+    return results[:10]
+
+
+def _unseal_gog_link(payload: str, key: List[int]) -> str:
+    """Decrypt a GOG Revived sealed link payload using the page linkKey."""
+    rem = len(payload) % 4
+    if rem:
+        payload += "=" * (4 - rem)
+    try:
+        data = base64.urlsafe_b64decode(payload)
+        if len(data) < 4 or data[0] != 1:
+            return ""
+        n = data[1]
+        a = 2 + n
+        if n < 8 or a >= len(data):
+            return ""
+        c = data[2:a]
+        s = data[a:]
+        res = bytearray(len(s))
+        for o in range(len(s)):
+            l = key[(o + c[o % len(c)]) % len(key)]
+            u = c[(o * 5 + 3) % len(c)]
+            f = (l + u + ((o * 31 + 17) & 255)) & 255
+            m = s[o] ^ f
+            g = (o % 5) + 1
+            t = g & 7
+            res[o] = m & 255 if t == 0 else ((m >> t) | (m << (8 - t))) & 255
+        return res.decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
+def _extract_gog_details_sync(page_url: str, meta: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """Extract and unseal GOG Revived direct download mirrors, version, and info."""
+    if not page_url.endswith("/"):
+        page_url += "/"
+    body = _sync_fetch(page_url, timeout=15)
+    if not body:
+        return None
+
+    key_m = re.search(r"linkKey\s*=\s*(\[[^\]]+\])", body)
+    attr_m = re.search(r"linkPayloadAttribute\s*=\s*[\"\x27]([^\"]+)[\"\x27]", body)
+    if not key_m or not attr_m:
+        return None
+
+    try:
+        key = json.loads(key_m.group(1))
+    except Exception:
+        return None
+    attr_name = attr_m.group(1)
+
+    downloads = []
+    seen = set()
+
+    # Unseal mirror links
+    button_pattern = re.compile(rf"<a[^>]+{attr_name}=[\"\x27]([^\"]+)[\"\x27][^>]*>", re.DOTALL)
+    for m in button_pattern.finditer(body):
+        tag = m.group(0)
+        payload = m.group(1)
+        host_m = re.search(r"data-host=[\"\x27]([^\"]+)[\"\x27]", tag)
+        raw_host = host_m.group(1) if host_m else "Direct"
+        link = _unseal_gog_link(payload, key)
+        if link and link not in seen and link.startswith("http"):
+            if "pixeldrain" in link or "pd-" in link:
+                link = _clean_pixeldrain_url(link)
+                if not _is_pixeldrain_alive(link):
+                    continue
+            domain = _extract_domain(link)
+            host_clean = KNOWN_DOMAINS.get(domain)
+            if not host_clean:
+                host_clean = raw_host.capitalize() if raw_host else "Direct"
+            seen.add(link)
+            downloads.append({"host": host_clean, "url": link})
+
+    # Unseal torrent / magnet links
+    magnet_pattern = re.compile(rf"<button[^>]+copy-magnet-btn[^>]+{attr_name}=[\"\x27]([^\"]+)[\"\x27]", re.DOTALL)
+    for m in magnet_pattern.finditer(body):
+        payload = m.group(1)
+        link = _unseal_gog_link(payload, key)
+        if link and link not in seen and link.startswith("magnet:"):
+            seen.add(link)
+            downloads.append({"host": "Magnet", "url": link})
+
+    downloads.sort(key=_download_sort_key)
+
+    title = meta.get("title") if meta and meta.get("title") else "Game"
+    version = meta.get("version", "N/A") if meta else "N/A"
+    size = meta.get("size", "Unknown") if meta else "Unknown"
+    cover = meta.get("cover", "") if meta else ""
+    platforms = meta.get("platforms", {}) if meta else {}
+
+    return {
+        "title": title,
+        "url": page_url,
+        "version": version,
+        "size": size,
+        "cover": cover,
+        "platforms": platforms,
+        "downloads": downloads,
+        "source": "gog",
+    }
 
 
 def _search_steamunderground_sync(query: str) -> List[Dict[str, Any]]:
@@ -1213,11 +1385,186 @@ class GameDL(commands.Cog):
             "source": "worldofpcgames",
         }
 
+    async def _search_gog(self, query: str) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        """Search GOG Revived for games matching query."""
+        try:
+            results = await asyncio.to_thread(_search_gog_sync, query)
+            return results, None
+        except Exception as exc:
+            log.warning("GOG search error: %s", exc)
+            return [], str(exc)
+
+    async def _extract_gog_details(self, page_url: str, meta: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        """Extract and unseal GOG Revived direct download mirrors, version, and info."""
+        try:
+            return await asyncio.to_thread(_extract_gog_details_sync, page_url, meta)
+        except Exception as exc:
+            log.warning("GOG details error for %s: %s", page_url, exc)
+            return None
+
+
+class GogView(discord.ui.View):
+    """Ephemeral view providing quick links for GOG downloads."""
+
+    def __init__(self, gog_details: Dict[str, Any], timeout: float = 600.0):
+        super().__init__(timeout=timeout)
+        self.gog_details = gog_details
+
+        # Recommended download button for GOG
+        downloads = gog_details.get("downloads", [])
+        for d in downloads:
+            host = d.get("host", "")
+            url = d.get("url", "")
+            is_rec = any(
+                k in host.lower() or k in url.lower()
+                for k in ["pixeldrain", "buzzheavier", "bzzhr", "projectsablinova", "pd-by", "pd-node"]
+            )
+            if is_rec and len(url) <= 512:
+                self.add_item(
+                    discord.ui.Button(
+                        label=f"⭐ Download ({host[:16]})",
+                        url=url,
+                        style=discord.ButtonStyle.link,
+                    )
+                )
+                break
+
+        # GOG page button
+        if gog_details.get("url") and len(gog_details["url"]) <= 512:
+            self.add_item(
+                discord.ui.Button(
+                    label="GOG Page",
+                    url=gog_details["url"],
+                    style=discord.ButtonStyle.link,
+                )
+            )
+
+
+class GameDLMainView(discord.ui.View):
+    """Interactive button view for GameDL main embed."""
+
+    def __init__(
+        self,
+        downloads: List[Dict[str, Any]],
+        details: Dict[str, Any],
+        gog_details: Optional[Dict[str, Any]] = None,
+        timeout: float = 600.0,
+    ):
+        super().__init__(timeout=timeout)
+        self.details = details
+        self.gog_details = gog_details
+
+        # 1. Add ONLY recommended download buttons (user request: "remove all buttons except recommended")
+        added_rec = 0
+        for item in downloads:
+            host_label = item["host"][:18]
+            is_recommended = any(
+                k in host_label.lower() or k in item["url"].lower()
+                for k in ["buzzheavier", "bzzhr", "pixeldrain", "projectsablinova", "pd-by", "pd-node"]
+            )
+            if not is_recommended:
+                continue
+            if len(item["url"]) <= 512 and added_rec < 3:
+                btn_text = f"⭐ Download ({host_label})"
+                self.add_item(
+                    discord.ui.Button(
+                        label=btn_text[:80],
+                        url=item["url"],
+                        style=discord.ButtonStyle.link,
+                    )
+                )
+                added_rec += 1
+
+        # 2. Store / Game Page button
+        store_button_label = "Steam Store" if details.get("is_steam") else "Game Page"
+        if len(details.get("url", "")) <= 512 and details.get("url"):
+            self.add_item(
+                discord.ui.Button(
+                    label=store_button_label[:80],
+                    url=details["url"],
+                    style=discord.ButtonStyle.link,
+                )
+            )
+
+        # 3. GOG button (user request: "add gog button shows gog info and links if no gog then button wont show")
+        if self.gog_details and self.gog_details.get("downloads"):
+            gog_btn = discord.ui.Button(
+                label="GOG Version",
+                style=discord.ButtonStyle.secondary,
+                emoji="💿",
+            )
+            gog_btn.callback = self.on_gog_click
+            self.add_item(gog_btn)
+
+    async def on_gog_click(self, interaction: discord.Interaction):
+        if not self.gog_details:
+            await interaction.response.send_message("No GOG release available for this game.", ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title=f"💿 {self.gog_details.get('title', 'Game')} (GOG / DRM-Free)",
+            url=self.gog_details.get("url"),
+            description="📦 Standalone DRM-free installer release from GOG.",
+            color=discord.Color.gold(),
+        )
+        if self.gog_details.get("cover"):
+            embed.set_thumbnail(url=self.gog_details["cover"])
+
+        embed.add_field(
+            name="ℹ️ Version",
+            value=f"`{self.gog_details.get('version', 'N/A')}`",
+            inline=True,
+        )
+        embed.add_field(
+            name="💾 File Size",
+            value=f"`{self.gog_details.get('size', 'Unknown')}`",
+            inline=True,
+        )
+        if self.gog_details.get("platforms"):
+            plats = [k.capitalize() for k, v in self.gog_details["platforms"].items() if v]
+            if plats:
+                embed.add_field(
+                    name="🖥️ Platforms",
+                    value=", ".join(plats),
+                    inline=True,
+                )
+
+        downloads = self.gog_details.get("downloads", [])
+        if downloads:
+            links_text = []
+            for d in downloads:
+                host = d.get("host", "Direct")
+                url = d.get("url", "")
+                is_rec = any(
+                    k in host.lower() or k in url.lower()
+                    for k in ["pixeldrain", "buzzheavier", "bzzhr", "projectsablinova", "pd-by", "pd-node"]
+                )
+                badge = " ⭐ *(Recommended)*" if is_rec else ""
+                links_text.append(f"• [{host}]({url}){badge}")
+
+            embed.add_field(
+                name="📥 GOG Download Mirrors",
+                value="\n".join(links_text)[:1000],
+                inline=False,
+            )
+        else:
+            embed.add_field(
+                name="📥 GOG Download Mirrors",
+                value="*No direct download links available.*",
+                inline=False,
+            )
+
+        embed.set_footer(text="DRM-Free Offline Installer")
+
+        sub_view = GogView(self.gog_details)
+        await interaction.response.send_message(embed=embed, view=sub_view, ephemeral=True)
+
     async def _send_game_card(
         self,
         ctx: commands.Context,
         details: Dict[str, Any],
         other_matches: Optional[List[str]] = None,
+        gog_details: Optional[Dict[str, Any]] = None,
     ):
         """Construct embed with field chunking, buttons, and send safely to Discord."""
         embed = discord.Embed(
@@ -1295,35 +1642,16 @@ class GameDL(commands.Cog):
         if details.get("banner"):
             embed.set_image(url=details["banner"])
 
+        footer_parts = [f"Requested by {ctx.author.display_name}"]
+        if gog_details and gog_details.get("downloads"):
+            footer_parts.append("💿 GOG version available! Click the GOG button below.")
         embed.set_footer(
-            text=f"Requested by {ctx.author.display_name}",
+            text=" • ".join(footer_parts),
             icon_url=ctx.author.display_avatar.url if ctx.author.display_avatar else None,
         )
 
-        # Interactive Link Buttons View (Discord allows max 5 buttons per row)
-        view = discord.ui.View()
-        for item in downloads[:4]:
-            host_label = item["host"][:18]
-            is_recommended = any(k in host_label.lower() or k in item["url"].lower() for k in ["buzzheavier", "bzzhr", "pixeldrain", "projectsablinova", "pd-by", "pd-node"])
-            btn_text = f"⭐ Download ({host_label})" if is_recommended else f"Download ({host_label})"
-            if len(item["url"]) <= 512:
-                view.add_item(
-                    discord.ui.Button(
-                        label=btn_text[:80],
-                        url=item["url"],
-                        style=discord.ButtonStyle.link,
-                    )
-                )
-
-        store_button_label = "Steam Store" if details.get("is_steam") else "Game Page"
-        if len(details["url"]) <= 512:
-            view.add_item(
-                discord.ui.Button(
-                    label=store_button_label[:80],
-                    url=details["url"],
-                    style=discord.ButtonStyle.link,
-                )
-            )
+        # Interactive Link Buttons View (only recommended downloads, store page, and GOG button)
+        view = GameDLMainView(downloads=downloads, details=details, gog_details=gog_details)
 
         # Sanitize embed field lengths
         for f_idx, field in enumerate(embed.fields):
@@ -1359,12 +1687,12 @@ class GameDL(commands.Cog):
     @commands.hybrid_command(
         name="gamedl",
         aliases=["gdl", "steamrip"],
-        description="Search for a PC game across SteamRIP, GameBounty, SteamUnderground, and WorldOfPCGames.",
+        description="Search for a PC game across supported direct sources.",
     )
     @app_commands.describe(game="The name of the game or numeric Steam AppID to search for")
     @commands.cooldown(1, 3.0, commands.BucketType.user)
     async def gamedl(self, ctx: commands.Context, *, game: str):
-        """Search for a PC game across SteamRIP, GameBounty, SteamUnderground, and WorldOfPCGames with merged direct mirrors.
+        """Search for a PC game across supported sources with merged direct mirrors.
 
         Example:
             [p]gamedl terraria
@@ -1379,17 +1707,19 @@ class GameDL(commands.Cog):
                 if steam_name:
                     clean_q = steam_name
 
-            # Concurrently search all 4 sources: SteamRIP, GameBounty, SteamUnderground, WorldOfPCGames
+            # Concurrently search all 5 sources
             sr_task = self._search_games(clean_q)
             gb_task = self._search_gamebounty(clean_q)
             su_task = self._search_steamunderground(clean_q)
             wp_task = self._search_worldofpcgames(clean_q)
+            gog_task = self._search_gog(clean_q)
             (
                 (sr_results, sr_err),
                 (gb_results, gb_err),
                 (su_results, su_err),
                 (wp_results, wp_err),
-            ) = await asyncio.gather(sr_task, gb_task, su_task, wp_task)
+                (gog_results, gog_err),
+            ) = await asyncio.gather(sr_task, gb_task, su_task, wp_task, gog_task)
 
             all_sources = {
                 "steamrip": sr_results,
@@ -1399,7 +1729,14 @@ class GameDL(commands.Cog):
             }
 
             if not any(all_sources.values()):
-                msg = f"No results found matching **{clean_q}** across SteamRIP, GameBounty, SteamUnderground, or WorldOfPCGames.\nTry searching with a shorter or alternative title."
+                if gog_results:
+                    gog_top = gog_results[0]
+                    gog_det = await self._extract_gog_details(gog_top["url"], meta=gog_top)
+                    if gog_det and gog_det.get("downloads"):
+                        await self._send_game_card(ctx, gog_det, other_matches=None, gog_details=None)
+                        return
+
+                msg = f"No results found matching **{clean_q}** across supported sources.\nTry searching with a shorter or alternative title."
                 embed = discord.Embed(
                     title="🔍 Game Not Found",
                     description=msg,
@@ -1431,10 +1768,26 @@ class GameDL(commands.Cog):
             if wp_results and _is_same_game(wp_results[0]["title"], best_top["title"]):
                 extract_tasks.append(self._extract_worldofpcgames_details(wp_results[0]["url"], meta=wp_results[0]))
 
-            extracted_list = await asyncio.gather(*extract_tasks)
+            # Check if GOG has a matching release for this game
+            gog_extract_task = None
+            if gog_results and _is_same_game(gog_results[0]["title"], best_top["title"]):
+                gog_extract_task = self._extract_gog_details(gog_results[0]["url"], meta=gog_results[0])
+
+            if gog_extract_task:
+                extracted_list, gog_details = await asyncio.gather(
+                    asyncio.gather(*extract_tasks),
+                    gog_extract_task,
+                )
+            else:
+                extracted_list = await asyncio.gather(*extract_tasks)
+                gog_details = None
+
             valid_details = [d for d in extracted_list if d]
 
             if not valid_details:
+                if gog_details and gog_details.get("downloads"):
+                    await self._send_game_card(ctx, gog_details, other_matches=None, gog_details=None)
+                    return
                 embed = discord.Embed(
                     title="❌ Failed to Load Game Details",
                     description=f"Found games matching **{clean_q}**, but could not retrieve download links.",
@@ -1490,4 +1843,4 @@ class GameDL(commands.Cog):
                     seen_other.add(c_title)
                     other_titles.append(f"• {c_title}")
 
-            await self._send_game_card(ctx, details, other_titles[:6])
+            await self._send_game_card(ctx, details, other_titles[:6], gog_details=gog_details)
