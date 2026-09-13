@@ -20,6 +20,17 @@ CUSTOM_EMOJI_RE = re.compile(r"<a?:\w+:\d+>")
 MENTION_RE = re.compile(r"<@!?[0-9]+>|<@&[0-9]+>|<#[0-9]+>")
 URL_RE = re.compile(r"https?://\S+")
 DISCORD_TIMESTAMP_RE = re.compile(r"<t:\d+(:[tTdDfFR])?>")
+BOT_CMD_RE = re.compile(r"^(?:-{1,2}(?![\s\d])|[!?/\$+~%^;>=,]{1,2}|\.(?!\.))[a-zA-Z_]")
+
+
+def is_substantially_identical(text1: str, text2: str) -> bool:
+    if not text1 or not text2:
+        return False
+    if text1.strip().lower() == text2.strip().lower():
+        return True
+    norm1 = re.sub(r"[\W_]+", "", text1.lower(), flags=re.UNICODE)
+    norm2 = re.sub(r"[\W_]+", "", text2.lower(), flags=re.UNICODE)
+    return norm1 == norm2
 
 LANGUAGES: Dict[str, str] = {
     "af": "Afrikaans", "sq": "Albanian", "am": "Amharic", "ar": "Arabic", "hy": "Armenian",
@@ -91,30 +102,50 @@ def clean_text_for_detection(text: str) -> str:
 
 
 def detect_script_heuristic(text: str) -> Optional[str]:
-    has_arabic = any("\u0600" <= ch <= "\u06FF" or "\u0750" <= ch <= "\u077F" for ch in text)
-    if has_arabic:
+    latin_count = sum(1 for ch in text if ("a" <= ch.lower() <= "z"))
+
+    def dominates(count: int, min_count: int = 2) -> bool:
+        if count < min_count:
+            return False
+        if latin_count == 0:
+            return True
+        return count >= (latin_count * 0.5)
+
+    arabic_count = sum(1 for ch in text if ("\u0621" <= ch <= "\u064A") or ("\u0750" <= ch <= "\u077F"))
+    if dominates(arabic_count):
         return "ar"
-    has_hangul = any("\uAC00" <= ch <= "\uD7AF" or "\u1100" <= ch <= "\u11FF" for ch in text)
-    if has_hangul:
+
+    hangul_count = sum(
+        1 for ch in text if ("\uAC00" <= ch <= "\uD7AF") or ("\u1100" <= ch <= "\u11FF") or ("\u3130" <= ch <= "\u318F")
+    )
+    if dominates(hangul_count):
         return "ko"
-    has_hiragana_katakana = any("\u3040" <= ch <= "\u30FF" for ch in text)
-    if has_hiragana_katakana:
+
+    # Hiragana (\u3041 to \u3096) and Katakana (\u30A1 to \u30FA). Excludes Katakana middle dot \u30FB and prolonged sound mark \u30FC
+    kana_count = sum(1 for ch in text if ("\u3041" <= ch <= "\u3096") or ("\u30A1" <= ch <= "\u30FA"))
+    if dominates(kana_count):
         return "ja"
-    has_cyrillic = any("\u0400" <= ch <= "\u04FF" for ch in text)
-    if has_cyrillic:
+
+    cyrillic_count = sum(1 for ch in text if ("\u0410" <= ch <= "\u044F") or ch in ("\u0401", "\u0451"))
+    if dominates(cyrillic_count):
         return "ru"
-    has_hebrew = any("\u0590" <= ch <= "\u05FF" for ch in text)
-    if has_hebrew:
+
+    hebrew_count = sum(1 for ch in text if "\u05D0" <= ch <= "\u05EA")
+    if dominates(hebrew_count):
         return "he"
-    has_devanagari = any("\u0900" <= ch <= "\u097F" for ch in text)
-    if has_devanagari:
+
+    devanagari_count = sum(1 for ch in text if "\u0904" <= ch <= "\u0939")
+    if dominates(devanagari_count):
         return "hi"
-    has_thai = any("\u0E00" <= ch <= "\u0E7F" for ch in text)
-    if has_thai:
+
+    thai_count = sum(1 for ch in text if "\u0E01" <= ch <= "\u0E3A")
+    if dominates(thai_count):
         return "th"
-    has_greek = any("\u0370" <= ch <= "\u03FF" for ch in text)
-    if has_greek:
+
+    greek_count = sum(1 for ch in text if ("\u0391" <= ch <= "\u03A9") or ("\u03B1" <= ch <= "\u03C9"))
+    if dominates(greek_count):
         return "el"
+
     return None
 
 
@@ -700,7 +731,7 @@ class SabbyTranslate(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        if message.author.bot or not message.guild or not message.content:
+        if message.author.bot or message.webhook_id or not message.guild or not message.content:
             return
 
         conf = await self.config.channel(message.channel).all()
@@ -710,6 +741,9 @@ class SabbyTranslate(commands.Cog):
         text = message.content.strip()
         prefixes = await self.bot.get_valid_prefixes(message.guild)
         if text.startswith(tuple(prefixes)):
+            return
+
+        if BOT_CMD_RE.match(text):
             return
 
         first_lang = conf.get("first_lang", "en")
@@ -756,7 +790,7 @@ class SabbyTranslate(commands.Cog):
                         send_name = LANGUAGES.get(sender_lang, sender_lang.upper())
                         translated = await self.translator.translate(text, target=recipient_lang, source=sender_lang)
 
-                        if translated.lower().strip() != text.lower().strip():
+                        if not is_substantially_identical(translated, text):
                             await message.reply(
                                 f"🌐 **[Translated {send_name} ➔ {recip_name} for {ref_msg.author.mention}]**:\n{translated}",
                                 mention_author=False,
@@ -782,7 +816,7 @@ class SabbyTranslate(commands.Cog):
 
         try:
             translated = await self.translator.translate(text, target=target_lang, source=detected_lang)
-            if translated.lower().strip() == text.lower().strip():
+            if is_substantially_identical(translated, text):
                 return
 
             src_name = LANGUAGES.get(detected_lang, detected_lang.upper())
