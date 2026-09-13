@@ -339,7 +339,7 @@ class BL4Signer:
             zip_buffer = tmpdir_path / "output.zip"
             with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
                 for file_path in output_files:
-                    zipf.write(file_path, file_path.name)
+                    zipf.write(file_path, f"Profiles/client/{file_path.name}")
 
             shutil.rmtree(output_base, ignore_errors=True)
 
