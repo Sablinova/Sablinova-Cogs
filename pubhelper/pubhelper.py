@@ -6098,12 +6098,11 @@ class SabPubHelper(commands.Cog):
         zip_filename = f"{game}_resigned.zip"
 
         await interaction.edit_original_response(content=success_msg)
-        file_sent = False
         try:
             await interaction.followup.send(
+                content=placement_txt,
                 file=discord.File(io.BytesIO(resign_result), filename=zip_filename)
             )
-            file_sent = True
         except discord.HTTPException as e:
             log.warning(
                 "Discord file upload failed (%s %s), falling back to AnonDrop",
@@ -6129,15 +6128,11 @@ class SabPubHelper(commands.Cog):
             )
             if anon_url:
                 await interaction.edit_original_response(content=success_msg)
-                await interaction.followup.send(f"📎 {anon_url}{_nitro_note}")
-                file_sent = True
+                await interaction.followup.send(f"{placement_txt}\n\n📎 {anon_url}{_nitro_note}")
             else:
                 await interaction.followup.send(
                     "❌ File was too large for Discord and AnonDrop upload also failed."
                 )
-
-        if file_sent:
-            await interaction.followup.send(placement_txt)
 
     async def _download_file(
         self,
