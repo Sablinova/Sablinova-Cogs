@@ -364,6 +364,9 @@ class SabbyTranslate(commands.Cog):
             second_lang="pt",
             reply_translate=True,
             prompt_new_users=True,
+            is_ticket=False,
+            ticket_initial_second_lang=None,
+            locked_second_lang=False,
         )
         self.config.register_user(
             preferred_language=None,
@@ -371,6 +374,66 @@ class SabbyTranslate(commands.Cog):
         self.translator = TranslationService()
         self._user_last_lang: Dict[int, str] = {}
         self._prompted_users: Set[int] = set()
+
+    def is_ticket_channel(self, channel: Optional[discord.abc.GuildChannel]) -> bool:
+        """
+        Heuristic and cog-based detection to identify whether a channel or thread is a support ticket.
+        """
+        if not channel:
+            return False
+
+        # 1. Check Tickets cog if loaded
+        try:
+            tickets_cog = self.bot.get_cog("Tickets")
+            if tickets_cog:
+                valid_list = getattr(tickets_cog, "valid", [])
+                cid = getattr(channel, "id", None)
+                if cid and cid in valid_list:
+                    return True
+
+                db = getattr(tickets_cog, "db", None)
+                if db and hasattr(db, "configs"):
+                    guild_id = getattr(getattr(channel, "guild", None), "id", None)
+                    if guild_id and guild_id in db.configs:
+                        opened = getattr(db.configs[guild_id], "opened", {})
+                        for _uid, tmap in opened.items():
+                            if cid in tmap or str(cid) in tmap:
+                                return True
+        except Exception as e:
+            log.debug(f"Error checking Tickets cog: {e}")
+
+        # 2. Check channel name heuristics
+        name = getattr(channel, "name", "") or ""
+        name_lower = name.lower()
+        if any(marker in name_lower for marker in ("🎫", "ticket", "[vys]")):
+            return True
+
+        if "|" in name_lower and any(sym in name_lower for sym in ("🎮", "🎫", "[", "ticket")):
+            return True
+
+        # 3. Check topic
+        topic = getattr(channel, "topic", "") or ""
+        if "ticket" in topic.lower():
+            return True
+
+        # 4. Check category heuristics
+        category = getattr(channel, "category", None)
+        if category:
+            cat_name = (getattr(category, "name", "") or "").lower()
+            if any(w in cat_name for w in ("ticket", "tickets", "support", "vys")):
+                return True
+            if any(w in cat_name for w in ("steam", "orders", "order")) and (
+                "|" in name_lower or any(sym in name_lower for sym in ("🎮", "🎫", "["))
+            ):
+                return True
+
+        # 5. Check thread parent if thread
+        if isinstance(channel, getattr(discord, "Thread", ())) or hasattr(channel, "parent"):
+            parent = getattr(channel, "parent", None)
+            if parent and self.is_ticket_channel(parent):
+                return True
+
+        return False
 
     async def language_autocomplete(
         self, interaction: discord.Interaction, current: str
@@ -543,7 +606,7 @@ class SabbyTranslate(commands.Cog):
     @app_commands.describe(
         action="Action to perform (start, stop, or status)",
         first_language="First language (e.g. English)",
-        second_language="Second language (e.g. Portuguese)",
+        second_language="Second language (e.g. Portuguese, Arabic)",
     )
     @app_commands.choices(
         action=[
@@ -560,8 +623,8 @@ class SabbyTranslate(commands.Cog):
         self,
         interaction: discord.Interaction,
         action: app_commands.Choice[str],
-        first_language: Optional[str] = "English",
-        second_language: Optional[str] = "Portuguese",
+        first_language: Optional[str] = None,
+        second_language: Optional[str] = None,
     ):
         channel = interaction.channel
         if not isinstance(channel, (discord.Thread, discord.TextChannel)):
@@ -570,16 +633,27 @@ class SabbyTranslate(commands.Cog):
             )
             return
 
+        is_ticket = self.is_ticket_channel(channel)
+        conf = await self.config.channel(channel).all()
+        is_already_active = conf.get("enabled", False)
+        ticket_initial_second = conf.get("ticket_initial_second_lang")
+
         action_val = str(getattr(action, "value", action)).strip().lower()
         if action_val == "stop":
-            await self.config.channel(channel).clear()
-            await interaction.response.send_message(
-                f"🛑 **Live translation deactivated** for {channel.mention}."
-            )
+            if is_ticket:
+                await self.config.channel(channel).enabled.set(False)
+                await interaction.response.send_message(
+                    f"🛑 **Live translation deactivated** for {channel.mention}.\n"
+                    f"*(Note: In ticket channels, the initial secondary language remains locked if resumed).*"
+                )
+            else:
+                await self.config.channel(channel).clear()
+                await interaction.response.send_message(
+                    f"🛑 **Live translation deactivated** for {channel.mention}."
+                )
             return
 
         if action_val == "status":
-            conf = await self.config.channel(channel).all()
             if not conf.get("enabled"):
                 await interaction.response.send_message(
                     f"ℹ️ Live translation is currently **disabled** in {channel.mention}.",
@@ -588,29 +662,85 @@ class SabbyTranslate(commands.Cog):
             else:
                 first_l = LANGUAGES.get(conf["first_lang"], conf["first_lang"].upper())
                 sec_l = LANGUAGES.get(conf["second_lang"], conf["second_lang"].upper())
+                ticket_badge = (
+                    "\n• **Ticket Mode:** `Locked (Secondary language cannot be changed)`"
+                    if conf.get("is_ticket", is_ticket)
+                    else ""
+                )
                 await interaction.response.send_message(
                     f"🟢 **Live Two-Way Translation Active in {channel.mention}**\n"
                     f"• **Language 1:** {first_l} (`{conf['first_lang']}`)\n"
                     f"• **Language 2:** {sec_l} (`{conf['second_lang']}`)\n"
                     f"• Messages sent in **{first_l}** auto-translate to **{sec_l}**.\n"
                     f"• Messages sent in **{sec_l}** auto-translate to **{first_l}**.\n"
-                    f"• Messages in any other language auto-translate to **{first_l}**.\n"
                     f"• **Smart Reply Translation:** `Enabled`"
+                    f"{ticket_badge}"
                 )
             return
 
-        norm1 = normalize_language(first_language or "English")
-        norm2 = normalize_language(second_language or "Portuguese")
-
-        if not norm1 or not norm2:
+        # If channel is a ticket and live translation is already active, reject changing secondary language
+        if is_ticket and is_already_active:
+            sec_code = conf.get("second_lang", "Unknown")
+            sec_name = LANGUAGES.get(sec_code, sec_code.title() if sec_code else "Unknown")
             await interaction.response.send_message(
-                "❌ One or both languages were not recognized. Please check language names.",
+                f"⚠️ **Live translation is already active in this ticket** for **English (en) ⇄ {sec_name} ({sec_code})**.\n"
+                f"In ticket channels, the secondary language is locked once activated and cannot be changed.",
                 ephemeral=True,
             )
             return
 
-        code1, name1 = norm1
-        code2, name2 = norm2
+        # Resolve languages
+        if is_ticket:
+            # In ticket channels, first language is ALWAYS English ('en')
+            # Second language is the one chosen first
+            if ticket_initial_second:
+                if first_language or second_language:
+                    check_input = second_language or first_language
+                    norm_check = normalize_language(check_input)
+                    if norm_check and norm_check[0] != ticket_initial_second and norm_check[0] != "en":
+                        orig_name = LANGUAGES.get(ticket_initial_second, ticket_initial_second.title())
+                        await interaction.response.send_message(
+                            f"❌ In this ticket channel, the secondary language was already chosen as **{orig_name}** (`{ticket_initial_second}`). "
+                            f"The secondary language cannot be changed in a ticket.",
+                            ephemeral=True,
+                        )
+                        return
+                code1, name1 = "en", "English"
+                code2 = ticket_initial_second
+                name2 = LANGUAGES.get(code2, code2.title())
+            else:
+                raw_prim = first_language
+                raw_sec = second_language
+                norm_p = normalize_language(raw_prim) if raw_prim else None
+                norm_s = normalize_language(raw_sec) if raw_sec else None
+
+                foreign_norm = None
+                if norm_p and norm_p[0] != "en":
+                    foreign_norm = norm_p
+                elif norm_s and norm_s[0] != "en":
+                    foreign_norm = norm_s
+                elif norm_s:
+                    foreign_norm = norm_s
+                elif norm_p:
+                    foreign_norm = norm_p
+                else:
+                    foreign_norm = ("pt", "Portuguese")
+
+                code1, name1 = "en", "English"
+                code2, name2 = foreign_norm
+        else:
+            norm1 = normalize_language(first_language or "English")
+            norm2 = normalize_language(second_language or "Portuguese")
+
+            if not norm1 or not norm2:
+                await interaction.response.send_message(
+                    "❌ One or both languages were not recognized. Please check language names.",
+                    ephemeral=True,
+                )
+                return
+
+            code1, name1 = norm1
+            code2, name2 = norm2
 
         if code1 == code2:
             await interaction.response.send_message(
@@ -618,14 +748,25 @@ class SabbyTranslate(commands.Cog):
             )
             return
 
-        await self.config.channel(channel).set({
+        channel_data = {
             "enabled": True,
             "first_lang": code1,
             "second_lang": code2,
             "reply_translate": True,
-            "prompt_new_users": True,
-        })
+            "prompt_new_users": False if is_ticket else True,
+            "is_ticket": is_ticket,
+        }
+        if is_ticket:
+            channel_data["ticket_initial_second_lang"] = code2
+            channel_data["locked_second_lang"] = True
 
+        await self.config.channel(channel).set(channel_data)
+
+        ticket_notice = (
+            "\n\n*(Ticket Mode Active: First language is English, and secondary language is locked for this ticket)*"
+            if is_ticket
+            else ""
+        )
         embed = discord.Embed(
             title="🌐 Live Two-Way Translation Activated",
             description=(
@@ -633,8 +774,8 @@ class SabbyTranslate(commands.Cog):
                 f"🔀 **{name1} ({code1}) ⇄ {name2} ({code2})**\n\n"
                 f"• Messages in **{name1}** will auto-translate to **{name2}**.\n"
                 f"• Messages in **{name2}** will auto-translate to **{name1}**.\n"
-                f"• Messages in any other language will auto-translate to **{name1}**.\n"
-                f"• **Smart Reply Translation**: Replies to foreign users auto-translate back into their language.\n\n"
+                f"• **Smart Reply Translation**: Replies to foreign users auto-translate back into their language."
+                f"{ticket_notice}\n\n"
                 f"To turn off, run `/livetranslate action:Stop`."
             ),
             color=discord.Color.blue(),
@@ -729,6 +870,157 @@ class SabbyTranslate(commands.Cog):
                     )
                     await asyncio.sleep(0.3)
 
+    @commands.command(name="livetranslate")
+    @commands.guild_only()
+    async def prefix_livetranslate(
+        self,
+        ctx: commands.Context,
+        action: str = "status",
+        first_or_second_lang: Optional[str] = None,
+        second_lang_opt: Optional[str] = None,
+    ):
+        """
+        Configure two-way live translation via prefix command.
+        Usage:
+        [p]livetranslate start <second_language>
+        [p]livetranslate start <first_language> <second_language>
+        [p]livetranslate stop
+        [p]livetranslate status
+        """
+        channel = ctx.channel
+        action_val = action.strip().lower()
+
+        is_ticket = self.is_ticket_channel(channel)
+        conf = await self.config.channel(channel).all()
+        is_already_active = conf.get("enabled", False)
+        ticket_initial_second = conf.get("ticket_initial_second_lang")
+
+        if action_val == "stop":
+            if is_ticket:
+                await self.config.channel(channel).enabled.set(False)
+                await ctx.send(
+                    f"🛑 **Live translation deactivated** for {channel.mention}.\n"
+                    f"*(Note: In ticket channels, the initial secondary language remains locked if resumed).*"
+                )
+            else:
+                await self.config.channel(channel).clear()
+                await ctx.send(f"🛑 **Live translation deactivated** for {channel.mention}.")
+            return
+
+        if action_val == "status":
+            if not conf.get("enabled"):
+                await ctx.send(f"ℹ️ Live translation is currently **disabled** in {channel.mention}.")
+            else:
+                first_l = LANGUAGES.get(conf["first_lang"], conf["first_lang"].upper())
+                sec_l = LANGUAGES.get(conf["second_lang"], conf["second_lang"].upper())
+                ticket_badge = (
+                    "\n• **Ticket Mode:** `Locked (Secondary language cannot be changed)`"
+                    if conf.get("is_ticket", is_ticket)
+                    else ""
+                )
+                await ctx.send(
+                    f"🟢 **Live Two-Way Translation Active in {channel.mention}**\n"
+                    f"• **Language 1:** {first_l} (`{conf['first_lang']}`)\n"
+                    f"• **Language 2:** {sec_l} (`{conf['second_lang']}`)\n"
+                    f"• Messages sent in **{first_l}** auto-translate to **{sec_l}**.\n"
+                    f"• Messages sent in **{sec_l}** auto-translate to **{first_l}**.\n"
+                    f"• **Smart Reply Translation:** `Enabled`"
+                    f"{ticket_badge}"
+                )
+            return
+
+        if action_val != "start":
+            await ctx.send("❌ Invalid action. Use `start`, `stop`, or `status`.")
+            return
+
+        if is_ticket and is_already_active:
+            sec_code = conf.get("second_lang", "Unknown")
+            sec_name = LANGUAGES.get(sec_code, sec_code.title() if sec_code else "Unknown")
+            await ctx.send(
+                f"⚠️ **Live translation is already active in this ticket** for **English (en) ⇄ {sec_name} ({sec_code})**.\n"
+                f"In ticket channels, the secondary language is locked once activated and cannot be changed."
+            )
+            return
+
+        # Resolve languages
+        if is_ticket:
+            if ticket_initial_second:
+                if first_or_second_lang or second_lang_opt:
+                    check_input = second_lang_opt or first_or_second_lang
+                    norm_check = normalize_language(check_input)
+                    if norm_check and norm_check[0] != ticket_initial_second and norm_check[0] != "en":
+                        orig_name = LANGUAGES.get(ticket_initial_second, ticket_initial_second.title())
+                        await ctx.send(
+                            f"❌ In this ticket channel, the secondary language was already chosen as **{orig_name}** (`{ticket_initial_second}`). "
+                            f"The secondary language cannot be changed in a ticket."
+                        )
+                        return
+                code1, name1 = "en", "English"
+                code2 = ticket_initial_second
+                name2 = LANGUAGES.get(code2, code2.title())
+            else:
+                raw_prim = first_or_second_lang
+                raw_sec = second_lang_opt
+                norm_p = normalize_language(raw_prim) if raw_prim else None
+                norm_s = normalize_language(raw_sec) if raw_sec else None
+
+                foreign_norm = None
+                if norm_p and norm_p[0] != "en":
+                    foreign_norm = norm_p
+                elif norm_s and norm_s[0] != "en":
+                    foreign_norm = norm_s
+                elif norm_p:
+                    foreign_norm = norm_p
+                elif norm_s:
+                    foreign_norm = norm_s
+
+                if not foreign_norm:
+                    await ctx.send("❌ Please specify the user's foreign language (e.g. `[p]livetranslate start Arabic`).")
+                    return
+
+                code1, name1 = "en", "English"
+                code2, name2 = foreign_norm
+        else:
+            if first_or_second_lang and second_lang_opt:
+                norm1 = normalize_language(first_or_second_lang)
+                norm2 = normalize_language(second_lang_opt)
+            elif first_or_second_lang:
+                norm1 = normalize_language("English")
+                norm2 = normalize_language(first_or_second_lang)
+            else:
+                norm1 = normalize_language("English")
+                norm2 = normalize_language("Portuguese")
+
+            if not norm1 or not norm2:
+                await ctx.send("❌ One or both languages were not recognized.")
+                return
+            code1, name1 = norm1
+            code2, name2 = norm2
+
+        if code1 == code2:
+            await ctx.send("⚠️ First and second languages cannot be the same.")
+            return
+
+        channel_data = {
+            "enabled": True,
+            "first_lang": code1,
+            "second_lang": code2,
+            "reply_translate": True,
+            "prompt_new_users": False if is_ticket else True,
+            "is_ticket": is_ticket,
+        }
+        if is_ticket:
+            channel_data["ticket_initial_second_lang"] = code2
+            channel_data["locked_second_lang"] = True
+
+        await self.config.channel(channel).set(channel_data)
+
+        ticket_note = "\n*(Ticket mode: secondary language is locked to initial choice)*" if is_ticket else ""
+        await ctx.send(
+            f"✅ **Live Two-Way Translation Activated** in {channel.mention}!\n"
+            f"🔀 **{name1} ({code1}) ⇄ {name2} ({code2})**{ticket_note}"
+        )
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot or message.webhook_id or not message.guild or not message.content:
@@ -750,13 +1042,15 @@ class SabbyTranslate(commands.Cog):
         second_lang = conf.get("second_lang", "pt")
         reply_enabled = conf.get("reply_translate", True)
         prompt_enabled = conf.get("prompt_new_users", True)
+        is_ticket = conf.get("is_ticket", False) or self.is_ticket_channel(message.channel)
 
         # 1. Check & prompt unregistered foreign speakers
         detected_lang = detect_language(text)
         if detected_lang:
             self._user_last_lang[message.author.id] = detected_lang
 
-            if prompt_enabled and message.author.id not in self._prompted_users:
+            # In ticket channels, NEVER prompt users to set language
+            if not is_ticket and prompt_enabled and message.author.id not in self._prompted_users:
                 user_pref = await self.config.user(message.author).preferred_language()
                 if not user_pref and detected_lang not in (first_lang, second_lang):
                     self._prompted_users.add(message.author.id)
@@ -776,14 +1070,25 @@ class SabbyTranslate(commands.Cog):
                 ref_msg = message.reference.resolved or await message.channel.fetch_message(
                     message.reference.message_id
                 )
-                if ref_msg and isinstance(ref_msg, discord.Message) and not ref_msg.author.bot and ref_msg.author.id != message.author.id:
+                if (
+                    ref_msg
+                    and isinstance(ref_msg, discord.Message)
+                    and not ref_msg.author.bot
+                    and ref_msg.author.id != message.author.id
+                ):
                     user_pref = await self.config.user(ref_msg.author).preferred_language()
                     recipient_lang = user_pref or self._user_last_lang.get(ref_msg.author.id)
 
                     if not recipient_lang and ref_msg.content:
                         recipient_lang = detect_language(ref_msg.content)
 
+                    # In ticket channels, reply translation strictly respects ticket languages
+                    if is_ticket and recipient_lang not in (first_lang, second_lang):
+                        recipient_lang = None
+
                     sender_lang = detected_lang or first_lang
+                    if is_ticket and sender_lang not in (first_lang, second_lang):
+                        sender_lang = first_lang
 
                     if recipient_lang and recipient_lang != sender_lang:
                         recip_name = LANGUAGES.get(recipient_lang, recipient_lang.upper())
@@ -803,13 +1108,23 @@ class SabbyTranslate(commands.Cog):
         if not detected_lang:
             return
 
+        # Dialect compatibility (e.g. Darija 'ary' and Arabic 'ar')
+        is_ar_variant = (
+            (second_lang in ("ar", "ary") and detected_lang in ("ar", "ary"))
+            or (first_lang in ("ar", "ary") and detected_lang in ("ar", "ary"))
+        )
+
         if detected_lang == first_lang:
             target_lang = second_lang
-        elif detected_lang == second_lang:
+        elif detected_lang == second_lang or (is_ar_variant and detected_lang != first_lang):
+            target_lang = first_lang
+        elif not is_ticket:
+            # For general channels only: any other language translates to first_lang
             target_lang = first_lang
         else:
-            # Any other language translates to first_lang
-            target_lang = first_lang
+            # In ticket channels: STRICTLY two-way between first_lang and second_lang.
+            # Do NOT translate unrelated third languages or false-positive detections.
+            return
 
         if not target_lang or target_lang == detected_lang:
             return
