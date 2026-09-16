@@ -224,13 +224,23 @@ def get_dlc_appids_from_steamcmd(appid: int) -> list:
     except Exception:
         return []
 
+def _is_valid_app_page(appid: int, soup: BeautifulSoup, final_url: str) -> bool:
+    """Detects Steam maintenance/interstitial/redirect pages so they don't get
+    misread as a real 'no denuvo' result."""
+    if f"/app/{appid}" not in final_url:
+        return False
+    if not soup.select_one("div.apphub_AppName"):
+        return False
+    return True
+
 
 def check_denuvo_api(data: dict) -> bool:
     return "denuvo" in data.get("drm_notice", "").lower()
 
 
 def check_denuvo_scrape(appid: int) -> Optional[bool]:
-    """Returns True/False if the scrape succeeded, None if the request itself failed."""
+    """Returns True/False if the scrape succeeded, None if the page load failed
+    or looked like a maintenance/interstitial page rather than a real app page."""
     try:
         r = requests.get(
             f"https://store.steampowered.com/app/{appid}/",
@@ -238,7 +248,10 @@ def check_denuvo_scrape(appid: int) -> Optional[bool]:
             cookies={"birthtime": "0", "mature_content": "1"},
             timeout=10
         )
+        r.raise_for_status()
         soup = BeautifulSoup(r.text, "html.parser")
+        if not _is_valid_app_page(appid, soup, str(r.url)):
+            return None
         return "denuvo" in soup.get_text().lower()
     except Exception:
         return None
@@ -607,6 +620,8 @@ class DenuvoWatch(commands.Cog):
         self._name_cache_ts: float = 0.0
         self._name_cache_ttl: float = 30.0
 
+        self._pending_denuvo_confirms: dict[str, asyncio.Task] = {}
+
     # ── lifecycle ────────────────────────────────────────────────────────
     async def cog_load(self):
         self._startup_task = asyncio.create_task(self._startup_sequence())
@@ -616,7 +631,8 @@ class DenuvoWatch(commands.Cog):
             self._startup_task.cancel()
         if self.check_games_loop.is_running():
             self.check_games_loop.cancel()
-        # Cleanly close the web session
+        for task in self._pending_denuvo_confirms.values():
+            task.cancel()
         asyncio.create_task(self.session.close())
 
     async def _startup_sequence(self):
@@ -669,6 +685,50 @@ class DenuvoWatch(commands.Cog):
             return f"<@{user_id}>"
         return ""
 
+    async def _confirm_denuvo_change(self, appid_str: str, expected_new_value: bool):
+        try:
+            await asyncio.sleep(120)
+            appid = int(appid_str)
+
+            recheck = await asyncio.to_thread(get_game_snapshot, appid)
+            if recheck is None:
+                return
+
+            games = await self._load_games()
+            current = games.get(appid_str)
+            if current is None:
+                return
+
+            if recheck["denuvo"] != expected_new_value:
+                print(f"[DenuvoWatch] {current.get('name', appid_str)}: denuvo change did not persist, ignoring.")
+                return
+
+            old_denuvo = current.get("denuvo")
+            if old_denuvo == expected_new_value:
+                return
+
+            channel_id = await self.config.notify_channel_id()
+            channel = self.bot.get_channel(channel_id) if channel_id else None
+            old_snapshot = dict(current)
+            new_snapshot = dict(current)
+            new_snapshot["denuvo"] = expected_new_value
+            new_snapshot["name"] = recheck["name"]
+            new_snapshot["header"] = recheck.get("header")
+
+            if channel is not None:
+                change_type = "denuvo_removed" if (old_denuvo and not expected_new_value) else "denuvo_added"
+                await channel.send(embed=build_denuvo_embed(appid, change_type, old_snapshot, new_snapshot))
+
+            games[appid_str]["denuvo"] = expected_new_value
+            await self._save_games(games)
+            print(f"[DenuvoWatch] {recheck['name']}: denuvo change confirmed -> {expected_new_value}")
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"[DenuvoWatch][ERROR] confirm task for {appid_str} crashed: {e}")
+        finally:
+            self._pending_denuvo_confirms.pop(appid_str, None)
+
     # ── background check ─────────────────────────────────────────────────
     async def check_games_internal(self, full_refresh: bool = False) -> bool:
         changes = False
@@ -710,13 +770,15 @@ class DenuvoWatch(commands.Cog):
                 old = games[appid_str]
                 appid = int(appid_str)
 
-                # Denuvo change
-                if old.get("denuvo") and not new["denuvo"]:
-                    await channel.send(embed=build_denuvo_embed(appid, "denuvo_removed", old, new))
-                    changes = True
-                elif not old.get("denuvo") and new["denuvo"]:
-                    await channel.send(embed=build_denuvo_embed(appid, "denuvo_added", old, new))
-                    changes = True
+                # Denuvo change — don't notify immediately, confirm with a
+                # targeted re-check in 2 minutes to filter out flakiness/outages
+                if appid_str in self._pending_denuvo_confirms:
+                    pass
+                elif old.get("denuvo") != new["denuvo"]:
+                    task = asyncio.create_task(self._confirm_denuvo_change(appid_str, new["denuvo"]))
+                    self._pending_denuvo_confirms[appid_str] = task
+                    print(f"[DenuvoWatch] {new['name']}: possible denuvo change "
+                          f"({old.get('denuvo')} -> {new['denuvo']}), confirming in 2 min…")
 
                 # Release notification
                 if old.get("coming_soon") and not new.get("coming_soon"):
@@ -771,8 +833,9 @@ class DenuvoWatch(commands.Cog):
 
                 update_fields = {
                     "name": new["name"],
-                    "denuvo": new["denuvo"],
                 }
+                if appid_str not in self._pending_denuvo_confirms:
+                    update_fields["denuvo"] = new["denuvo"]
                 if build_actually_changed or not old_build:
                     update_fields["build_id"] = new["build_id"]
                     update_fields["build_time"] = new.get("build_time")
