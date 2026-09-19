@@ -520,8 +520,24 @@ def _detect_platform(url: str) -> str:
     try:
         hostname = urlparse(url).hostname or ""
         hostname = hostname.lower().removeprefix("www.").removeprefix("m.")
+        if (
+            hostname == "facebook.com"
+            or hostname.endswith(".facebook.com")
+            or hostname in ("fb.watch", "fb.com")
+            or hostname.endswith(".fb.watch")
+            or hostname.endswith(".fb.com")
+        ):
+            return "Facebook"
+        if (
+            hostname == "instagram.com"
+            or hostname.endswith(".instagram.com")
+            or hostname == "instagr.am"
+            or hostname.endswith(".instagr.am")
+        ):
+            return "Instagram"
         platform_map = {
             "instagram.com": "Instagram",
+            "instagr.am": "Instagram",
             "twitter.com": "Twitter/X",
             "x.com": "Twitter/X",
             "tiktok.com": "TikTok",
@@ -531,6 +547,7 @@ def _detect_platform(url: str) -> str:
             "v.redd.it": "Reddit",
             "facebook.com": "Facebook",
             "fb.watch": "Facebook",
+            "fb.com": "Facebook",
             "twitch.tv": "Twitch",
             "vimeo.com": "Vimeo",
             "soundcloud.com": "SoundCloud",
@@ -2717,21 +2734,6 @@ class SabDownloader(commands.Cog):
             uploaded_files.append(filepath)
             total_compressed_size += file_size
 
-        # Build the user-facing embed
-        total_size_str = _human_size(total_original_size)
-
-        result_embed = discord.Embed(color=discord.Color.blurple())
-        result_embed.set_author(
-            name=ctx.author.display_name,
-            icon_url=ctx.author.display_avatar.url,
-        )
-        if len(uploaded_files) > 1:
-            result_embed.set_footer(
-                text=f"{platform} | {len(uploaded_files)} items | {total_size_str}"
-            )
-        else:
-            result_embed.set_footer(text=f"{platform} | {total_size_str}")
-
         # Pre-process files: compress videos if too large, or fallback to AnonDrop
         ready_files = []
         for fp in uploaded_files:
@@ -2805,6 +2807,32 @@ class SabDownloader(commands.Cog):
         if current_batch:
             batches.append(current_batch)
 
+        # Determine whether to send in an embed:
+        # Only Facebook and Instagram photo uploads are sent in an embed.
+        # All other uploads (videos, audio, or non-FB/IG media) are sent directly
+        # without an embed so Discord displays full-width standalone media players.
+        use_embed = (
+            platform in ("Facebook", "Instagram")
+            and bool(ready_files)
+            and all(self._is_image(fp) for fp in ready_files)
+        )
+
+        result_embed = None
+        if use_embed:
+            total_size_str = _human_size(total_original_size)
+            result_embed = discord.Embed(color=discord.Color.blurple())
+            result_embed.set_author(
+                name=ctx.author.display_name,
+                icon_url=ctx.author.display_avatar.url,
+            )
+            item_count = len(ready_files)
+            if item_count > 1:
+                result_embed.set_footer(
+                    text=f"{platform} | {item_count} items | {total_size_str}"
+                )
+            else:
+                result_embed.set_footer(text=f"{platform} | {total_size_str}")
+
         successfully_uploaded = []
         for i, batch in enumerate(batches):
             discord_files = [
@@ -2813,17 +2841,18 @@ class SabDownloader(commands.Cog):
             ]
             try:
                 if i == 0:
-                    if len(batches) > 1:
-                        result_embed.title = f"Media (1/{len(batches)})"
-                    await ctx.send(embed=result_embed, files=discord_files)
+                    if use_embed and result_embed:
+                        if len(batches) > 1:
+                            result_embed.title = f"Media (1/{len(batches)})"
+                        await ctx.send(embed=result_embed, files=discord_files)
+                    else:
+                        await ctx.send(files=discord_files)
                 else:
-                    batch_embed = None
-                    if len(batches) > 1:
+                    if use_embed and len(batches) > 1:
                         batch_embed = discord.Embed(
                             title=f"Media ({i + 1}/{len(batches)})",
                             color=discord.Color.blurple(),
                         )
-                    if batch_embed:
                         await ctx.send(embed=batch_embed, files=discord_files)
                     else:
                         await ctx.send(files=discord_files)
@@ -2839,7 +2868,7 @@ class SabDownloader(commands.Cog):
                         single_file = discord.File(
                             fp, filename=_sanitize_discord_filename(fp)
                         )
-                        if not successfully_uploaded:
+                        if use_embed and result_embed and not successfully_uploaded:
                             await ctx.send(embed=result_embed, files=[single_file])
                         else:
                             await ctx.send(files=[single_file])
