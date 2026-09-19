@@ -2725,74 +2725,47 @@ class SabDownloader(commands.Cog):
             name=ctx.author.display_name,
             icon_url=ctx.author.display_avatar.url,
         )
-        result_embed.set_footer(text=f"{platform} | {total_size_str}")
+        if len(uploaded_files) > 1:
+            result_embed.set_footer(
+                text=f"{platform} | {len(uploaded_files)} items | {total_size_str}"
+            )
+        else:
+            result_embed.set_footer(text=f"{platform} | {total_size_str}")
 
-        # Upload to Discord - try direct upload first, compress on 413
-        successfully_uploaded = []
+        # Pre-process files: compress videos if too large, or fallback to AnonDrop
+        ready_files = []
         for fp in uploaded_files:
-            file_to_upload = fp
             file_size = os.path.getsize(fp)
             fname = os.path.basename(fp)
+            is_too_large = file_size > filesize_limit
 
-            try:
-                discord_file = discord.File(
-                    file_to_upload, filename=_sanitize_discord_filename(file_to_upload)
+            if is_too_large and self._is_video(fp):
+                log.info(
+                    "File %s too large for Discord, attempting compression", fname
                 )
-                # First file gets the embed
-                if not successfully_uploaded:
-                    await ctx.send(embed=result_embed, files=[discord_file])
-                else:
-                    await ctx.send(files=[discord_file])
-                successfully_uploaded.append(file_to_upload)
+                tracker.stage = "Compressing"
+                tracker.percent = 0
 
-            except discord.HTTPException as e:
-                # Check if it's a file size error (413 or error code 40005)
-                is_too_large = e.status == 413 or e.code == 40005
+                compressed_path = fp + ".compressed.mp4"
+                target_size = 24 * 1024 * 1024
+                success = await _ffmpeg_compress(
+                    input_path=fp,
+                    output_path=compressed_path,
+                    target_size_bytes=target_size,
+                    progress_tracker=tracker,
+                )
 
-                if is_too_large and self._is_video(fp):
-                    # Try compressing the video
-                    log.info(
-                        "File %s too large for Discord, attempting compression", fname
-                    )
-                    tracker.stage = "Compressing"
-                    tracker.percent = 0
+                if success and os.path.isfile(compressed_path):
+                    compressed_size = os.path.getsize(compressed_path)
+                    if compressed_size <= filesize_limit:
+                        ready_files.append(compressed_path)
+                        total_compressed_size = (
+                            total_compressed_size - file_size + compressed_size
+                        )
+                        compression_used = True
+                        continue
 
-                    compressed_path = fp + ".compressed.mp4"
-                    # Use a conservative target - Discord's actual limit for this guild
-                    # Since we don't know the real limit, target 25MB (safe for all tiers)
-                    # but the compressed file might still work if server has higher tier
-                    target_size = 24 * 1024 * 1024  # 24MB to be safe
-
-                    success = await _ffmpeg_compress(
-                        input_path=fp,
-                        output_path=compressed_path,
-                        target_size_bytes=target_size,
-                        progress_tracker=tracker,
-                    )
-
-                    if success and os.path.isfile(compressed_path):
-                        compressed_size = os.path.getsize(compressed_path)
-                        try:
-                            discord_file = discord.File(
-                                compressed_path,
-                                filename=_sanitize_discord_filename(compressed_path),
-                            )
-                            if not successfully_uploaded:
-                                await ctx.send(embed=result_embed, files=[discord_file])
-                            else:
-                                await ctx.send(files=[discord_file])
-                            successfully_uploaded.append(compressed_path)
-                            total_compressed_size = (
-                                total_compressed_size - file_size + compressed_size
-                            )
-                            compression_used = True
-                            continue
-                        except discord.HTTPException as e2:
-                            log.warning(
-                                "Compressed file still rejected by Discord: %s", e2
-                            )
-
-                # Compression failed or not a video - try AnonDrop
+            if is_too_large:
                 if anondrop_enabled:
                     log.info("Falling back to AnonDrop for %s", fname)
                     link = await _anondrop_upload(
@@ -2808,8 +2781,75 @@ class SabDownloader(commands.Cog):
                     log.warning(
                         "File %s too large and AnonDrop disabled, skipping", fname
                     )
+            else:
+                ready_files.append(fp)
 
-        # Post AnonDrop links — send as plain text so Discord auto-embeds
+        # Batch files up to 10 per message (Discord's attachment limit) for native grid layout
+        batches = []
+        current_batch = []
+        current_batch_size = 0
+        safety_payload_limit = max(10 * 1024 * 1024, filesize_limit - (512 * 1024))
+
+        for fp in ready_files:
+            fsize = os.path.getsize(fp)
+            if current_batch and (
+                len(current_batch) >= 10
+                or (current_batch_size + fsize) > safety_payload_limit
+            ):
+                batches.append(current_batch)
+                current_batch = []
+                current_batch_size = 0
+            current_batch.append(fp)
+            current_batch_size += fsize
+
+        if current_batch:
+            batches.append(current_batch)
+
+        successfully_uploaded = []
+        for i, batch in enumerate(batches):
+            discord_files = [
+                discord.File(fp, filename=_sanitize_discord_filename(fp))
+                for fp in batch
+            ]
+            try:
+                if i == 0:
+                    if len(batches) > 1:
+                        result_embed.title = f"Media (1/{len(batches)})"
+                    await ctx.send(embed=result_embed, files=discord_files)
+                else:
+                    batch_embed = None
+                    if len(batches) > 1:
+                        batch_embed = discord.Embed(
+                            title=f"Media ({i + 1}/{len(batches)})",
+                            color=discord.Color.blurple(),
+                        )
+                    if batch_embed:
+                        await ctx.send(embed=batch_embed, files=discord_files)
+                    else:
+                        await ctx.send(files=discord_files)
+                successfully_uploaded.extend(batch)
+            except discord.HTTPException as e:
+                log.warning(
+                    "Batch upload failed (items=%s): %s, attempting individual uploads",
+                    len(batch),
+                    e,
+                )
+                for fp in batch:
+                    try:
+                        single_file = discord.File(
+                            fp, filename=_sanitize_discord_filename(fp)
+                        )
+                        if not successfully_uploaded:
+                            await ctx.send(embed=result_embed, files=[single_file])
+                        else:
+                            await ctx.send(files=[single_file])
+                        successfully_uploaded.append(fp)
+                    except Exception as single_err:
+                        log.error(
+                            "Single file upload error for %s: %s", fp, single_err
+                        )
+
+        # Post AnonDrop links: send as plain text so Discord auto-embeds
         # the video player from AnonDrop's og:video meta tags
         if anondrop_links:
             links_text = "\n".join(anondrop_links)
