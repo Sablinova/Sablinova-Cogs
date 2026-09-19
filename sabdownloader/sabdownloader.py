@@ -2566,6 +2566,7 @@ class SabDownloader(commands.Cog):
         platform: str,
         guild_config: dict,
         hd_mode: bool = False,
+        done_event: Optional[asyncio.Event] = None,
     ) -> None:
         """Handle uploading files to Discord (with compression/anondrop fallback).
 
@@ -2632,9 +2633,18 @@ class SabDownloader(commands.Cog):
                 except (discord.Forbidden, discord.HTTPException, discord.NotFound):
                     pass
 
+            if done_event:
+                done_event.set()
+
             # Delete status message
             try:
-                await status_msg.delete()
+                if ctx.interaction:
+                    try:
+                        await ctx.interaction.delete_original_response()
+                    except Exception:
+                        await status_msg.delete()
+                else:
+                    await status_msg.delete()
             except (discord.Forbidden, discord.HTTPException, discord.NotFound):
                 pass
 
@@ -2891,9 +2901,18 @@ class SabDownloader(commands.Cog):
             except (discord.Forbidden, discord.HTTPException, discord.NotFound):
                 pass
 
+        if done_event:
+            done_event.set()
+
         # Delete status message
         try:
-            await status_msg.delete()
+            if ctx.interaction:
+                try:
+                    await ctx.interaction.delete_original_response()
+                except Exception:
+                    await status_msg.delete()
+            else:
+                await status_msg.delete()
         except (discord.Forbidden, discord.HTTPException, discord.NotFound):
             pass
 
@@ -3561,9 +3580,11 @@ class SabDownloader(commands.Cog):
                     platform=platform,
                     guild_config=guild_config,
                     hd_mode=hd_mode,
+                    done_event=done_event,
                 )
                 done_event.set()
-                await progress_task
+                if not progress_task.done():
+                    await progress_task
 
         except ValueError as e:
             # Duration exceeded
