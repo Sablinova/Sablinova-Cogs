@@ -1,7 +1,7 @@
 import asyncio
 import re
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Literal
 
 import io
 import discord
@@ -365,47 +365,48 @@ def normalize_game_name(name: str) -> str:
     name = name.lower()
     return name
 
-async def resolve_best_game_match(query: str) -> Optional[int]:
-    """Search Steam and return the AppID of the best-matching actual game (filters DLC/tools/editors)."""
+async def resolve_best_game_match(query: str, app_type: str = "game") -> Optional[int]:
+    """Search Steam and return the AppID of the best-matching item of the given
+    Steam store type ('game', 'dlc', 'demo', 'application', 'video', 'music', 'hardware')."""
     raw_candidates = await asyncio.to_thread(search_steam, query)
     raw_candidates = raw_candidates[:10]
     if not raw_candidates:
         return None
 
-    game_candidates = []
+    matched_candidates = []
     for c in raw_candidates:
         details = await asyncio.to_thread(fetch_app_details, c["appid"])
-        if details.get("type") == "game":
-            game_candidates.append(c)
-        if len(game_candidates) >= 5:
+        if details.get("type") == app_type:
+            matched_candidates.append(c)
+        if len(matched_candidates) >= 5:
             break
 
-    if not game_candidates:
+    if not matched_candidates:
         return None
 
     query_norm = normalize_game_name(query)
 
-    exact = [c for c in game_candidates if normalize_game_name(c["name"]) == query_norm]
+    exact = [c for c in matched_candidates if normalize_game_name(c["name"]) == query_norm]
     if exact:
         return exact[0]["appid"]
 
-    starts = [c for c in game_candidates if normalize_game_name(c["name"]).startswith(query_norm)]
+    starts = [c for c in matched_candidates if normalize_game_name(c["name"]).startswith(query_norm)]
     if starts:
         return starts[0]["appid"]
 
-    starts_rev = [c for c in game_candidates if query_norm.startswith(normalize_game_name(c["name"]))]
+    starts_rev = [c for c in matched_candidates if query_norm.startswith(normalize_game_name(c["name"]))]
     if starts_rev:
         return starts_rev[0]["appid"]
 
     query_words = query_norm.split()
     word_matches = [
-        c for c in game_candidates
+        c for c in matched_candidates
         if all(w in normalize_game_name(c["name"]) for w in query_words)
     ]
     if word_matches:
         return word_matches[0]["appid"]
 
-    return game_candidates[0]["appid"]
+    return matched_candidates[0]["appid"]
 
 # ─── Embed builders ────────────────────────────────────────────────────────
 def build_denuvo_embed(appid: int, change_type: str, old: dict, new: dict) -> discord.Embed:
@@ -1173,11 +1174,19 @@ class DenuvoWatch(commands.Cog):
         view.message = msg
 
     @commands.hybrid_command(name="dcheck")
-    @discord.app_commands.describe(query="Game name or AppID")
+    @discord.app_commands.describe(
+        query="Game name or AppID",
+        item_type="Type of Steam item to search for (default: game)"
+    )
     @discord.app_commands.guild_install()
     @discord.app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
-    async def dcheck(self, ctx: commands.Context, *, query: str):
-        """Instantly check a game's current status."""
+    async def dcheck(
+        self,
+        ctx: commands.Context,
+        query: str,
+        item_type: Literal["game", "dlc", "demo"] = "game"
+    ):
+        """Instantly check a game's (or other Steam item type's) current status."""
         async with ctx.typing():
             games = await self._load_games()
 
@@ -1185,15 +1194,16 @@ class DenuvoWatch(commands.Cog):
             if query.isdigit():
                 appid = int(query)
             else:
-                for appid_str, info in games.items():
-                    if query.lower() in info["name"].lower():
-                        appid = int(appid_str)
-                        break
+                if item_type == "game":
+                    for appid_str, info in games.items():
+                        if query.lower() in info["name"].lower():
+                            appid = int(appid_str)
+                            break
                 if appid is None:
-                    appid = await resolve_best_game_match(query)
+                    appid = await resolve_best_game_match(query, item_type)
 
             if appid is None:
-                await ctx.send(f"❌ Couldn't resolve `{query}` to a Steam game.")
+                await ctx.send(f"❌ Couldn't resolve `{query}` to a Steam {item_type}.")
                 return
 
             snapshot = await asyncio.to_thread(get_game_snapshot, appid)
