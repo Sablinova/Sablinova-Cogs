@@ -2220,6 +2220,11 @@ class SabDownloader(commands.Cog):
 
     async def sync_slash_commands_rpc(self) -> Dict[str, Any]:
         """RPC endpoint to sync application command tree with Discord."""
+        if hasattr(self.bot.tree, "red_check_enabled"):
+            try:
+                await self.bot.tree.red_check_enabled()
+            except Exception as e:
+                log.warning("red_check_enabled failed: %s", e)
         self._sanitize_tree_descriptions()
         synced = await self.bot.tree.sync()
         return {"status": "ok", "synced_count": len(synced)}
