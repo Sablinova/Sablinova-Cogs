@@ -1485,6 +1485,10 @@ def _ytdlp_download(
         "retries": 3,
         "fragment_retries": 3,
         "file_access_retries": 3,
+        # Speed optimizations: parallel fragment downloads and buffering
+        "concurrent_fragment_downloads": 8,
+        "http_chunk_size": 10485760,
+        "buffersize": 1024 * 64,
         # Use a realistic User-Agent to reduce 403 blocks
         "http_headers": {
             "User-Agent": (
@@ -1495,10 +1499,9 @@ def _ytdlp_download(
         },
         # Enable JS runtimes for YouTube signature/n-challenge solving.
         # yt-dlp defaults to only 'deno' if js_runtimes is not set.
-        # We need 'node' since that's what's installed on the VPS.
         "js_runtimes": {
-            "node": {},
             "deno": {},
+            "node": {},
             "bun": {},
             "quickjs": {},
         },
@@ -1544,10 +1547,18 @@ def _ytdlp_download(
         opts["format"] = "bestvideo+bestaudio/best"
         opts.pop("max_filesize", None)
     else:
-        # Prefer best quality video and audio streams, merging to mp4
-        opts["format"] = (
-            "bestvideo*+bestaudio/bestvideo+bestaudio/best[ext=mp4]/best"
-        )
+        # Standard mode: first prefer best quality streams that fit within the target filesize,
+        # avoiding slow compression whenever possible.
+        if max_filesize:
+            opts["format"] = (
+                f"bestvideo[filesize<=?{max_filesize}]+bestaudio[filesize<=?3M]/"
+                f"best[filesize<=?{max_filesize}]/"
+                f"bestvideo*+bestaudio/bestvideo+bestaudio/best[ext=mp4]/best"
+            )
+        else:
+            opts["format"] = (
+                "bestvideo*+bestaudio/bestvideo+bestaudio/best[ext=mp4]/best"
+            )
 
     info_dict = None
     try:
@@ -1788,9 +1799,9 @@ async def _ffmpeg_compress(
         return False
 
     # Calculate target video bitrate (bits/sec)
-    # Reserve 128kbps for audio, use 95% of target to be safe
+    # Reserve 128kbps for audio, use 92% of target to be safe
     audio_bitrate = 128_000
-    target_total_bitrate = int((target_size_bytes * 8 * 0.95) / duration)
+    target_total_bitrate = int((target_size_bytes * 8 * 0.92) / duration)
     video_bitrate = target_total_bitrate - audio_bitrate
 
     if video_bitrate < 100_000:  # Below 100kbps is unwatchable
@@ -1814,14 +1825,84 @@ async def _ffmpeg_compress(
         progress_tracker.total_bytes = None
         progress_tracker.downloaded_bytes = 0
 
-    # Pass 1
-    pass1_cmd = [
+    # Try fast single pass ABR first with multithreading
+    single_pass_cmd = [
         "ffmpeg",
         "-y",
+        "-threads",
+        "0",
         "-i",
         input_path,
         "-c:v",
         "libx264",
+        "-preset",
+        "veryfast",
+        "-b:v",
+        str(video_bitrate),
+        "-maxrate",
+        str(int(video_bitrate * 1.15)),
+        "-bufsize",
+        str(int(video_bitrate * 2)),
+        *scale_args,
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        output_path,
+    ]
+
+    p_single = None
+    try:
+        p_single = await asyncio.create_subprocess_exec(
+            *single_pass_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr_single = await asyncio.wait_for(
+            p_single.communicate(), timeout=timeout
+        )
+        if p_single.returncode == 0 and os.path.isfile(output_path):
+            output_size = os.path.getsize(output_path)
+            if output_size <= target_size_bytes:
+                if progress_tracker:
+                    progress_tracker.percent = 100
+                return True
+            log.info(
+                "Single pass output (%s) exceeded target (%s), falling back to 2-pass",
+                _human_size(output_size),
+                _human_size(target_size_bytes),
+            )
+            try:
+                os.remove(output_path)
+            except OSError:
+                pass
+        else:
+            log.warning(
+                "ffmpeg single pass failed: %s",
+                stderr_single.decode(errors="replace")[-500:],
+            )
+    except asyncio.TimeoutError:
+        if p_single:
+            p_single.kill()
+        log.warning("ffmpeg single pass timed out")
+    except Exception as e:
+        log.warning("ffmpeg single pass error: %s", e)
+
+    if progress_tracker:
+        progress_tracker.percent = 30
+
+    # Pass 1
+    pass1_cmd = [
+        "ffmpeg",
+        "-y",
+        "-threads",
+        "0",
+        "-i",
+        input_path,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
         "-b:v",
         str(video_bitrate),
         *scale_args,
@@ -1853,16 +1934,20 @@ async def _ffmpeg_compress(
         return False
 
     if progress_tracker:
-        progress_tracker.percent = 50
+        progress_tracker.percent = 60
 
     # Pass 2
     pass2_cmd = [
         "ffmpeg",
         "-y",
+        "-threads",
+        "0",
         "-i",
         input_path,
         "-c:v",
         "libx264",
+        "-preset",
+        "veryfast",
         "-b:v",
         str(video_bitrate),
         *scale_args,
@@ -1884,7 +1969,6 @@ async def _ffmpeg_compress(
             stderr=asyncio.subprocess.PIPE,
         )
 
-        # Parse progress from stderr
         stderr_data = b""
         try:
             _, stderr_data = await asyncio.wait_for(p2.communicate(), timeout=timeout)

@@ -61,3 +61,35 @@ def test_discord_20mb_filesize_limit():
     mock_guild_tier2 = MagicMock()
     mock_guild_tier2.filesize_limit = 50 * 1024 * 1024
     assert _get_filesize_limit(mock_guild_tier2) == 50 * 1024 * 1024
+
+
+@pytest.mark.asyncio
+async def test_ffmpeg_compress_single_pass_success(monkeypatch, tmp_path):
+    from unittest.mock import AsyncMock
+    from sabdownloader.sabdownloader import _ffmpeg_compress
+
+    input_file = tmp_path / "input.mp4"
+    input_file.write_bytes(b"x" * 1000)
+    output_file = tmp_path / "output.mp4"
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        if "ffprobe" in args:
+            stdout_data = b'{"format": {"duration": "60.0"}}'
+            mock_proc.communicate = AsyncMock(return_value=(stdout_data, b""))
+        else:
+            # ffmpeg command
+            output_file.write_bytes(b"y" * 500)
+            mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+        return mock_proc
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_create_subprocess_exec)
+
+    success = await _ffmpeg_compress(
+        input_path=str(input_file),
+        output_path=str(output_file),
+        target_size_bytes=10 * 1024 * 1024,
+    )
+    assert success is True
+
