@@ -9,7 +9,7 @@ import tempfile
 import time
 import uuid
 from functools import partial
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote, urlparse
 
 import aiohttp
@@ -2198,6 +2198,18 @@ class SabDownloader(commands.Cog):
         self._semaphore: Optional[asyncio.Semaphore] = None
         self._cooldowns: Dict[int, float] = {}  # user_id -> last_use timestamp
 
+        # Register RPC handler
+        if hasattr(self.bot, "register_rpc_handler"):
+            try:
+                self.bot.register_rpc_handler(self.sync_slash_commands_rpc)
+            except Exception as e:
+                log.debug("Could not register RPC handler: %s", e)
+
+    async def sync_slash_commands_rpc(self) -> Dict[str, Any]:
+        """RPC endpoint to sync application command tree with Discord."""
+        synced = await self.bot.tree.sync()
+        return {"status": "ok", "synced_count": len(synced)}
+
     async def cog_load(self) -> None:
         """Initialize semaphore on cog load."""
         max_concurrent = await self.config.max_concurrent()
@@ -2211,13 +2223,19 @@ class SabDownloader(commands.Cog):
         _patch_user_install(self._context_menu)
         self.bot.tree.add_command(self._context_menu)
 
-        # Patch the dl command group for user-install support
-        dl_cmd = self.bot.tree.get_command("dl")
-        if dl_cmd:
-            _patch_user_install(dl_cmd)
+        # Patch the dl and download commands for user-install support
+        for cmd_name in ("dl", "download"):
+            app_cmd = self.bot.tree.get_command(cmd_name)
+            if app_cmd:
+                _patch_user_install(app_cmd)
 
     async def cog_unload(self) -> None:
         """Clean up context menu on unload."""
+        if hasattr(self.bot, "unregister_rpc_handler"):
+            try:
+                self.bot.unregister_rpc_handler(self.sync_slash_commands_rpc)
+            except Exception:
+                pass
         self.bot.tree.remove_command(
             self._context_menu.name, type=self._context_menu.type
         )
