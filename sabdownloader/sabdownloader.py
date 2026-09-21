@@ -47,6 +47,31 @@ def _patch_user_install(cmd) -> None:
     cmd.to_dict = patched_to_dict
 
 
+# ===========================================================================
+# Discord 20MB Upload Limit Patch
+# ===========================================================================
+
+DISCORD_MIN_FILESIZE_LIMIT = 20 * 1024 * 1024  # 20 MiB (20,971,520 bytes)
+
+try:
+    for _tier in (None, 0, 1):
+        if hasattr(discord.Guild, "_PREMIUM_GUILD_LIMITS") and _tier in discord.Guild._PREMIUM_GUILD_LIMITS:
+            _curr = discord.Guild._PREMIUM_GUILD_LIMITS[_tier]
+            if _curr.filesize < DISCORD_MIN_FILESIZE_LIMIT:
+                discord.Guild._PREMIUM_GUILD_LIMITS[_tier] = _curr._replace(
+                    filesize=DISCORD_MIN_FILESIZE_LIMIT
+                )
+except Exception as _e:
+    log.debug("Could not patch _PREMIUM_GUILD_LIMITS: %s", _e)
+
+
+def _get_filesize_limit(guild: Optional[discord.Guild]) -> int:
+    """Return Discord upload limit in bytes (minimum 20 MiB since Discord 20MB upgrade)."""
+    if guild:
+        return max(DISCORD_MIN_FILESIZE_LIMIT, guild.filesize_limit)
+    return DISCORD_MIN_FILESIZE_LIMIT
+
+
 # ---------------------------------------------------------------------------
 # Resolution Picker UI (for HD mode)
 # ---------------------------------------------------------------------------
@@ -2625,7 +2650,7 @@ class SabDownloader(commands.Cog):
 
         In hd_mode, all files go directly to AnonDrop (no compression, no Discord upload).
         """
-        filesize_limit = ctx.guild.filesize_limit if ctx.guild else 25 * 1024 * 1024
+        filesize_limit = _get_filesize_limit(ctx.guild)
         anondrop_enabled = guild_config["anondrop_enabled"]
         anondrop_userkey = await self.config.anondrop_userkey()
         global_delete = await self.config.delete_command()
@@ -2812,7 +2837,7 @@ class SabDownloader(commands.Cog):
                 tracker.percent = 0
 
                 compressed_path = fp + ".compressed.mp4"
-                target_size = 24 * 1024 * 1024
+                target_size = min(filesize_limit - (1024 * 1024), int(filesize_limit * 0.95))
                 success = await _ffmpeg_compress(
                     input_path=fp,
                     output_path=compressed_path,
@@ -2853,7 +2878,7 @@ class SabDownloader(commands.Cog):
         batches = []
         current_batch = []
         current_batch_size = 0
-        safety_payload_limit = max(10 * 1024 * 1024, filesize_limit - (512 * 1024))
+        safety_payload_limit = max(19 * 1024 * 1024, filesize_limit - (512 * 1024))
 
         for fp in ready_files:
             fsize = os.path.getsize(fp)
@@ -3106,7 +3131,7 @@ class SabDownloader(commands.Cog):
         )
         embed.add_field(
             name="Upload Limit",
-            value=_human_size(ctx.guild.filesize_limit),
+            value=_human_size(_get_filesize_limit(ctx.guild)),
             inline=True,
         )
         embed.add_field(name="Allowed Channels", value=channels_str, inline=False)

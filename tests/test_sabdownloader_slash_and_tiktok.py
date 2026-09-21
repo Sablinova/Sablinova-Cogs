@@ -39,3 +39,25 @@ def test_tiktok_domains_and_extract_post_id():
 
     query_url = "https://www.tiktok.com/@creator/video/7687904796925365525?is_from_webapp=1"
     assert _tiktok_extract_post_id(query_url) == "7687904796925365525"
+
+
+def test_discord_20mb_filesize_limit():
+    from sabdownloader.sabdownloader import (
+        _get_filesize_limit,
+        DISCORD_MIN_FILESIZE_LIMIT,
+    )
+
+    assert DISCORD_MIN_FILESIZE_LIMIT == 20 * 1024 * 1024
+
+    # DM context (guild is None)
+    assert _get_filesize_limit(None) == 20 * 1024 * 1024
+
+    # Guild with Tier 0 (normally 10MB in unpatched discord.py)
+    mock_guild_tier0 = MagicMock()
+    mock_guild_tier0.filesize_limit = 10 * 1024 * 1024
+    assert _get_filesize_limit(mock_guild_tier0) == 20 * 1024 * 1024
+
+    # Boosted Tier 2 guild (50MB)
+    mock_guild_tier2 = MagicMock()
+    mock_guild_tier2.filesize_limit = 50 * 1024 * 1024
+    assert _get_filesize_limit(mock_guild_tier2) == 50 * 1024 * 1024
