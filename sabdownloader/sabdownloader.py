@@ -1443,6 +1443,7 @@ def _ytdlp_download(
     audio_only: bool = False,
     hd_mode: bool = False,
     format_id: Optional[str] = None,
+    target_filesize: Optional[int] = None,
 ) -> Tuple[List[str], Optional[dict]]:
     """Run yt-dlp synchronously. Returns (list of file paths, info_dict or None).
 
@@ -1547,12 +1548,17 @@ def _ytdlp_download(
         opts["format"] = "bestvideo+bestaudio/best"
         opts.pop("max_filesize", None)
     else:
-        # Standard mode: first prefer best quality streams that fit within the target filesize,
-        # avoiding slow compression whenever possible.
-        if max_filesize:
+        # Standard mode: first prefer best quality streams that fit within the Discord target filesize
+        # so compression can be skipped completely. If none fit, fall back to best available.
+        discord_limit = target_filesize or (
+            max_filesize if max_filesize and max_filesize <= DISCORD_MIN_FILESIZE_LIMIT else None
+        )
+        if discord_limit:
+            # Reserve 3MB for audio stream
+            video_cap = max(1024 * 1024, discord_limit - (3 * 1024 * 1024))
             opts["format"] = (
-                f"bestvideo[filesize<=?{max_filesize}]+bestaudio[filesize<=?3M]/"
-                f"best[filesize<=?{max_filesize}]/"
+                f"bestvideo[filesize<=?{video_cap}]+bestaudio[filesize<=?3M]/"
+                f"best[filesize<=?{discord_limit}]/"
                 f"bestvideo*+bestaudio/bestvideo+bestaudio/best[ext=mp4]/best"
             )
         else:
@@ -2568,6 +2574,7 @@ class SabDownloader(commands.Cog):
         audio_only: bool = False,
         hd_mode: bool = False,
         format_id: Optional[str] = None,
+        target_filesize: Optional[int] = None,
     ) -> Tuple[List[str], Optional[dict]]:
         """Try downloading with gallery-dl first, then yt-dlp (or vice versa depending on domain).
 
@@ -2696,6 +2703,7 @@ class SabDownloader(commands.Cog):
                             audio_only=audio_only,
                             hd_mode=hd_mode,
                             format_id=format_id,
+                            target_filesize=target_filesize,
                         ),
                     )
                     if files:
@@ -3753,6 +3761,7 @@ class SabDownloader(commands.Cog):
                     max_filesize = 200 * 1024 * 1024
                 max_duration = guild_config["max_duration"]
 
+                discord_upload_limit = _get_filesize_limit(ctx.guild)
                 files, info_dict = await self._try_download(
                     url=url,
                     temp_dir=temp_dir,
@@ -3763,6 +3772,7 @@ class SabDownloader(commands.Cog):
                     audio_only=audio_only,
                     hd_mode=hd_mode,
                     format_id=format_id,
+                    target_filesize=discord_upload_limit,
                 )
 
                 if not files:
