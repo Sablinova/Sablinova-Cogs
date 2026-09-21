@@ -276,34 +276,6 @@ def search_steam(query: str) -> list:
         return []
 
 
-def strip_html(text: str) -> str:
-    """Steam descriptions are HTML — strip tags for a clean Discord embed."""
-    if not text:
-        return ""
-    soup = BeautifulSoup(text, "html.parser")
-    clean = soup.get_text(separator=" ")
-    return " ".join(clean.split())
-
-
-def truncate_to_sentence(text: str, max_words: int = 300, overhead: int = 20) -> str:
-    words = text.split()
-    if len(words) <= max_words:
-        return text
-
-    extended = " ".join(words[:max_words + overhead])
-    base_len = len(" ".join(words[:max_words]))
-    lookahead_region = extended[base_len:]
-    period_in_overhead = lookahead_region.find(".")
-    if period_in_overhead != -1:
-        return extended[:base_len + period_in_overhead + 1]
-
-    truncated = " ".join(words[:max_words])
-    last_period = truncated.rfind(".")
-    if last_period != -1:
-        return truncated[:last_period + 1]
-    return truncated.rstrip() + "…"
-
-
 def get_game_snapshot(appid: int) -> Optional[dict]:
     data = fetch_app_details(appid)
     if not data:
@@ -1303,72 +1275,6 @@ class DenuvoWatch(commands.Cog):
         embed.description = "\n".join(lines)
         await ctx.send(embed=embed)
 
-    @commands.hybrid_command(name="dsummary")
-    @discord.app_commands.describe(query="Game name or Steam AppID")
-    async def dsummary(self, ctx: commands.Context, *, query: str):
-        """Show a game's description from its Steam store page."""
-        async with ctx.typing():
-            appid = None
-            if query.isdigit():
-                appid = int(query)
-            else:
-                appid = await resolve_best_game_match(query)
-
-            if appid is None:
-                await ctx.send(f"❌ Couldn't resolve `{query}` to a Steam game.")
-                return
-
-            data = await asyncio.to_thread(fetch_app_details, appid)
-            if not data:
-                await ctx.send(f"❌ Couldn't fetch data for AppID `{appid}`.")
-                return
-
-            name = data.get("name", f"AppID {appid}")
-            short_desc = strip_html(data.get("short_description", ""))
-            about = strip_html(data.get("about_the_game", "")) or strip_html(data.get("detailed_description", ""))
-
-            full_text = short_desc or "No description available."
-            if about and about != short_desc:
-                full_text += f"\n\n{about}"
-
-            description = truncate_to_sentence(full_text, max_words=150)
-
-        embed = discord.Embed(
-            title=f"📖 {name}",
-            url=f"https://store.steampowered.com/app/{appid}/",
-            description=description[:2000],
-            color=discord.Color.blurple()
-        )
-
-        price_overview = data.get("price_overview")
-        if data.get("is_free"):
-            embed.add_field(name="Price", value="Free to Play", inline=True)
-        elif price_overview:
-            final = price_overview["final_formatted"]
-            discount = price_overview.get("discount_percent", 0)
-            if discount > 0:
-                initial = price_overview["initial_formatted"]
-                embed.add_field(name="Price", value=f"~~{initial}~~ **{final}** (-{discount}%)", inline=True)
-            else:
-                embed.add_field(name="Price", value=final, inline=True)
-
-        genres = data.get("genres", [])
-        if genres:
-            embed.add_field(name="Genres", value=", ".join(g["description"] for g in genres), inline=True)
-
-        developers = data.get("developers", [])
-        if developers:
-            embed.add_field(name="Developer", value=", ".join(developers), inline=True)
-
-        release = data.get("release_date", {})
-        if release.get("date"):
-            embed.add_field(name="Release Date", value=release["date"], inline=True)
-
-        if data.get("header_image"):
-            embed.set_thumbnail(url=data["header_image"])
-        embed.set_footer(text=f"AppID {appid}")
-        await ctx.send(embed=embed)
-
     @commands.hybrid_command(name="ddepots")
     @discord.app_commands.describe(
         query="Game name or AppID",
@@ -1447,7 +1353,7 @@ class DenuvoWatch(commands.Cog):
     async def ddepots_query_autocomplete(self, interaction: discord.Interaction, current: str):
         return await self._game_name_autocomplete(interaction, current)
 
-    @commands.hybrid_command(name="dexport")
+    @commands.command(name="dexport")
     async def dexport(self, ctx: commands.Context):
         """Export the current watchlist as a JSON file (re-importable via dimport)."""
         games = await self._load_games()
@@ -1464,7 +1370,7 @@ class DenuvoWatch(commands.Cog):
             file=discord.File(fp=buffer, filename=filename),
         )
 	
-    @commands.hybrid_command(name="dimport")
+    @commands.command(name="dimport")
     @owner_only()
     async def dimport(self, ctx: commands.Context, url: str = None):
         """Import games into the watchlist from a JSON file or URL."""
