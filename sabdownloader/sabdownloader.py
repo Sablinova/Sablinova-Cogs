@@ -930,8 +930,35 @@ async def _tiktok_download(
     domain = _get_domain(url)
 
     async with aiohttp.ClientSession() as session:
-        # Step 1: Resolve post ID
+        # Step 1: Resolve post ID and page URL
         post_id = _tiktok_extract_post_id(url)
+        html = None
+        page_url = url
+
+        if domain in _TIKTOK_SHORT_DOMAINS:
+            # For short links like vm.tiktok.com or vt.tiktok.com, following redirects
+            # directly in the session retrieves cookies and canonical HTML in one request
+            try:
+                async with session.get(
+                    url,
+                    allow_redirects=True,
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    if resp.status == 200:
+                        page_text = await resp.text()
+                        if (
+                            '<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__"' in page_text
+                            or '<script id="SIGI_STATE"' in page_text
+                        ):
+                            html = page_text
+                            page_url = str(resp.url)
+                            if not post_id:
+                                post_id = _tiktok_extract_post_id(page_url)
+            except Exception as e:
+                log.warning("[tiktok] Short link redirect fetch failed for %s: %s", url, e)
+
+        if not post_id:
+            post_id = _tiktok_extract_post_id(page_url)
 
         if not post_id and domain in _TIKTOK_SHORT_DOMAINS:
             post_id = await _tiktok_resolve_short_link(session, url)
@@ -941,45 +968,50 @@ async def _tiktok_download(
 
         log.info("[tiktok] Resolved post ID: %s", post_id)
 
-        # Step 2: Fetch the TikTok page HTML
-        # Use @i as placeholder username — works for any video when given a valid post ID
-        page_url = f"https://www.tiktok.com/@i/video/{post_id}"
-        headers = {"User-Agent": _TIKTOK_USER_AGENT}
+        # Step 2: Fetch the TikTok page HTML if not already fetched from redirect
+        if not html:
+            if "@" in page_url and "/video/" in page_url:
+                fetch_url = page_url
+            else:
+                fetch_url = f"https://www.tiktok.com/@i/video/{post_id}"
 
-        # Add cookies if available
-        cookie_header = None
-        if cookies_file and os.path.isfile(cookies_file):
+            headers = {"User-Agent": _TIKTOK_USER_AGENT}
+
+            # Add cookies if available
+            cookie_header = None
+            if cookies_file and os.path.isfile(cookies_file):
+                try:
+                    cookie_pairs = []
+                    with open(cookies_file, "r") as cf:
+                        for line in cf:
+                            line = line.strip()
+                            if not line or line.startswith("#"):
+                                continue
+                            parts = line.split("\t")
+                            if len(parts) >= 7 and "tiktok" in parts[0].lower():
+                                cookie_pairs.append(f"{parts[5]}={parts[6]}")
+                    if cookie_pairs:
+                        cookie_header = "; ".join(cookie_pairs)
+                except Exception as e:
+                    log.warning("[tiktok] Failed to parse cookies file: %s", e)
+
+            if cookie_header:
+                headers["Cookie"] = cookie_header
+
             try:
-                cookie_pairs = []
-                with open(cookies_file, "r") as cf:
-                    for line in cf:
-                        line = line.strip()
-                        if not line or line.startswith("#"):
-                            continue
-                        parts = line.split("\t")
-                        if len(parts) >= 7 and "tiktok" in parts[0].lower():
-                            cookie_pairs.append(f"{parts[5]}={parts[6]}")
-                if cookie_pairs:
-                    cookie_header = "; ".join(cookie_pairs)
-            except Exception as e:
-                log.warning("[tiktok] Failed to parse cookies file: %s", e)
-
-        if cookie_header:
-            headers["Cookie"] = cookie_header
-
-        try:
-            async with session.get(
-                page_url,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=30),
-            ) as resp:
-                if resp.status != 200:
-                    raise RuntimeError(
-                        f"TikTok returned HTTP {resp.status} for {page_url}"
-                    )
-                html = await resp.text()
-        except aiohttp.ClientError as e:
-            raise RuntimeError(f"Failed to fetch TikTok page: {e}") from e
+                async with session.get(
+                    fetch_url,
+                    headers=headers,
+                    allow_redirects=True,
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    if resp.status != 200:
+                        raise RuntimeError(
+                            f"TikTok returned HTTP {resp.status} for {fetch_url}"
+                        )
+                    html = await resp.text()
+            except aiohttp.ClientError as e:
+                raise RuntimeError(f"Failed to fetch TikTok page: {e}") from e
 
         # Step 3: Extract SSR JSON from HTML
         ssr_marker = (
@@ -1116,24 +1148,26 @@ async def _tiktok_download(
 
             return downloaded, metadata
 
-        # Step 5b: Get video URL
+        # Step 5b: Get video URL (always select highest bitrate H.264 stream for maximum quality)
         video_data = detail.get("video", {})
-        play_addr = video_data.get("playAddr")
-
-        if not play_addr:
-            # Try downloadAddr as fallback
-            play_addr = video_data.get("downloadAddr")
-        if not play_addr:
-            # Try bitrateInfo for explicit H.264
-            bitrate_info = video_data.get("bitrateInfo", [])
-            for br in bitrate_info:
-                codec = br.get("CodecType", "")
-                if "h264" in codec.lower() or "avc" in codec.lower():
+        bitrate_info = video_data.get("bitrateInfo", [])
+        best_h264 = None
+        best_bitrate = 0
+        for br in bitrate_info:
+            codec = br.get("CodecType", "")
+            if "h264" in codec.lower() or "avc" in codec.lower():
+                br_val = br.get("Bitrate", 0)
+                if br_val > best_bitrate:
                     urls = br.get("PlayAddr", {}).get("UrlList", [])
                     if urls:
-                        play_addr = urls[0]
-                        break
-            # Last resort: any bitrate entry
+                        best_h264 = urls[0]
+                        best_bitrate = br_val
+
+        play_addr = best_h264
+        if play_addr:
+            log.info("[tiktok] Selected best quality H.264 stream at bitrate %d", best_bitrate)
+        else:
+            play_addr = video_data.get("playAddr") or video_data.get("downloadAddr")
             if not play_addr and bitrate_info:
                 urls = bitrate_info[0].get("PlayAddr", {}).get("UrlList", [])
                 if urls:
@@ -1141,25 +1175,6 @@ async def _tiktok_download(
 
         if not play_addr:
             raise RuntimeError("Could not find video URL in TikTok data.")
-
-        # For HD mode, try to find the best H.264 from bitrateInfo
-        if hd_mode:
-            bitrate_info = video_data.get("bitrateInfo", [])
-            best_h264 = None
-            best_bitrate = 0
-            for br in bitrate_info:
-                codec = br.get("CodecType", "")
-                if "h264" in codec.lower() or "avc" in codec.lower():
-                    br_val = br.get("Bitrate", 0)
-                    if br_val > best_bitrate:
-                        best_bitrate = br_val
-                        urls = br.get("PlayAddr", {}).get("UrlList", [])
-                        if urls:
-                            best_h264 = urls[0]
-                            best_bitrate = br_val
-            if best_h264:
-                play_addr = best_h264
-                log.info("[tiktok] HD mode: using H.264 at bitrate %d", best_bitrate)
 
         # Step 5c: Handle audio-only mode
         if audio_only:
@@ -1504,16 +1519,9 @@ def _ytdlp_download(
         opts["format"] = "bestvideo+bestaudio/best"
         opts.pop("max_filesize", None)
     else:
-        # Prefer mp4 containers, fall back through progressively simpler formats.
-        # The broad fallback chain avoids 403 issues where specific format
-        # combinations are blocked by the server.
-        # Note: TikTok is handled by the direct scraper, not yt-dlp.
+        # Prefer best quality video and audio streams, merging to mp4
         opts["format"] = (
-            "bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/"
-            "bestvideo[ext=mp4]+bestaudio[ext=m4a]/"
-            "bestvideo+bestaudio/"
-            "best[ext=mp4]/"
-            "best"
+            "bestvideo*+bestaudio/bestvideo+bestaudio/best[ext=mp4]/best"
         )
 
     info_dict = None
@@ -2425,7 +2433,7 @@ class SabDownloader(commands.Cog):
             backends = ["spotify"]
         # Decide order based on domain
         elif domain in _TIKTOK_DOMAINS or "tiktok.com" in domain:
-            backends = ["tiktok"]
+            backends = ["tiktok", "ytdlp"]
         elif domain in _YTDLP_PRIORITY:
             backends = ["ytdlp", "gallerydl"]
         elif domain in _GALLERY_DL_PRIORITY:
@@ -2434,13 +2442,19 @@ class SabDownloader(commands.Cog):
             # Default: gallery-dl first for image sites, yt-dlp for everything else
             backends = ["gallerydl", "ytdlp"]
 
-        # Audio extraction on TikTok uses the direct scraper's built-in audio mode
-        if audio_only and "tiktok" not in backends and "spotify" not in backends:
-            backends = ["ytdlp"]
+        # Audio extraction
+        if audio_only and "spotify" not in backends:
+            if "tiktok" in backends:
+                backends = ["tiktok", "ytdlp"]
+            else:
+                backends = ["ytdlp"]
 
-        # HD mode on TikTok uses the direct scraper's built-in HD mode
-        if hd_mode and "tiktok" not in backends and "spotify" not in backends:
-            backends = ["ytdlp"]
+        # HD mode
+        if hd_mode and "spotify" not in backends:
+            if "tiktok" in backends:
+                backends = ["tiktok", "ytdlp"]
+            else:
+                backends = ["ytdlp"]
 
         log.info(
             "[_try_download] URL=%s domain=%s backends=%s",
@@ -3289,26 +3303,68 @@ class SabDownloader(commands.Cog):
     # Download commands: [p]dl
     # ------------------------------------------------------------------
 
-    @commands.hybrid_group(fallback="download")
-    @app_commands.describe(url="The URL to download media from")
-    async def dl(self, ctx: commands.Context, url: str):
+    @commands.hybrid_command(name="dl")
+    @app_commands.describe(
+        url="The URL to download media from",
+        audio_only="Extract audio only as MP3 (default: False)",
+    )
+    async def dl(self, ctx: commands.Context, url: str, audio_only: bool = False):
         """Download media from a URL and upload to Discord."""
-        await self._do_download(ctx, url, audio_only=False)
+        if not ctx.interaction and url.lower() in ("audio", "mp3", "hd"):
+            await ctx.send(
+                f"Usage: `{ctx.prefix}dl <url>` or `{ctx.prefix}dl {url.lower()} <url>`",
+                delete_after=10,
+            )
+            return
+        await self._do_download(ctx, url, audio_only=audio_only)
 
-    @dl.command(name="audio")
-    @app_commands.describe(url="The URL to extract audio from")
-    async def dl_audio(self, ctx: commands.Context, url: str):
+    @dl.error
+    async def dl_error(self, ctx: commands.Context, error: Exception):
+        """Handle legacy prefix invocations like `[p]dl audio <url>` or `[p]dl hd <url>`."""
+        if isinstance(error, commands.BadBoolArgument) and not ctx.interaction:
+            parts = ctx.message.content.split(None, 2)
+            if len(parts) >= 3:
+                sub = parts[1].lower()
+                target_url = parts[2].strip()
+                if sub in ("audio", "mp3"):
+                    await self._do_download(ctx, target_url, audio_only=True)
+                    return
+                elif sub in ("hd", "high"):
+                    await self._dl_hd_impl(ctx, target_url)
+                    return
+        raise error
+
+    @commands.hybrid_command(name="download")
+    @app_commands.describe(
+        url="The URL to download media from",
+        audio_only="Extract audio only as MP3 (default: False)",
+    )
+    async def download(
+        self, ctx: commands.Context, url: str, audio_only: bool = False
+    ):
+        """Download media from a URL and upload to Discord."""
+        await self.dl(ctx, url=url, audio_only=audio_only)
+
+    @download.error
+    async def download_error(self, ctx: commands.Context, error: Exception):
+        await self.dl_error(ctx, error)
+
+    @commands.command(name="dlaudio")
+    async def dlaudio(self, ctx: commands.Context, url: str):
         """Extract audio from a URL as MP3."""
         await self._do_download(ctx, url, audio_only=True)
 
-    @dl.command(name="hd")
-    @app_commands.describe(url="The URL to download in HD quality")
-    async def dl_hd(self, ctx: commands.Context, url: str):
+    @commands.command(name="dlhd")
+    async def dlhd(self, ctx: commands.Context, url: str):
+        """Download in highest quality with resolution picker and upload to AnonDrop."""
+        await self._dl_hd_impl(ctx, url)
+
+    async def _dl_hd_impl(self, ctx: commands.Context, url: str):
         """Download in highest quality and upload to AnonDrop.
 
         Shows available resolutions and lets you pick one.
-        Bypasses Discord's file size limit by uploading directly
-        to AnonDrop.net. No compression is applied - full quality
+        Bypasses Discord file size limit by uploading directly
+        to AnonDrop.net. No compression is applied: full quality
         is preserved.
         """
         # Defer slash command interaction (buys us 15 minutes)
@@ -3360,7 +3416,7 @@ class SabDownloader(commands.Cog):
                 ),
             )
         except Exception as e:
-            log.warning("[dl_hd] Format extraction failed for %s: %s", url, e)
+            log.warning("[_dl_hd_impl] Format extraction failed for %s: %s", url, e)
             # Fall back to downloading best quality without picker
             try:
                 await status_msg.delete()
@@ -3370,7 +3426,7 @@ class SabDownloader(commands.Cog):
             return
 
         if not formats:
-            # No format info (direct file, single format, etc.) — download best
+            # No format info (direct file, single format, etc.): download best
             try:
                 await status_msg.delete()
             except (discord.NotFound, discord.HTTPException):
