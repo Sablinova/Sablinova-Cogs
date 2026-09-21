@@ -2205,8 +2205,22 @@ class SabDownloader(commands.Cog):
             except Exception as e:
                 log.debug("Could not register RPC handler: %s", e)
 
+    def _sanitize_tree_descriptions(self) -> None:
+        """Ensure all command descriptions comply with Discord 100 character limit."""
+        def clean_cmd(cmd):
+            if hasattr(cmd, "description") and cmd.description:
+                if len(cmd.description) > 100:
+                    cmd.description = cmd.description[:97] + "..."
+            if hasattr(cmd, "commands"):
+                for sub in cmd.commands:
+                    clean_cmd(sub)
+
+        for top_cmd in self.bot.tree.get_commands():
+            clean_cmd(top_cmd)
+
     async def sync_slash_commands_rpc(self) -> Dict[str, Any]:
         """RPC endpoint to sync application command tree with Discord."""
+        self._sanitize_tree_descriptions()
         synced = await self.bot.tree.sync()
         return {"status": "ok", "synced_count": len(synced)}
 
@@ -2228,6 +2242,8 @@ class SabDownloader(commands.Cog):
             app_cmd = self.bot.tree.get_command(cmd_name)
             if app_cmd:
                 _patch_user_install(app_cmd)
+
+        self._sanitize_tree_descriptions()
 
     async def cog_unload(self) -> None:
         """Clean up context menu on unload."""
