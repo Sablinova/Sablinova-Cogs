@@ -3217,7 +3217,7 @@ class SabPubHelper(commands.Cog):
             keyword = msg.content.strip().lower()
 
             await ctx.send(
-                "**3. Upload the mainbase `.cfg` file now** (must contain "
+                "**3. Upload the mainbase `.cfg` or `.ini` file now** (must contain "
                 f"`{self.ANADIUS_TOKEN_PLACEHOLDER}`)."
             )
             msg = await self.bot.wait_for("message", timeout=300.0, check=check)
@@ -3226,32 +3226,36 @@ class SabPubHelper(commands.Cog):
 
             cfg_att = None
             for att in msg.attachments:
-                if (att.filename or "").lower().endswith(".cfg"):
+                fname = (att.filename or "").lower()
+                if fname.endswith(".cfg") or fname.endswith(".ini"):
                     cfg_att = att
                     break
             if cfg_att is None:
                 return await ctx.send(
-                    "\u274c No `.cfg` file attached. Setup cancelled."
+                    "\u274c No `.cfg` or `.ini` file attached. Setup cancelled."
                 )
+
+            ext = Path(cfg_att.filename).suffix.lstrip(".").lower() or "cfg"
 
             data = await self._download_file(cfg_att.url)
             if not isinstance(data, bytes):
-                return await ctx.send(f"\u274c Failed to download cfg: {data}")
+                return await ctx.send(f"\u274c Failed to download file: {data}")
 
             cfg_text = data.decode("utf-8", errors="replace")
             if self.ANADIUS_TOKEN_PLACEHOLDER not in cfg_text:
                 return await ctx.send(
-                    f"\u274c The uploaded cfg has no "
+                    f"\u274c The uploaded file has no "
                     f"`{self.ANADIUS_TOKEN_PLACEHOLDER}` placeholder. Setup cancelled."
                 )
 
-            cfg_path = self._get_anadius_cfg_path(keyword)
+            cfg_path = self._get_anadius_cfg_path(keyword, ext)
             await asyncio.to_thread(cfg_path.write_bytes, data)
 
             async with self.config.anadius_games() as games:
                 games[keyword] = {
                     "name": display_name,
                     "cfg_file": cfg_path.name,
+                    "ext": ext,
                 }
 
             await ctx.send(
