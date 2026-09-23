@@ -3256,6 +3256,7 @@ class SabPubHelper(commands.Cog):
                     "name": display_name,
                     "cfg_file": cfg_path.name,
                     "ext": ext,
+                    "output_filename": cfg_att.filename,
                 }
 
             await ctx.send(
@@ -3320,6 +3321,7 @@ class SabPubHelper(commands.Cog):
                 "name": existing.get("name", keyword.title()),
                 "cfg_file": cfg_path.name,
                 "ext": ext,
+                "output_filename": cfg_att.filename,
             }
 
         await ctx.send(
@@ -4958,32 +4960,26 @@ class SabPubHelper(commands.Cog):
             )
             return
 
-        out_ext = match["data"].get("ext") or cfg_path.suffix.lstrip(".") or "cfg"
-        out_filename = f"anadius.{out_ext}"
+        out_filename = match["data"].get("output_filename") or "anadius.cfg"
 
         patched = cfg_text.replace(self.ANADIUS_TOKEN_PLACEHOLDER, token)
         buffer = io.BytesIO(patched.encode("utf-8"))
         file = discord.File(buffer, filename=out_filename)
-        instructions_url = (
-            "https://cdn.discordapp.com/attachments/1528400813108625488/"
-            "1534833601596620860/Screenshot_91.png"
-        )
         embed = discord.Embed(
             description=(
-                f"\u2705 Patched **{display_name}** cfg with the EA token.\n\n"
-                f"### [Pasting the config]({instructions_url})\n"
-                "- Download `anadius.cfg`\n"
+                f"\u2705 Patched **{display_name}** with the EA token.\n\n"
+                f"### Pasting the config\n"
+                f"- Download `{out_filename}`\n"
                 "- Applying the token\n"
                 "  - Go into your game folder\n"
-                "  - Delete `anadius.cfg`\n"
+                f"  - Delete `{out_filename}`\n"
                 "  - Go into your download folder\n"
-                "  - Paste the 3\u201315KB `anadius.cfg` into the game folder\n"
-                "    - It must be named `anadius.cfg`\n"
+                f"  - Paste the file into the game folder\n"
+                f"    - It must be named `{out_filename}`\n"
                 "    - It should not have `(1)` or `_2` etc"
             ),
             color=discord.Color.green(),
         )
-        embed.set_image(url=instructions_url)
         await interaction.followup.send(embed=embed, file=file)
 
     async def _prompt_for_token(
