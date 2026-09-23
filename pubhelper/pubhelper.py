@@ -1324,9 +1324,16 @@ class SabPubHelper(commands.Cog):
 
     ANADIUS_TOKEN_PLACEHOLDER = "PASTE_A_VALID_DENUVO_TOKEN_HERE"
 
-    def _get_anadius_cfg_path(self, game_key: str) -> Path:
-        """Return the on-disk path of a game's mainbase anadius cfg."""
-        return self.data_path / f"anadius_{game_key}.cfg"
+    def _get_anadius_cfg_path(self, game_key: str, ext: str = "cfg") -> Path:
+        """Return the on-disk path for a game's mainbase anadius file."""
+        return self.data_path / f"anadius_{game_key}.{ext}"
+
+    def _get_anadius_file_path(self, game_key: str, game_data: dict) -> Path:
+        """Resolve the on-disk mainbase file path for an already-configured game."""
+        cfg_file = game_data.get("cfg_file")
+        if cfg_file:
+            return self.data_path / cfg_file
+        return self._get_anadius_cfg_path(game_key, "cfg")
 
     @staticmethod
     def _parse_game_from_channel(channel_name: str) -> str:
@@ -3272,37 +3279,47 @@ class SabPubHelper(commands.Cog):
 
         cfg_att = None
         for att in ctx.message.attachments:
-            if (att.filename or "").lower().endswith(".cfg"):
+            fname = (att.filename or "").lower()
+            if fname.endswith(".cfg") or fname.endswith(".ini"):
                 cfg_att = att
                 break
         if cfg_att is None:
             return await ctx.send(
-                "\u274c Attach the mainbase `.cfg` file to this message."
+                "\u274c Attach the mainbase `.cfg` or `.ini` file to this message."
             )
+
+        ext = Path(cfg_att.filename).suffix.lstrip(".").lower() or "cfg"
 
         data = await self._download_file(cfg_att.url)
         if not isinstance(data, bytes):
-            return await ctx.send(f"\u274c Failed to download cfg: {data}")
+            return await ctx.send(f"\u274c Failed to download file: {data}")
 
         cfg_text = data.decode("utf-8", errors="replace")
         if self.ANADIUS_TOKEN_PLACEHOLDER not in cfg_text:
             return await ctx.send(
-                f"\u274c The uploaded cfg has no "
+                f"\u274c The uploaded file has no "
                 f"`{self.ANADIUS_TOKEN_PLACEHOLDER}` placeholder."
             )
 
-        cfg_path = self._get_anadius_cfg_path(keyword)
+        existing = (await self.config.anadius_games()).get(keyword, {})
+        old_path = self._get_anadius_file_path(keyword, existing) if existing else None
+
+        cfg_path = self._get_anadius_cfg_path(keyword, ext)
         await asyncio.to_thread(cfg_path.write_bytes, data)
 
+        if old_path and old_path != cfg_path and old_path.exists():
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(old_path.unlink)
+
         async with self.config.anadius_games() as games:
-            existing = games.get(keyword, {})
             games[keyword] = {
                 "name": existing.get("name", keyword.title()),
                 "cfg_file": cfg_path.name,
+                "ext": ext,
             }
 
         await ctx.send(
-            f"\u2705 Added/updated **{keyword}** for `/anadius`."
+            f"\u2705 Added/updated **{keyword}** for `/anadius` (`.{ext}`)."
         )
 
     @pubhelper_anadius.command(name="list")
@@ -4901,10 +4918,10 @@ class SabPubHelper(commands.Cog):
 
         game_key = match["original_key"]
         display_name = match["data"].get("name", game_key)
-        cfg_path = self._get_anadius_cfg_path(game_key)
+        cfg_path = self._get_anadius_file_path(game_key, match["data"])
         if not cfg_path.exists():
             await interaction.followup.send(
-                f"❌ Mainbase cfg file is missing for **{display_name}**. "
+                f"❌ Mainbase file is missing for **{display_name}**. "
                 f"Re-add it with `[p]pubhelper anadius add`.",
                 ephemeral=True,
             )
@@ -4937,9 +4954,12 @@ class SabPubHelper(commands.Cog):
             )
             return
 
+        out_ext = match["data"].get("ext") or cfg_path.suffix.lstrip(".") or "cfg"
+        out_filename = f"anadius.{out_ext}"
+
         patched = cfg_text.replace(self.ANADIUS_TOKEN_PLACEHOLDER, token)
         buffer = io.BytesIO(patched.encode("utf-8"))
-        file = discord.File(buffer, filename="anadius.cfg")
+        file = discord.File(buffer, filename=out_filename)
         instructions_url = (
             "https://cdn.discordapp.com/attachments/1528400813108625488/"
             "1534833601596620860/Screenshot_91.png"
