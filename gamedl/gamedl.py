@@ -167,7 +167,17 @@ def _lookup_appid_sync(appid: str) -> Optional[str]:
         req = urllib.request.Request(url, headers={"User-Agent": HEADERS["User-Agent"]})
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-            return data.get(appid, {}).get("data", {}).get("name")
+            if not data:
+                return None
+            result = data.get(str(appid))
+            if not result:
+                for item in data.values():
+                    if isinstance(item, dict) and str(item.get("data", {}).get("steam_appid")) == str(appid):
+                        result = item
+                        break
+                if not result and len(data) == 1:
+                    result = next(iter(data.values()))
+            return result.get("data", {}).get("name") if (result and result.get("success")) else None
     except Exception as exc:
         log.debug("AppID lookup failed for %s: %s", appid, exc)
     return None

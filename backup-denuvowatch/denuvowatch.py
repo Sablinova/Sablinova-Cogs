@@ -233,8 +233,17 @@ class DenuvoWatch(commands.Cog):
             ) as r:
                 r.raise_for_status()
                 payload = await r.json()
-            result = payload.get(str(appid), {})
-            return result.get("data", {}) if result.get("success") else {}
+            if not payload:
+                return {}
+            result = payload.get(str(appid))
+            if not result:
+                for item in payload.values():
+                    if isinstance(item, dict) and str(item.get("data", {}).get("steam_appid")) == str(appid):
+                        result = item
+                        break
+                if not result and len(payload) == 1:
+                    result = next(iter(payload.values()))
+            return result.get("data", {}) if (result and result.get("success")) else {}
         except Exception:
             return {}
 

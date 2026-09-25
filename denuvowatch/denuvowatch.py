@@ -83,8 +83,18 @@ def fetch_app_details(appid: int) -> dict:
             headers=HEADERS, timeout=10
         )
         r.raise_for_status()
-        result = r.json().get(str(appid), {})
-        return result.get("data", {}) if result.get("success") else {}
+        resp_json = r.json()
+        if not resp_json:
+            return {}
+        result = resp_json.get(str(appid))
+        if not result:
+            for item in resp_json.values():
+                if isinstance(item, dict) and str(item.get("data", {}).get("steam_appid")) == str(appid):
+                    result = item
+                    break
+            if not result and len(resp_json) == 1:
+                result = next(iter(resp_json.values()))
+        return result.get("data", {}) if (result and result.get("success")) else {}
     except Exception:
         return {}
 
