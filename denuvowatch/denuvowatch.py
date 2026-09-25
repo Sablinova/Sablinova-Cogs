@@ -817,6 +817,8 @@ class DenuvoWatch(commands.Cog):
                 update_fields = {
                     "name": new["name"],
                 }
+                if new.get("header"):
+                    update_fields["header"] = new["header"]
                 if appid_str not in self._pending_denuvo_confirms:
                     update_fields["denuvo"] = new["denuvo"]
                 if build_actually_changed or not old_build:
@@ -888,6 +890,8 @@ class DenuvoWatch(commands.Cog):
             "name": snapshot["name"],
             "denuvo": snapshot["denuvo"],
             "build_id": snapshot["build_id"],
+            "build_time": snapshot.get("build_time"),
+            "header": snapshot.get("header"),
         }
         if snapshot.get("coming_soon"):
             entry["coming_soon"] = True
@@ -1188,17 +1192,28 @@ class DenuvoWatch(commands.Cog):
                 await ctx.send(f"❌ Couldn't resolve `{query}` to a Steam {item_type}.")
                 return
 
-            snapshot = await asyncio.to_thread(get_game_snapshot, appid)
-            if snapshot is None:
-                await ctx.send(f"❌ Couldn't fetch data for AppID `{appid}`.")
-                return
-
             in_watchlist = str(appid) in games
             stored = games.get(str(appid), {})
 
             if not in_watchlist and not await self.bot.is_owner(ctx.author):
                 await ctx.send("❌ Only owners can check games that aren't on the watchlist.")
                 return
+
+            if in_watchlist:
+                snapshot = {
+                    "name": stored.get("name", f"AppID {appid}"),
+                    "denuvo": stored.get("denuvo", False),
+                    "header": stored.get("header", ""),
+                    "build_id": stored.get("build_id"),
+                    "build_time": stored.get("build_time"),
+                    "coming_soon": stored.get("coming_soon", False),
+                    "release_date": stored.get("release_date"),
+                }
+            else:
+                snapshot = await asyncio.to_thread(get_game_snapshot, appid)
+                if snapshot is None:
+                    await ctx.send(f"❌ Couldn't fetch data for AppID `{appid}`.")
+                    return
 
             depot_sizes = stored.get("depot_sizes", {})
             if not depot_sizes:
@@ -1450,6 +1465,7 @@ class DenuvoWatch(commands.Cog):
                 "denuvo": bool(info.get("denuvo", False)),
                 "build_id": info.get("build_id"),
                 "build_time": info.get("build_time"),
+                "header": info.get("header"),
                 "manifests": info.get("manifests", {}),
                 "depot_sizes": info.get("depot_sizes", {}),
             }
