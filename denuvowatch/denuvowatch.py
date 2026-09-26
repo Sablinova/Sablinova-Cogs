@@ -74,6 +74,28 @@ def parse_release_date(date_str: str):
     except (ValueError, OverflowError):
         return None
 
+EXACT_RELEASE_PRECISIONS = {"date_full"}
+
+def release_display(snapshot: dict) -> Optional[str]:
+    """Build the release-date embed value for a snapshot.
+
+    Prefers Steam's exact release timestamp when a full date is set; otherwise
+    falls back to the free-text label (with a best-effort relative time).
+    Returns None when there's nothing to show.
+    """
+    ts = snapshot.get("release_ts")
+    if ts and snapshot.get("release_precision") in EXACT_RELEASE_PRECISIONS:
+        return f"<t:{ts}:F> (<t:{ts}:R>)"
+    label = snapshot.get("release_date")
+    if not label:
+        return None
+    parsed = parse_release_date(label)
+    if parsed:
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return f"{label} (~<t:{int(parsed.timestamp())}:R>)"
+    return label
+
 
 def fetch_app_details(appid: int) -> dict:
     try:
@@ -95,6 +117,40 @@ def fetch_app_details(appid: int) -> dict:
             if not result and len(resp_json) == 1:
                 result = next(iter(resp_json.values()))
         return result.get("data", {}) if (result and result.get("success")) else {}
+    except Exception:
+        return {}
+
+
+def fetch_release_info(appid: int) -> dict:
+    """Fetch a precise release timestamp from Steam's IStoreBrowseService.
+
+    Returns ``{"release_ts": int|None, "precision": str|None,
+    "coming_soon": bool|None}``; empty dict on failure.
+    """
+    try:
+        input_json = json.dumps({
+            "ids": [{"appid": appid}],
+            "context": {"language": "english", "country_code": "US"},
+            "data_request": {"include_release": True},
+        })
+        r = requests.get(
+            "https://api.steampowered.com/IStoreBrowseService/GetItems/v1/",
+            params={"input_json": input_json},
+            headers=HEADERS, timeout=10,
+        )
+        r.raise_for_status()
+        items = r.json().get("response", {}).get("store_items", [])
+        item = next(
+            (i for i in items if str(i.get("appid")) == str(appid)),
+            items[0] if items else None,
+        )
+        release = (item or {}).get("release", {})
+        ts = release.get("steam_release_date")
+        return {
+            "release_ts": int(ts) if ts else None,
+            "precision": release.get("coming_soon_display"),
+            "coming_soon": release.get("is_coming_soon"),
+        }
     except Exception:
         return {}
 
@@ -293,15 +349,19 @@ def get_game_snapshot(appid: int) -> Optional[dict]:
     build_id, build_time = fetch_build_id_only(appid)
     release = data.get("release_date", {})
     coming_soon = release.get("coming_soon", False)
+    coming_soon = bool(coming_soon) if isinstance(coming_soon, bool) else coming_soon == "true"
     release_date_str = release.get("date", "").strip()
+    rel = fetch_release_info(appid) if coming_soon else {}
     return {
         "name": data.get("name", f"AppID {appid}"),
         "denuvo": has_denuvo(appid, data),
         "header": data.get("header_image", ""),
         "build_id": build_id,
         "build_time": build_time,
-        "coming_soon": bool(coming_soon) if isinstance(coming_soon, bool) else coming_soon == "true",
+        "coming_soon": coming_soon,
         "release_date": release_date_str if (coming_soon and release_date_str) else None,
+        "release_ts": rel.get("release_ts"),
+        "release_precision": rel.get("precision"),
     }
 
 _TRADEMARK_CHARS = "™®©"
@@ -455,8 +515,9 @@ def build_release_embed(appid: int, old: dict, new: dict) -> discord.Embed:
         description=f"**[{name}]({url})** is now available.",
         color=discord.Color.gold()
     )
-    if old.get("release_date"):
-        embed.add_field(name="Expected Date", value=old["release_date"], inline=True)
+    expected = release_display(old)
+    if expected:
+        embed.add_field(name="Expected Date", value=expected, inline=True)
     if new.get("build_id"):
         embed.add_field(name="Build ID", value=f"`{new['build_id']}`", inline=True)
     embed.add_field(name="Denuvo", value="⚠️ Yes" if new.get("denuvo") else "✅ No", inline=True)
@@ -830,9 +891,13 @@ class DenuvoWatch(commands.Cog):
                     games[appid_str]["coming_soon"] = True
                     if new.get("release_date"):
                         games[appid_str]["release_date"] = new["release_date"]
+                    if new.get("release_ts"):
+                        games[appid_str]["release_ts"] = new["release_ts"]
+                    if new.get("release_precision"):
+                        games[appid_str]["release_precision"] = new["release_precision"]
                 else:
                     dropped = False
-                    for key in ("coming_soon", "release_date"):
+                    for key in ("coming_soon", "release_date", "release_ts", "release_precision"):
                         if key in games[appid_str]:
                             games[appid_str].pop(key)
                             dropped = True
@@ -897,6 +962,10 @@ class DenuvoWatch(commands.Cog):
             entry["coming_soon"] = True
             if snapshot.get("release_date"):
                 entry["release_date"] = snapshot["release_date"]
+            if snapshot.get("release_ts"):
+                entry["release_ts"] = snapshot["release_ts"]
+            if snapshot.get("release_precision"):
+                entry["release_precision"] = snapshot["release_precision"]
         entry["manifests"] = manifests
         entry["depot_sizes"] = depot_sizes
 
@@ -1208,6 +1277,8 @@ class DenuvoWatch(commands.Cog):
                     "build_time": stored.get("build_time"),
                     "coming_soon": stored.get("coming_soon", False),
                     "release_date": stored.get("release_date"),
+                    "release_ts": stored.get("release_ts"),
+                    "release_precision": stored.get("release_precision"),
                 }
             else:
                 snapshot = await asyncio.to_thread(get_game_snapshot, appid)
@@ -1236,19 +1307,10 @@ class DenuvoWatch(commands.Cog):
         if not is_coming_soon and snapshot.get("build_time"):
             embed.add_field(name="Build Pushed", value=f"<t:{snapshot['build_time']}:R>", inline=True)
 
-        if is_coming_soon and snapshot.get("release_date"):
-            parsed_date = parse_release_date(snapshot["release_date"])
-            if parsed_date:
-                if parsed_date.tzinfo is None:
-                    parsed_date = parsed_date.replace(tzinfo=timezone.utc)
-                unix_ts = int(parsed_date.timestamp())
-                embed.add_field(
-                    name="Release Date",
-                    value=f"<t:{unix_ts}:D> (<t:{unix_ts}:R>)",
-                    inline=True
-                )
-            else:
-                embed.add_field(name="Release Date", value=snapshot["release_date"], inline=True)
+        if is_coming_soon:
+            release_field = release_display(snapshot)
+            if release_field:
+                embed.add_field(name="Release Date", value=release_field, inline=True)
         if snapshot.get("header"):
             embed.set_thumbnail(url=snapshot["header"])
         embed.set_footer(text=f"AppID {appid}")
@@ -1284,8 +1346,15 @@ class DenuvoWatch(commands.Cog):
 
         def sort_key(item):
             _, info = item
+            ts = info.get("release_ts")
+            if ts and info.get("release_precision") in EXACT_RELEASE_PRECISIONS:
+                return (0, float(ts))
             parsed = parse_release_date(info.get("release_date"))
-            return (parsed is None, parsed or datetime.max)
+            if parsed:
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                return (0, parsed.timestamp())
+            return (1, float("inf"))
 
         upcoming.sort(key=sort_key)
 
@@ -1295,7 +1364,11 @@ class DenuvoWatch(commands.Cog):
         )
         lines = []
         for appid_str, info in upcoming:
-            date = info.get("release_date") or "Date TBA"
+            ts = info.get("release_ts")
+            if ts and info.get("release_precision") in EXACT_RELEASE_PRECISIONS:
+                date = f"<t:{ts}:f> (<t:{ts}:R>)"
+            else:
+                date = info.get("release_date") or "Date TBA"
             lines.append(f"**{info['name']}** `{appid_str}` — {date}")
         embed.description = "\n".join(lines)
         await ctx.send(embed=embed)
@@ -1475,6 +1548,10 @@ class DenuvoWatch(commands.Cog):
                 games[appid_str]["coming_soon"] = True
                 if info.get("release_date"):
                     games[appid_str]["release_date"] = info["release_date"]
+                if info.get("release_ts"):
+                    games[appid_str]["release_ts"] = info["release_ts"]
+                if info.get("release_precision"):
+                    games[appid_str]["release_precision"] = info["release_precision"]
                     
             added += 1
 
