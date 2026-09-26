@@ -1233,8 +1233,6 @@ class DenuvoWatch(commands.Cog):
         query="Game name or AppID",
         item_type="Type of Steam item to search for (default: game)"
     )
-    @discord.app_commands.guild_install()
-    @discord.app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
     async def dcheck(
         self,
         ctx: commands.Context,
@@ -1366,7 +1364,7 @@ class DenuvoWatch(commands.Cog):
         for appid_str, info in upcoming:
             ts = info.get("release_ts")
             if ts and info.get("release_precision") in EXACT_RELEASE_PRECISIONS:
-                date = f"<t:{ts}:f> (<t:{ts}:R>)"
+                date = f"<t:{ts}:f>"
             else:
                 date = info.get("release_date") or "Date TBA"
             lines.append(f"**{info['name']}** `{appid_str}` — {date}")
