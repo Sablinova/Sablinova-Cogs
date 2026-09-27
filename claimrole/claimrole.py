@@ -145,6 +145,8 @@ class ClaimRole(commands.Cog):
         default_guild = {
             "panels": {},  # message_id_str -> panel_dict
             "cooldown_seconds": 60.0,
+            "webhook_username": None,
+            "webhook_avatar": None,
         }
         self.config.register_guild(**default_guild)
 
@@ -152,6 +154,20 @@ class ClaimRole(commands.Cog):
         self._button_cooldowns: Dict[Tuple[int, int, int], float] = {}
         # Concurrency protection: user_id -> asyncio.Lock
         self._user_locks: Dict[int, asyncio.Lock] = {}
+
+    async def get_or_create_webhook(self, channel: discord.TextChannel, name: str = "ClaimRole") -> Optional[discord.Webhook]:
+        """Find an existing bot-owned webhook or create a new one in the channel."""
+        if not channel.permissions_for(channel.guild.me).manage_webhooks:
+            return None
+        try:
+            webhooks = await channel.webhooks()
+            for wh in webhooks:
+                if wh.user and wh.user.id == self.bot.user.id:
+                    return wh
+            return await channel.create_webhook(name=name, reason="ClaimRole Webhook")
+        except Exception as e:
+            logger.warning("Error fetching or creating webhook in %s: %s", channel.name, e)
+            return None
 
     async def cog_load(self) -> None:
         """Register persistent dynamic items on cog load."""
@@ -584,11 +600,17 @@ class ClaimRole(commands.Cog):
         Import and post a message designed on Discohook (discohook.org).
 
         You can paste the Discohook JSON directly or attach a .json file!
-        Once posted, use '[p]claimrole addbutton' to attach role claim buttons to it.
+        Add '--lang' anywhere in the command to automatically attach the 7 language role buttons.
+        Once posted, you can also use '[p]claimrole addbutton' to attach custom role buttons.
         """
         import json
 
         raw_json = json_input or ""
+        add_lang = False
+        if "--lang" in raw_json.lower() or "--languages" in raw_json.lower():
+            add_lang = True
+            raw_json = re.sub(r"--lang(?:uages)?", "", raw_json, flags=re.IGNORECASE).strip()
+
         if ctx.message.attachments:
             att = ctx.message.attachments[0]
             if att.filename.lower().endswith(".json") or att.content_type in ("application/json", "text/plain"):
@@ -619,6 +641,7 @@ class ClaimRole(commands.Cog):
 
         content = data.get("content")
         embed_dicts = data.get("embeds", [])
+        attachments = data.get("attachments", [])
         username = data.get("username")
         avatar_url = data.get("avatar_url")
 
@@ -629,39 +652,68 @@ class ClaimRole(commands.Cog):
             except Exception as e:
                 logger.warning("Could not parse embed from JSON: %s", e)
 
+        if not content and not embeds and attachments:
+            for att_item in attachments:
+                att_url = att_item.get("url")
+                if att_url:
+                    em = discord.Embed(color=discord.Color.dark_theme())
+                    em.set_image(url=att_url)
+                    embeds.append(em)
+
         if not content and not embeds:
-            await ctx.send("❌ The provided JSON has no text content or embeds to post.")
+            await ctx.send("❌ The provided JSON has no text content, embeds, or attachments to post.")
             return
 
-        use_webhook = bool(username or avatar_url)
-        msg = None
-
-        if use_webhook and channel.permissions_for(ctx.guild.me).manage_webhooks:
-            try:
-                webhooks = await channel.webhooks()
-                webhook = None
-                for wh in webhooks:
-                    if wh.user and wh.user.id == self.bot.user.id:
-                        webhook = wh
+        # Prepare language buttons if language flag was requested
+        buttons_data = []
+        if add_lang:
+            lang_specs = [
+                {"name": "English Speaker", "label": "English", "emoji": "🇺🇸", "style": "blurple"},
+                {"name": "PT BR Speaker", "label": "Português", "emoji": "🇧🇷", "style": "green"},
+                {"name": "Tagalog Speaker", "label": "Tagalog", "emoji": "🇵🇭", "style": "blurple"},
+                {"name": "Hindi Speaker", "label": "Hindi", "emoji": "🇮🇳", "style": "green"},
+                {"name": "Indonesian Speaker", "label": "Indonesian", "emoji": "🇮🇩", "style": "red"},
+                {"name": "Arabic Speaker", "label": "Arabic", "emoji": "🇸🇦", "style": "green"},
+                {"name": "French Speaker", "label": "Français", "emoji": "🇫🇷", "style": "blurple"},
+            ]
+            for spec in lang_specs:
+                for r in ctx.guild.roles:
+                    if r.name.lower() == spec["name"].lower():
+                        buttons_data.append({
+                            "role_id": r.id,
+                            "label": spec["label"],
+                            "style": spec["style"],
+                            "emoji": spec["emoji"],
+                        })
                         break
-                if not webhook:
-                    wh_name = username or "Role Panel"
-                    webhook = await channel.create_webhook(name=wh_name, reason="ClaimRole Discohook Import")
 
+        view = ClaimRoleView(buttons_data, guild=ctx.guild) if buttons_data else None
+
+        cfg_user = await self.config.guild(ctx.guild).webhook_username()
+        cfg_avatar = await self.config.guild(ctx.guild).webhook_avatar()
+        wh_name = username or cfg_user or "Role Panel"
+        wh_avatar = avatar_url or cfg_avatar
+
+        msg = None
+        webhook = await self.get_or_create_webhook(channel, name=wh_name)
+
+        if webhook:
+            try:
                 msg = await webhook.send(
                     content=content,
                     embeds=embeds,
-                    username=username or "Role Panel",
-                    avatar_url=avatar_url,
+                    username=wh_name,
+                    avatar_url=wh_avatar,
+                    view=view,
                     wait=True,
                 )
             except Exception as wh_err:
-                logger.warning("Webhook send failed, falling back to standard bot send: %s", wh_err)
-                use_webhook = False
+                logger.warning("Webhook send failed in fromjson, falling back: %s", wh_err)
+                msg = None
 
         if not msg:
             try:
-                msg = await channel.send(content=content, embeds=embeds)
+                msg = await channel.send(content=content, embeds=embeds, view=view)
             except discord.Forbidden:
                 await ctx.send("❌ I do not have permission to send messages or embeds in that channel.")
                 return
@@ -671,14 +723,16 @@ class ClaimRole(commands.Cog):
                 "channel_id": channel.id,
                 "message_id": msg.id,
                 "title": embeds[0].title if embeds else "Discohook Panel",
-                "buttons": [],
+                "buttons": buttons_data,
             }
 
+        btn_note = f"\n• Attached {len(buttons_data)} language buttons!" if buttons_data else ""
         await ctx.send(
             f"✅ **Discohook layout posted successfully in {channel.mention}!**\n"
-            f"Message ID: `{msg.id}`\n\n"
+            f"Message ID: `{msg.id}`{btn_note}\n\n"
             f"**To add role buttons, run:**\n"
-            f"`{ctx.clean_prefix}claimrole addbutton {channel.mention} {msg.id} @Role [color] [emoji] [label]`"
+            f"`{ctx.clean_prefix}claimrole addbutton {channel.mention} {msg.id} @Role [color] [emoji] [label]`\n"
+            f"*(Or run `{ctx.clean_prefix}claimrole addlangbuttons {channel.mention} {msg.id}` to attach language roles)*"
         )
 
     @claimrole_group.command(name="langpanel", aliases=["languages", "lang"])
@@ -686,20 +740,28 @@ class ClaimRole(commands.Cog):
         self,
         ctx: commands.Context,
         channel: Optional[discord.TextChannel] = None,
-        banner_url: Optional[str] = None,
+        username: Optional[str] = None,
+        avatar_url: Optional[str] = None,
     ) -> None:
         """
-        Deploy the complete language role claim panel with only the banner picture and buttons!
-        Zero embed text or descriptions: purely the picture and the interactive buttons.
+        Deploy the language role claim panel with only the banner picture and buttons!
+        Sends via Webhook if permissions allow, with custom username and avatar (PFP).
 
         Parameters:
         - channel: Target channel to post the panel (defaults to current channel)
-        - banner_url: Optional custom banner image URL or attached image
+        - username: Optional custom webhook display name (e.g. "Pub's Lounge")
+        - avatar_url: Optional custom webhook avatar URL
         """
         target_channel = channel or ctx.channel
         if not isinstance(target_channel, discord.TextChannel):
             await ctx.send("❌ Please specify a valid text channel.")
             return
+
+        # Check if 2nd argument was an image URL
+        custom_banner_url: Optional[str] = None
+        if username and username.startswith(("http://", "https://")):
+            custom_banner_url = username
+            username = None
 
         default_banner = "https://cdn.discordapp.com/attachments/1455330274232500461/1553860826816057485/qq173kj.png?ex=6abac92a&is=6ab977aa&hm=68a42cf995abc0623b7d4743b2b71d9463e95e8540e37227aed8294873addaf7&"
 
@@ -754,10 +816,10 @@ class ClaimRole(commands.Cog):
                     except Exception as e:
                         logger.warning("Failed to read attached banner image: %s", e)
 
-        if not image_bytes and banner_url and banner_url.startswith(("http://", "https://")):
+        if not image_bytes and custom_banner_url and custom_banner_url.startswith(("http://", "https://")):
             try:
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(banner_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    async with session.get(custom_banner_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                         if resp.status == 200:
                             image_bytes = await resp.read()
             except Exception as e:
@@ -778,17 +840,50 @@ class ClaimRole(commands.Cog):
             except Exception as e:
                 logger.warning("Failed to download default banner from CDN: %s", e)
 
+        # Resolve Webhook identity for custom username and avatar
+        cfg_user = await self.config.guild(ctx.guild).webhook_username()
+        cfg_avatar = await self.config.guild(ctx.guild).webhook_avatar()
+
+        wh_name = username or cfg_user or ctx.guild.name
+        wh_avatar = avatar_url or cfg_avatar or (ctx.guild.icon.url if ctx.guild.icon else None)
+
         view = ClaimRoleView(buttons_data, guild=ctx.guild)
         msg: Optional[discord.Message] = None
 
-        if image_bytes:
-            file = discord.File(io.BytesIO(image_bytes), filename="roles_banner.png")
-            msg = await target_channel.send(file=file, view=view)
-        else:
-            # Fallback to pure image embed (zero text, zero description, zero title)
-            embed = discord.Embed(color=discord.Color.dark_theme())
-            embed.set_image(url=banner_url or default_banner)
-            msg = await target_channel.send(embed=embed, view=view)
+        webhook = await self.get_or_create_webhook(target_channel, name=wh_name)
+        if webhook:
+            try:
+                if image_bytes:
+                    file = discord.File(io.BytesIO(image_bytes), filename="roles_banner.png")
+                    msg = await webhook.send(
+                        file=file,
+                        view=view,
+                        username=wh_name,
+                        avatar_url=wh_avatar,
+                        wait=True,
+                    )
+                else:
+                    embed = discord.Embed(color=discord.Color.dark_theme())
+                    embed.set_image(url=custom_banner_url or default_banner)
+                    msg = await webhook.send(
+                        embed=embed,
+                        view=view,
+                        username=wh_name,
+                        avatar_url=wh_avatar,
+                        wait=True,
+                    )
+            except Exception as wh_err:
+                logger.warning("Webhook send failed in langpanel, falling back: %s", wh_err)
+                webhook = None
+
+        if not msg:
+            if image_bytes:
+                file = discord.File(io.BytesIO(image_bytes), filename="roles_banner.png")
+                msg = await target_channel.send(file=file, view=view)
+            else:
+                embed = discord.Embed(color=discord.Color.dark_theme())
+                embed.set_image(url=custom_banner_url or default_banner)
+                msg = await target_channel.send(embed=embed, view=view)
 
         async with self.config.guild(ctx.guild).panels() as panels:
             panels[str(msg.id)] = {
@@ -798,7 +893,8 @@ class ClaimRole(commands.Cog):
                 "buttons": buttons_data,
             }
 
-        response_txt = f"✅ **Language role panel deployed in {target_channel.mention}!** (Message ID: `{msg.id}`)\n"
+        wh_info = f" (via Webhook **{wh_name}**)" if webhook else ""
+        response_txt = f"✅ **Language role panel deployed in {target_channel.mention}!**{wh_info} (Message ID: `{msg.id}`)\n"
         response_txt += f"Added {len(buttons_data)} buttons: " + ", ".join([r.mention for r in found_roles])
         if missing_roles:
             response_txt += f"\n⚠️ Missing roles not found in server: " + ", ".join([f"`{m}`" for m in missing_roles])
@@ -847,13 +943,44 @@ class ClaimRole(commands.Cog):
             )
             return
 
-        if image_bytes:
-            file = discord.File(io.BytesIO(image_bytes), filename="panel_image.png")
-            msg = await target_channel.send(file=file)
-        else:
-            embed = discord.Embed(color=discord.Color.dark_theme())
-            embed.set_image(url=image_url)
-            msg = await target_channel.send(embed=embed)
+        cfg_user = await self.config.guild(ctx.guild).webhook_username()
+        cfg_avatar = await self.config.guild(ctx.guild).webhook_avatar()
+        wh_name = cfg_user or ctx.guild.name
+        wh_avatar = cfg_avatar or (ctx.guild.icon.url if ctx.guild.icon else None)
+
+        msg = None
+        webhook = await self.get_or_create_webhook(target_channel, name=wh_name)
+        if webhook:
+            try:
+                if image_bytes:
+                    file = discord.File(io.BytesIO(image_bytes), filename="panel_image.png")
+                    msg = await webhook.send(
+                        file=file,
+                        username=wh_name,
+                        avatar_url=wh_avatar,
+                        wait=True,
+                    )
+                else:
+                    embed = discord.Embed(color=discord.Color.dark_theme())
+                    embed.set_image(url=image_url)
+                    msg = await webhook.send(
+                        embed=embed,
+                        username=wh_name,
+                        avatar_url=wh_avatar,
+                        wait=True,
+                    )
+            except Exception as wh_err:
+                logger.warning("Webhook send failed in imagepanel, falling back: %s", wh_err)
+                msg = None
+
+        if not msg:
+            if image_bytes:
+                file = discord.File(io.BytesIO(image_bytes), filename="panel_image.png")
+                msg = await target_channel.send(file=file)
+            else:
+                embed = discord.Embed(color=discord.Color.dark_theme())
+                embed.set_image(url=image_url)
+                msg = await target_channel.send(embed=embed)
 
         async with self.config.guild(ctx.guild).panels() as panels:
             panels[str(msg.id)] = {
@@ -863,12 +990,138 @@ class ClaimRole(commands.Cog):
                 "buttons": [],
             }
 
+        wh_info = f" (via Webhook **{wh_name}**)" if webhook else ""
         await ctx.send(
-            f"✅ **Picture panel posted in {target_channel.mention}!**\n"
+            f"✅ **Picture panel posted in {target_channel.mention}!**{wh_info}\n"
             f"Message ID: `{msg.id}`\n\n"
             f"**To add role buttons, run:**\n"
             f"`{ctx.clean_prefix}claimrole addbutton {target_channel.mention} {msg.id} @Role [color] [emoji] [label]`"
         )
+
+    @claimrole_group.command(name="setwebhook", aliases=["webhookprofile", "setprofile"])
+    async def claimrole_setwebhook(
+        self,
+        ctx: commands.Context,
+        username: str,
+        avatar_url: Optional[str] = None,
+    ) -> None:
+        """
+        Configure the custom Webhook username and avatar (PFP) for role panels!
+
+        You can pass the avatar URL as a parameter or attach an image to your command message.
+        """
+        final_avatar = avatar_url
+
+        if ctx.message.attachments:
+            for att in ctx.message.attachments:
+                if att.content_type and att.content_type.startswith("image/"):
+                    final_avatar = att.url
+                    break
+
+        await self.config.guild(ctx.guild).webhook_username.set(username)
+        if final_avatar:
+            await self.config.guild(ctx.guild).webhook_avatar.set(final_avatar)
+
+        response = f"✅ Custom Webhook profile configured!\n• **Username**: {username}"
+        if final_avatar:
+            response += f"\n• **Avatar**: {final_avatar}"
+        await ctx.send(response)
+
+    @claimrole_group.command(name="clearwebhook", aliases=["resetwebhook"])
+    async def claimrole_clearwebhook(self, ctx: commands.Context) -> None:
+        """Reset custom Webhook profile to default server name and icon."""
+        await self.config.guild(ctx.guild).webhook_username.set(None)
+        await self.config.guild(ctx.guild).webhook_avatar.set(None)
+        await ctx.send("✅ Custom Webhook profile reset to default.")
+
+    @claimrole_group.command(name="addlangbuttons", aliases=["langbuttons", "addlang"])
+    async def claimrole_addlangbuttons(
+        self,
+        ctx: commands.Context,
+        channel: discord.TextChannel,
+        message_id: int,
+    ) -> None:
+        """
+        Instantly attach all 7 language role buttons to ANY message or Discohook webhook message!
+        """
+        try:
+            target_msg = await channel.fetch_message(message_id)
+        except discord.NotFound:
+            await ctx.send("❌ Message not found. Please verify the channel and message ID.")
+            return
+        except discord.Forbidden:
+            await ctx.send("❌ I do not have permission to view messages in that channel.")
+            return
+
+        lang_specs = [
+            {"name": "English Speaker", "label": "English", "emoji": "🇺🇸", "style": "blurple"},
+            {"name": "PT BR Speaker", "label": "Português", "emoji": "🇧🇷", "style": "green"},
+            {"name": "Tagalog Speaker", "label": "Tagalog", "emoji": "🇵🇭", "style": "blurple"},
+            {"name": "Hindi Speaker", "label": "Hindi", "emoji": "🇮🇳", "style": "green"},
+            {"name": "Indonesian Speaker", "label": "Indonesian", "emoji": "🇮🇩", "style": "red"},
+            {"name": "Arabic Speaker", "label": "Arabic", "emoji": "🇸🇦", "style": "green"},
+            {"name": "French Speaker", "label": "Français", "emoji": "🇫🇷", "style": "blurple"},
+        ]
+
+        buttons_data = []
+        found_roles = []
+        missing_roles = []
+
+        for spec in lang_specs:
+            matched = None
+            for r in ctx.guild.roles:
+                if r.name.lower() == spec["name"].lower():
+                    matched = r
+                    break
+            if matched:
+                buttons_data.append({
+                    "role_id": matched.id,
+                    "label": spec["label"],
+                    "style": spec["style"],
+                    "emoji": spec["emoji"],
+                })
+                found_roles.append(matched)
+            else:
+                missing_roles.append(spec["name"])
+
+        if not buttons_data:
+            roles_list = ", ".join([f"`{s['name']}`" for s in lang_specs])
+            await ctx.send(
+                f"❌ None of the language roles were found in this server!\n"
+                f"Please create the roles first in Server Settings > Roles:\n{roles_list}"
+            )
+            return
+
+        view = ClaimRoleView(buttons_data, guild=ctx.guild)
+        if target_msg.webhook_id:
+            edited = False
+            try:
+                webhooks = await channel.webhooks()
+                for wh in webhooks:
+                    if wh.id == target_msg.webhook_id:
+                        await wh.edit_message(message_id, view=view)
+                        edited = True
+                        break
+            except Exception as wh_err:
+                logger.warning("Could not edit webhook message via webhook: %s", wh_err)
+            if not edited:
+                await target_msg.edit(view=view)
+        else:
+            await target_msg.edit(view=view)
+
+        async with self.config.guild(ctx.guild).panels() as panels:
+            panels[str(message_id)] = {
+                "channel_id": channel.id,
+                "message_id": message_id,
+                "title": "Language Roles",
+                "buttons": buttons_data,
+            }
+
+        response_txt = f"✅ **Attached {len(buttons_data)} language buttons to message `{message_id}` in {channel.mention}!**\n"
+        response_txt += f"Added buttons: " + ", ".join([r.mention for r in found_roles])
+        if missing_roles:
+            response_txt += f"\n⚠️ Missing roles: " + ", ".join([f"`{m}`" for m in missing_roles])
+        await ctx.send(response_txt)
 
     @claimrole_group.command(name="cooldown")
     async def claimrole_cooldown(self, ctx: commands.Context, seconds: float) -> None:

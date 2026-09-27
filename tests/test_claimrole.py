@@ -279,13 +279,14 @@ async def test_claimrole_langpanel_command(mock_bot, mock_guild):
     channel = MagicMock(spec=discord.TextChannel)
     channel.id = 555444333
     channel.mention = "<#555444333>"
+    channel.permissions_for.return_value = MagicMock(manage_webhooks=False)
 
     fake_msg = MagicMock()
     fake_msg.id = 99112233
     channel.send = AsyncMock(return_value=fake_msg)
 
     banner_url = "https://cdn.discordapp.com/attachments/banner.png"
-    await cog.claimrole_langpanel.callback(cog, ctx, channel, banner_url=banner_url)
+    await cog.claimrole_langpanel.callback(cog, ctx, channel, username=banner_url)
 
     channel.send.assert_awaited_once()
     send_kwargs = channel.send.call_args[1]
@@ -318,6 +319,59 @@ async def test_claimrole_langpanel_command(mock_bot, mock_guild):
 
 
 @pytest.mark.asyncio
+async def test_claimrole_langpanel_with_webhook(mock_bot, mock_guild):
+    cog = ClaimRole(mock_bot)
+
+    role_names = [
+        "English Speaker", "PT BR Speaker", "Tagalog Speaker",
+        "Hindi Speaker", "Indonesian Speaker", "Arabic Speaker", "French Speaker"
+    ]
+    mock_roles = []
+    for idx, name in enumerate(role_names, 1):
+        r = MagicMock(spec=discord.Role)
+        r.id = 2000 + idx
+        r.name = name
+        r.mention = f"<@&{2000 + idx}>"
+        mock_roles.append(r)
+    mock_guild.roles = mock_roles
+
+    ctx = MagicMock()
+    ctx.guild = mock_guild
+    ctx.channel = MagicMock(spec=discord.TextChannel)
+    ctx.message.attachments = []
+    ctx.send = AsyncMock()
+
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = 666777888
+    channel.mention = "<#666777888>"
+    channel.permissions_for.return_value = MagicMock(manage_webhooks=True)
+
+    fake_msg = MagicMock()
+    fake_msg.id = 88990011
+    mock_wh = MagicMock(spec=discord.Webhook)
+    mock_wh.user = mock_bot.user
+    mock_wh.send = AsyncMock(return_value=fake_msg)
+    channel.webhooks = AsyncMock(return_value=[mock_wh])
+
+    await cog.claimrole_langpanel.callback(
+        cog,
+        ctx,
+        channel,
+        username="Pub's Lounge",
+        avatar_url="https://example.com/avatar.png",
+    )
+
+    mock_wh.send.assert_awaited_once()
+    wh_kwargs = mock_wh.send.call_args[1]
+    assert wh_kwargs["username"] == "Pub's Lounge"
+    assert wh_kwargs["avatar_url"] == "https://example.com/avatar.png"
+    assert len(wh_kwargs["view"].children) == 7
+
+    ctx.send.assert_awaited_once()
+    assert "via Webhook **Pub's Lounge**" in ctx.send.call_args[0][0]
+
+
+@pytest.mark.asyncio
 async def test_claimrole_imagepanel_command(mock_bot, mock_guild):
     cog = ClaimRole(mock_bot)
 
@@ -331,6 +385,7 @@ async def test_claimrole_imagepanel_command(mock_bot, mock_guild):
     channel = MagicMock(spec=discord.TextChannel)
     channel.id = 777666555
     channel.mention = "<#777666555>"
+    channel.permissions_for.return_value = MagicMock(manage_webhooks=False)
 
     fake_msg = MagicMock()
     fake_msg.id = 44556677
@@ -354,6 +409,77 @@ async def test_claimrole_imagepanel_command(mock_bot, mock_guild):
     response = ctx.send.call_args[0][0]
     assert "Picture panel posted in" in response
     assert "44556677" in response
+
+
+@pytest.mark.asyncio
+async def test_claimrole_setwebhook_command(mock_bot, mock_guild):
+    cog = ClaimRole(mock_bot)
+
+    ctx = MagicMock()
+    ctx.guild = mock_guild
+    ctx.message.attachments = []
+    ctx.send = AsyncMock()
+
+    await cog.claimrole_setwebhook.callback(
+        cog,
+        ctx,
+        username="Custom Roles App",
+        avatar_url="https://example.com/pfp.png",
+    )
+    ctx.send.assert_awaited_once()
+    assert "Custom Roles App" in ctx.send.call_args[0][0]
+
+    u = await cog.config.guild(mock_guild).webhook_username()
+    a = await cog.config.guild(mock_guild).webhook_avatar()
+    assert u == "Custom Roles App"
+    assert a == "https://example.com/pfp.png"
+
+    # Reset
+    ctx.send.reset_mock()
+    await cog.claimrole_clearwebhook.callback(cog, ctx)
+    ctx.send.assert_awaited_once()
+    assert await cog.config.guild(mock_guild).webhook_username() is None
+
+
+@pytest.mark.asyncio
+async def test_claimrole_addlangbuttons_command(mock_bot, mock_guild):
+    cog = ClaimRole(mock_bot)
+
+    role_names = [
+        "English Speaker", "PT BR Speaker", "Tagalog Speaker",
+        "Hindi Speaker", "Indonesian Speaker", "Arabic Speaker", "French Speaker"
+    ]
+    mock_roles = []
+    for idx, name in enumerate(role_names, 1):
+        r = MagicMock(spec=discord.Role)
+        r.id = 3000 + idx
+        r.name = name
+        r.mention = f"<@&{3000 + idx}>"
+        mock_roles.append(r)
+    mock_guild.roles = mock_roles
+
+    ctx = MagicMock()
+    ctx.guild = mock_guild
+    ctx.send = AsyncMock()
+
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = 12345
+    channel.mention = "<#12345>"
+
+    target_msg = MagicMock()
+    target_msg.id = 55443322
+    target_msg.webhook_id = None
+    target_msg.edit = AsyncMock()
+    channel.fetch_message = AsyncMock(return_value=target_msg)
+
+    await cog.claimrole_addlangbuttons.callback(cog, ctx, channel, message_id=55443322)
+
+    target_msg.edit.assert_awaited_once()
+    view = target_msg.edit.call_args[1]["view"]
+    assert len(view.children) == 7
+
+    ctx.send.assert_awaited_once()
+    assert "Attached 7 language buttons" in ctx.send.call_args[0][0]
 
 
 @pytest.mark.asyncio
