@@ -1,11 +1,12 @@
 """
 TipModal Cog for Red-DiscordBot.
-Provides an interactive button panel, Discord modal, and automated screenshot binding for tip verification.
+Provides an interactive button panel, Discord modal, and automated screenshot binding
+supporting both channel uploads and private DM screenshot uploads.
 """
 
 import logging
 import time
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 
 import discord
 from redbot.core import commands
@@ -47,7 +48,7 @@ class TipSubmissionModal(discord.ui.Modal, title="Tip & Pass Verification"):
 
     screenshot_link = discord.ui.TextInput(
         label="Screenshot Link (Optional)",
-        placeholder="Paste image link, or upload your image in the channel after submitting",
+        placeholder="Paste image link, or upload your image in DM / channel after submitting",
         max_length=300,
         style=discord.TextStyle.short,
         required=False,
@@ -67,7 +68,7 @@ class TipSubmissionModal(discord.ui.Modal, title="Tip & Pass Verification"):
         self.cog = cog
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        """Handle modal submission by posting a public ticket embed and ephemeral receipt."""
+        """Handle modal submission by posting a public ticket embed and notifying user in DM."""
         submitter = interaction.user
         game_name = self.game.value.strip()
         tip_method = self.method.value.strip()
@@ -76,21 +77,6 @@ class TipSubmissionModal(discord.ui.Modal, title="Tip & Pass Verification"):
         extra = self.extra_info.value.strip() or "None"
 
         has_image = bool(image_url and image_url.startswith(("http://", "https://")))
-
-        # Ephemeral confirmation receipt for the user
-        if has_image:
-            await interaction.response.send_message(
-                f"✅ **Tip details submitted successfully!**\n"
-                f"Your request for **{game_name}** with screenshot link has been recorded.",
-                ephemeral=True,
-            )
-        else:
-            await interaction.response.send_message(
-                f"✅ **Tip details submitted successfully!**\n"
-                f"Your request for **{game_name}** has been recorded.\n"
-                f"📸 **Next Step**: Drop or upload your screenshot proof in this channel now!",
-                ephemeral=True,
-            )
 
         # Public verification ticket embed sent into the channel
         embed = discord.Embed(
@@ -119,17 +105,16 @@ class TipSubmissionModal(discord.ui.Modal, title="Tip & Pass Verification"):
         else:
             embed.add_field(
                 name="📊 Status",
-                value="⏳ **Awaiting Screenshot Proof** (upload image below)",
+                value="⏳ **Awaiting Screenshot Proof** (Send in DM or upload below)",
                 inline=False,
             )
             embed.add_field(
                 name="📌 Next Step: Upload Screenshot Proof",
                 value=(
-                    "Please upload **1 screenshot** in this channel showing your payment proof:\n"
-                    "• **PayPal 1-Time Tip**: Note + game name (censor personal info)\n"
-                    "• **PayPal Pub Pass**: Profile ID starting with `I-xxxxxxx`\n"
-                    "• **Patreon**: Display name matching your active subscription\n"
-                    "• **Steam**: Confirmation from Azam Direct Messages"
+                    "Please provide **1 screenshot** of your payment proof:\n"
+                    "• **Private DM**: Reply with your screenshot directly to the bot in DMs\n"
+                    "• **Channel**: Or upload the screenshot directly in this channel\n"
+                    "• **Items needed**: Profile ID `I-xxxxxxx`, PayPal note, or Patreon name"
                 ),
                 inline=False,
             )
@@ -138,16 +123,69 @@ class TipSubmissionModal(discord.ui.Modal, title="Tip & Pass Verification"):
         embed.set_footer(text=f"User ID: {submitter.id} • TipModal Verification System")
 
         channel = interaction.channel
+        ticket_msg = None
         if channel:
             ticket_msg = await channel.send(embed=embed, view=view)
-            if not has_image and self.cog:
-                # Store pending submission so on_message can attach the screenshot automatically
-                key = (submitter.id, channel.id)
-                self.cog.pending_submissions[key] = {
-                    "message_id": ticket_msg.id,
-                    "created_at": time.time(),
-                    "game_name": game_name,
-                }
+
+        # Attempt to DM the user for private, secure screenshot submission
+        dm_sent = False
+        if not has_image and self.cog and ticket_msg:
+            self.cog.pending_submissions[submitter.id] = {
+                "message_id": ticket_msg.id,
+                "channel_id": channel.id,
+                "created_at": time.time(),
+                "game_name": game_name,
+            }
+
+            try:
+                chan_name = getattr(channel, "name", "verification-channel")
+                dm_embed = discord.Embed(
+                    title="🔒 Private Screenshot Upload for Tip Verification",
+                    color=discord.Color.blue(),
+                    description=(
+                        f"Hey {submitter.display_name}! Your tip submission for **{game_name}** has been posted in #{chan_name}.\n\n"
+                        "To protect your privacy and sensitive payment data, **reply to this DM with your screenshot image**.\n"
+                        "The bot will automatically attach it to your verification card in the server!"
+                    ),
+                )
+                dm_embed.add_field(
+                    name="Guidelines",
+                    value=(
+                        "• Keep visible: Profile ID (`I-xxxxxxx`), Discord username, game name\n"
+                        "• Censor / black out: Real names, email addresses, bank card numbers"
+                    ),
+                    inline=False,
+                )
+                dm_embed.set_footer(text="Reply to this DM with an image attachment to attach proof.")
+                await submitter.send(embed=dm_embed)
+                dm_sent = True
+            except discord.Forbidden:
+                dm_sent = False
+            except Exception as e:
+                logger.warning("Could not send DM to user %d: %s", submitter.id, e)
+                dm_sent = False
+
+        # Ephemeral confirmation receipt in the server channel
+        if has_image:
+            await interaction.response.send_message(
+                f"✅ **Tip details submitted successfully!**\n"
+                f"Your request for **{game_name}** with screenshot link has been recorded.",
+                ephemeral=True,
+            )
+        elif dm_sent:
+            await interaction.response.send_message(
+                f"✅ **Tip details submitted successfully!**\n"
+                f"📬 **Check your DMs**: I've sent you a Direct Message so you can privately and securely upload your screenshot proof.\n"
+                f"(Alternatively, you can also drop your image directly in this channel).",
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message(
+                f"✅ **Tip details submitted successfully!**\n"
+                f"Your request for **{game_name}** has been recorded.\n"
+                f"📸 **Next Step**: Drop or upload your screenshot proof in this channel below (your DMs appear closed).",
+                ephemeral=True,
+            )
 
 
 class SubmissionGuidanceView(discord.ui.View):
@@ -176,7 +214,7 @@ class SubmissionGuidanceView(discord.ui.View):
                 "3. **PayPal Pub Pass**: Profile ID (`I-xxxxxxx`) must be visible (not transaction or invoice ID).\n"
                 "4. **Patreon**: Show your Patreon account display name.\n"
                 "5. **Steam**: Include screenshot of confirmation message from Azam DM.\n\n"
-                "Simply drag and drop or upload your image directly to this channel!"
+                "🔒 **Private Option**: You can send your image in a Direct Message to the bot!"
             ),
         )
         await interaction.response.send_message(embed=guidance_embed, ephemeral=True)
@@ -198,7 +236,9 @@ class StaffReviewView(discord.ui.View):
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
         """Allow staff to approve the submitted tip."""
-        if not (interaction.user.guild_permissions.manage_messages or interaction.user.guild_permissions.administrator):
+        perms = interaction.user.guild_permissions if interaction.guild else None
+        is_staff = perms and (perms.manage_messages or perms.administrator)
+        if not is_staff:
             await interaction.response.send_message("❌ Only staff members can review submissions.", ephemeral=True)
             return
 
@@ -206,7 +246,6 @@ class StaffReviewView(discord.ui.View):
         if msg and msg.embeds:
             embed = msg.embeds[0]
             embed.color = discord.Color.green()
-            # Update status field
             new_fields = []
             for f in embed.fields:
                 if f.name == "📊 Status":
@@ -217,7 +256,6 @@ class StaffReviewView(discord.ui.View):
             for name, val, inline in new_fields:
                 embed.add_field(name=name, value=val, inline=inline)
 
-            # Disable buttons
             for child in self.children:
                 child.disabled = True
 
@@ -234,7 +272,9 @@ class StaffReviewView(discord.ui.View):
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
         """Allow staff to request a resubmission if proof is missing or invalid."""
-        if not (interaction.user.guild_permissions.manage_messages or interaction.user.guild_permissions.administrator):
+        perms = interaction.user.guild_permissions if interaction.guild else None
+        is_staff = perms and (perms.manage_messages or perms.administrator)
+        if not is_staff:
             await interaction.response.send_message("❌ Only staff members can review submissions.", ephemeral=True)
             return
 
@@ -317,8 +357,8 @@ class TipModal(commands.Cog):
 
     def __init__(self, bot: Red):
         self.bot = bot
-        # Mapping: (user_id, channel_id) -> {"message_id": int, "created_at": float, "game_name": str}
-        self.pending_submissions: Dict[Tuple[int, int], dict] = {}
+        # Mapping: user_id -> {"message_id": int, "channel_id": int, "created_at": float, "game_name": str}
+        self.pending_submissions: Dict[int, dict] = {}
 
     async def cog_load(self) -> None:
         """Register persistent views on startup so buttons survive restarts."""
@@ -329,48 +369,64 @@ class TipModal(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
-        """Automatically detect when a user with a pending submission uploads a screenshot."""
-        if message.author.bot or not message.guild:
+        """Automatically detect when a user with a pending submission uploads a screenshot (in channel or in DM)."""
+        if message.author.bot:
             return
 
-        key = (message.author.id, message.channel.id)
-        pending = self.pending_submissions.get(key)
+        user_id = message.author.id
+        pending = self.pending_submissions.get(user_id)
         if not pending:
             return
 
-        # Expire pending submissions older than 20 minutes
-        if time.time() - pending.get("created_at", 0) > 1200:
-            self.pending_submissions.pop(key, None)
+        is_dm = message.guild is None
+
+        # If sent in a guild, make sure it's the right channel
+        if not is_dm and message.channel.id != pending.get("channel_id"):
+            return
+
+        # Expire pending submissions older than 30 minutes
+        if time.time() - pending.get("created_at", 0) > 1800:
+            self.pending_submissions.pop(user_id, None)
             return
 
         # Check for image attachments
         image_attachments = [
             a for a in message.attachments
-            if a.content_type and a.content_type.startswith("image/")
+            if (a.content_type and a.content_type.startswith("image/"))
             or any(a.filename.lower().endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".webp", ".gif"))
         ]
 
         if not image_attachments:
             return
 
-        # Pop the pending submission
-        self.pending_submissions.pop(key, None)
+        # Consume pending submission
+        self.pending_submissions.pop(user_id, None)
         screenshot = image_attachments[0]
 
+        target_channel_id = pending["channel_id"]
+        target_message_id = pending["message_id"]
+
+        channel = self.bot.get_channel(target_channel_id)
+        if not channel:
+            try:
+                channel = await self.bot.fetch_channel(target_channel_id)
+            except Exception as e:
+                logger.warning("Could not find ticket channel %d: %s", target_channel_id, e)
+                return
+
         try:
-            ticket_msg = await message.channel.fetch_message(pending["message_id"])
+            ticket_msg = await channel.fetch_message(target_message_id)
             if ticket_msg and ticket_msg.embeds:
                 embed = ticket_msg.embeds[0]
                 embed.set_image(url=screenshot.url)
                 embed.color = discord.Color.blue()
 
-                # Update status field and remove instructions field
+                status_text = "🟢 **Ready for Staff Review** (Proof sent privately in DM)" if is_dm else "🟢 **Ready for Staff Review** (Proof attached)"
+
                 new_fields = []
                 for f in embed.fields:
                     if f.name == "📊 Status":
-                        new_fields.append(
-                            ("📊 Status", "🟢 **Ready for Staff Review** (Proof attached)", False)
-                        )
+                        new_fields.append(("📊 Status", status_text, False))
                     elif f.name.startswith("📌 Next Step"):
                         continue
                     else:
@@ -388,12 +444,19 @@ class TipModal(commands.Cog):
                 except Exception:
                     pass
 
-                await message.reply(
-                    f"✅ **Screenshot attached!** Your tip submission for **{pending.get('game_name', 'game')}** is now ready for staff review.",
-                    delete_after=15,
-                )
+                if is_dm:
+                    chan_mention = f"#{channel.name}" if hasattr(channel, "name") else "the server channel"
+                    await message.reply(
+                        f"✅ **Screenshot received and attached securely!**\n"
+                        f"Your verification card for **{pending.get('game_name', 'game')}** in {chan_mention} has been updated for staff review.",
+                    )
+                else:
+                    await message.reply(
+                        f"✅ **Screenshot attached!** Your tip submission for **{pending.get('game_name', 'game')}** is now ready for staff review.",
+                        delete_after=15,
+                    )
         except Exception as err:
-            logger.warning("Failed to auto-bind screenshot to ticket %d: %s", pending["message_id"], err)
+            logger.warning("Failed to auto-bind screenshot to ticket %d: %s", target_message_id, err)
 
     @commands.hybrid_command(
         name="tipmodal",
@@ -411,7 +474,8 @@ class TipModal(commands.Cog):
                 "• **PayPal 1-Time Tip**: Note with Discord username and requested game\n"
                 "• **PayPal Pub Pass**: Profile ID (`I-xxxxxxx`) and pass tier\n"
                 "• **Steam Wallet / Trade**: Confirmation from Azam DM or trade offer\n\n"
-                "Click **Fill Tip Verification Form** below to start. Once submitted, upload your verification screenshot in this channel."
+                "Click **Fill Tip Verification Form** below to start.\n"
+                "🔒 You will be able to upload your screenshot privately in DMs with the bot or directly in this channel."
             ),
         )
         embed.set_thumbnail(url=ctx.guild.icon.url if ctx.guild and ctx.guild.icon else None)
