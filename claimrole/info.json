@@ -1,0 +1,15 @@
+{
+    "name": "ClaimRole",
+    "short": "Interactive button role claim system with anti-abuse protection",
+    "description": "Create customizable button role panels with custom emojis, colors, labels, webhook support, and built-in anti-spam abuse protection.",
+    "end_user_data_statement": "This cog stores role panel message IDs and configuration settings per server. It does not store personal user data.",
+    "install_msg": "ClaimRole loaded. Use `[p]claimrole` to create and manage button role claim panels with anti-abuse protection.",
+    "author": ["Sablinova"],
+    "required_cogs": {},
+    "requirements": [],
+    "tags": ["roles", "buttons", "reactionroles", "claimrole", "anti-abuse"],
+    "min_bot_version": "3.5.0",
+    "hidden": false,
+    "disabled": false,
+    "type": "COG"
+}
