@@ -649,11 +649,14 @@ class DenuvoWatch(commands.Cog):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=849201337, force_registration=True)
         self.config.register_global(
+            games={},      # master store: appid -> snapshot (shared across guilds)
+            history={},    # master build history: appid -> {build_id: {...}}
+        )
+        self.config.register_guild(
+            watched_appids=[],      # this guild's watchlist — references into `games`
             notify_channel_id=None,
             notify_user_id=None,
             notify_role_id=None,
-            games={},
-            history={},
         )
         self.session = aiohttp.ClientSession() # Added session
         self._startup_task: Optional[asyncio.Task] = None
@@ -720,14 +723,75 @@ class DenuvoWatch(commands.Cog):
     async def _save_history(self, history: dict):
         await self.config.history.set(history)
 
-    async def _get_notify_mention(self) -> str:
-        role_id = await self.config.notify_role_id()
+    def _mention_from(self, gconf: dict) -> str:
+        role_id = gconf.get("notify_role_id")
         if role_id:
             return f"<@&{role_id}>"
-        user_id = await self.config.notify_user_id()
+        user_id = gconf.get("notify_user_id")
         if user_id:
             return f"<@{user_id}>"
         return ""
+
+    async def _watchers_for(self, appid_str: str) -> dict:
+        """Guild configs ({guild_id: conf}) that currently watch this appid."""
+        all_guilds = await self.config.all_guilds()
+        return {
+            gid: gconf
+            for gid, gconf in all_guilds.items()
+            if appid_str in (gconf.get("watched_appids") or [])
+        }
+
+    async def _dispatch_change(self, appid_str: str, embed, *, mention: bool = False):
+        """Send an embed to every guild watching `appid_str`, each to its own
+        notify channel (pinging that guild's role/user when `mention` is set)."""
+        allowed = discord.AllowedMentions(users=True, roles=True)
+        for gid, gconf in (await self._watchers_for(appid_str)).items():
+            channel_id = gconf.get("notify_channel_id")
+            if not channel_id:
+                continue
+            channel = self.bot.get_channel(channel_id)
+            if channel is None:
+                print(f"[DenuvoWatch][WARN] notify channel {channel_id} for guild {gid} not found.")
+                continue
+            content = self._mention_from(gconf) if mention else None
+            try:
+                await channel.send(content=content, embed=embed, allowed_mentions=allowed)
+            except Exception as e:
+                print(f"[DenuvoWatch][WARN] dispatch to guild {gid} failed: {e}")
+
+    async def _guild_games(self, guild) -> dict:
+        """Subset of the master `games` store that `guild` watches."""
+        watched = set(await self.config.guild(guild).watched_appids())
+        games = await self._load_games()
+        return {a: info for a, info in games.items() if a in watched}
+
+    async def _require_guild(self, ctx) -> bool:
+        if ctx.guild is None:
+            await ctx.send("❌ This command can only be used in a server, not in DMs.", ephemeral=True)
+            return False
+        return True
+
+    async def _unwatch(self, guild, appid_str: str) -> bool:
+        """Unsubscribe `guild` from `appid_str`. When no guild watches it any
+        longer, drop it from the master `games` and `history` stores.
+        Returns True if the guild was actually watching it."""
+        watched = await self.config.guild(guild).watched_appids()
+        if appid_str not in watched:
+            return False
+        watched.remove(appid_str)
+        await self.config.guild(guild).watched_appids.set(watched)
+
+        # Reference counting: only purge master data once nobody watches it.
+        if not await self._watchers_for(appid_str):
+            games = await self._load_games()
+            if appid_str in games:
+                del games[appid_str]
+                await self._save_games(games)
+            history = await self._load_history()
+            if appid_str in history:
+                del history[appid_str]
+                await self._save_history(history)
+        return True
 
     async def _confirm_denuvo_change(self, appid_str: str, expected_new_value: bool):
         try:
@@ -751,17 +815,16 @@ class DenuvoWatch(commands.Cog):
             if old_denuvo == expected_new_value:
                 return
 
-            channel_id = await self.config.notify_channel_id()
-            channel = self.bot.get_channel(channel_id) if channel_id else None
             old_snapshot = dict(current)
             new_snapshot = dict(current)
             new_snapshot["denuvo"] = expected_new_value
             new_snapshot["name"] = recheck["name"]
             new_snapshot["header"] = recheck.get("header")
 
-            if channel is not None:
-                change_type = "denuvo_removed" if (old_denuvo and not expected_new_value) else "denuvo_added"
-                await channel.send(embed=build_denuvo_embed(appid, change_type, old_snapshot, new_snapshot))
+            change_type = "denuvo_removed" if (old_denuvo and not expected_new_value) else "denuvo_added"
+            await self._dispatch_change(
+                appid_str, build_denuvo_embed(appid, change_type, old_snapshot, new_snapshot)
+            )
 
             games[appid_str]["denuvo"] = expected_new_value
             await self._save_games(games)
@@ -774,25 +837,30 @@ class DenuvoWatch(commands.Cog):
             self._pending_denuvo_confirms.pop(appid_str, None)
 
     # ── background check ─────────────────────────────────────────────────
-    async def check_games_internal(self, full_refresh: bool = False) -> bool:
+    async def check_games_internal(self, full_refresh: bool = False, scope=None) -> bool:
+        """Scan watched games and fan out notifications.
+
+        `scope=None` scans every game in the master store (background loop).
+        `scope=<guild>` scans only the appids that guild watches (dforcecheck).
+        Detected changes are always dispatched to *all* guilds watching the
+        affected appid, regardless of scope.
+        """
         changes = False
         try:
-            channel_id = await self.config.notify_channel_id()
-            if not channel_id:
-                print("[DenuvoWatch][WARN] No notify channel configured.")
-                return False
-            channel = self.bot.get_channel(channel_id)
-            if channel is None:
-                print(f"[DenuvoWatch][WARN] Notify channel {channel_id} not found.")
-                return False
-
             games = await self._load_games()
             if not games:
                 return False
 
-            allowed = discord.AllowedMentions(users=True, roles=True)
+            if scope is not None:
+                watched = set(await self.config.guild(scope).watched_appids())
+                target_ids = [a for a in games if a in watched]
+            else:
+                target_ids = list(games.keys())
 
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Checking {len(games)} games…")
+            if not target_ids:
+                return False
+
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Checking {len(target_ids)} games…")
 
             async def check_single(appid_str, old):
                 await asyncio.sleep(0.5)
@@ -803,8 +871,8 @@ class DenuvoWatch(commands.Cog):
                 return appid_str, new
 
             results = await asyncio.gather(*[
-                check_single(appid_str, old)
-                for appid_str, old in games.items()
+                check_single(appid_str, games[appid_str])
+                for appid_str in target_ids
             ])
             changed_appids = set()
 
@@ -826,7 +894,7 @@ class DenuvoWatch(commands.Cog):
 
                 # Release notification
                 if old.get("coming_soon") and not new.get("coming_soon"):
-                    await channel.send(embed=build_release_embed(appid, old, new))
+                    await self._dispatch_change(appid_str, build_release_embed(appid, old, new))
                     changes = True
                     print(f"[INFO] {new['name']} has released!")
 
@@ -845,11 +913,10 @@ class DenuvoWatch(commands.Cog):
                         new["old_build_size_bytes"] = old_total_bytes
                         new["new_build_size_bytes"] = new_total_bytes
 
-                        mention = await self._get_notify_mention()
-                        await channel.send(
-                            content=mention, 
-                            embed=build_depot_embed(appid, old_build, new_build, new),
-                            allowed_mentions=allowed
+                        await self._dispatch_change(
+                            appid_str,
+                            build_depot_embed(appid, old_build, new_build, new),
+                            mention=True,
                         )
                         changes = True
 
@@ -904,9 +971,9 @@ class DenuvoWatch(commands.Cog):
                     if dropped:
                         print(f"[INFO] {new['name']} has released, cleared coming_soon + release_date.")
 
-            # Full refresh for unchanged games
+            # Full refresh for unchanged games (within scope)
             if full_refresh:
-                refresh_targets = [a for a in games if a not in changed_appids]
+                refresh_targets = [a for a in target_ids if a not in changed_appids]
 
                 async def refresh_single(appid_str):
                     _, _, manifests, depot_sizes = await asyncio.to_thread(fetch_build_id, int(appid_str))
@@ -935,68 +1002,81 @@ class DenuvoWatch(commands.Cog):
         await self.check_games_internal()
 
     # ── shared add logic ──────────────────────────────────────────────────
-    async def _add_appid(self, ctx_or_interaction, games: dict, appid: int, send_func):
-        if str(appid) in games:
-            await send_func(f"ℹ️ **{games[str(appid)]['name']}** is already on the watchlist.")
+    async def _add_appid(self, guild, appid: int, send_func):
+        appid_str = str(appid)
+        watched = await self.config.guild(guild).watched_appids()
+        games = await self._load_games()
+
+        if appid_str in watched:
+            name = games.get(appid_str, {}).get("name", f"AppID {appid_str}")
+            await send_func(f"ℹ️ **{name}** is already on this server's watchlist.")
             return
 
-        if len(games) >= MAX_GAMES:
-            await send_func(f"❌ Watchlist is full ({MAX_GAMES} games max).")
+        if len(watched) >= MAX_GAMES:
+            await send_func(f"❌ This server's watchlist is full ({MAX_GAMES} games max).")
             return
 
-        snapshot = await asyncio.to_thread(get_game_snapshot, appid)
-        if snapshot is None:
-            await send_func(f"❌ Couldn't fetch data for AppID `{appid}`.")
-            return
+        if appid_str in games:
+            # Already tracked by another guild — just subscribe, no API call.
+            entry = games[appid_str]
+        else:
+            snapshot = await asyncio.to_thread(get_game_snapshot, appid)
+            if snapshot is None:
+                await send_func(f"❌ Couldn't fetch data for AppID `{appid}`.")
+                return
 
-        _, _, manifests, depot_sizes = await asyncio.to_thread(fetch_build_id, appid)
+            _, _, manifests, depot_sizes = await asyncio.to_thread(fetch_build_id, appid)
 
-        entry = {
-            "name": snapshot["name"],
-            "denuvo": snapshot["denuvo"],
-            "build_id": snapshot["build_id"],
-            "build_time": snapshot.get("build_time"),
-            "header": snapshot.get("header"),
-        }
-        if snapshot.get("coming_soon"):
-            entry["coming_soon"] = True
-            if snapshot.get("release_date"):
-                entry["release_date"] = snapshot["release_date"]
-            if snapshot.get("release_ts"):
-                entry["release_ts"] = snapshot["release_ts"]
-            if snapshot.get("release_precision"):
-                entry["release_precision"] = snapshot["release_precision"]
-        entry["manifests"] = manifests
-        entry["depot_sizes"] = depot_sizes
+            entry = {
+                "name": snapshot["name"],
+                "denuvo": snapshot["denuvo"],
+                "build_id": snapshot["build_id"],
+                "build_time": snapshot.get("build_time"),
+                "header": snapshot.get("header"),
+            }
+            if snapshot.get("coming_soon"):
+                entry["coming_soon"] = True
+                if snapshot.get("release_date"):
+                    entry["release_date"] = snapshot["release_date"]
+                if snapshot.get("release_ts"):
+                    entry["release_ts"] = snapshot["release_ts"]
+                if snapshot.get("release_precision"):
+                    entry["release_precision"] = snapshot["release_precision"]
+            entry["manifests"] = manifests
+            entry["depot_sizes"] = depot_sizes
 
-        games[str(appid)] = entry
-        await self._save_games(games)
+            games[appid_str] = entry
+            await self._save_games(games)
+
+        watched.append(appid_str)
+        await self.config.guild(guild).watched_appids.set(watched)
 
         embed = discord.Embed(
             title="✅ Added to Watchlist",
-            description=f"**[{snapshot['name']}](https://store.steampowered.com/app/{appid}/)**",
+            description=f"**[{entry['name']}](https://store.steampowered.com/app/{appid}/)**",
             color=discord.Color.blurple()
         )
-        embed.add_field(name="Denuvo", value="⚠️ Yes" if snapshot["denuvo"] else "✅ No", inline=True)
-        embed.add_field(name="Build ID", value=f"`{snapshot['build_id']}`" if snapshot["build_id"] else "Unknown", inline=True)
-        embed.add_field(name="Watchlist", value=f"{len(games)}/{MAX_GAMES} games", inline=True)
-        if snapshot.get("header"):
-            embed.set_thumbnail(url=snapshot["header"])
+        embed.add_field(name="Denuvo", value="⚠️ Yes" if entry.get("denuvo") else "✅ No", inline=True)
+        embed.add_field(name="Build ID", value=f"`{entry['build_id']}`" if entry.get("build_id") else "Unknown", inline=True)
+        embed.add_field(name="Watchlist", value=f"{len(watched)}/{MAX_GAMES} games", inline=True)
+        if entry.get("header"):
+            embed.set_thumbnail(url=entry["header"])
         embed.set_footer(text=f"AppID {appid}")
         await send_func(embed=embed)
 
     async def _game_name_autocomplete(
         self, interaction: discord.Interaction, current: str
     ) -> list:
-        now = asyncio.get_event_loop().time()
-        if now - self._name_cache_ts > self._name_cache_ttl:
-            try:
-                await asyncio.wait_for(self._refresh_name_cache(), timeout=1.5)
-            except Exception:
-                pass  # fall back to whatever's already cached (even if empty/stale)
+        guild = interaction.guild
+        if guild is None:
+            return []
+        try:
+            names = [info.get("name", "") for info in (await self._guild_games(guild)).values()]
+        except Exception:
+            return []  # never let autocomplete hang past Discord's ~3s window
 
         current_lower = current.lower()
-        matches = [name for name in self._name_cache if current_lower in name.lower()]
+        matches = [name for name in names if current_lower in name.lower()]
         return [
             discord.app_commands.Choice(name=name, value=name)
             for name in matches[:25]
@@ -1076,10 +1156,10 @@ class DenuvoWatch(commands.Cog):
     @discord.app_commands.describe(query="Game name or Steam AppID")
     @owner_only()
     async def dadd(self, ctx: commands.Context, *, query: str):
-        """Add a game to the watchlist by name or AppID."""
+        """Add a game to this server's watchlist by name or AppID."""
+        if not await self._require_guild(ctx):
+            return
         async with ctx.typing():
-            games = await self._load_games()
-
             if query.isdigit():
                 appid = int(query)
                 snapshot = await asyncio.to_thread(get_game_snapshot, appid)
@@ -1118,7 +1198,7 @@ class DenuvoWatch(commands.Cog):
                             candidates = [starts[0]]
 
         if len(candidates) == 1:
-            await self._add_appid(ctx, games, candidates[0]["appid"], ctx.send)
+            await self._add_appid(ctx.guild, candidates[0]["appid"], ctx.send)
             return
 
         options = [
@@ -1129,8 +1209,7 @@ class DenuvoWatch(commands.Cog):
 
         async def select_callback(inter: discord.Interaction):
             await inter.response.defer(thinking=True)
-            fresh_games = await self._load_games()
-            await self._add_appid(inter, fresh_games, int(select.values[0]), inter.followup.send)
+            await self._add_appid(inter.guild, int(select.values[0]), inter.followup.send)
 
         select.callback = select_callback
         view = discord.ui.View(timeout=60)
@@ -1141,10 +1220,12 @@ class DenuvoWatch(commands.Cog):
     @owner_only()
     @discord.app_commands.describe(query="Game name or AppID")
     async def dremove(self, ctx: commands.Context, *, query: str):
-        """Remove a game from the watchlist."""
-        games = await self._load_games()
+        """Remove a game from this server's watchlist."""
+        if not await self._require_guild(ctx):
+            return
+        games = await self._guild_games(ctx.guild)
         if not games:
-            await ctx.send("📭 Watchlist is empty.", ephemeral=True)
+            await ctx.send("📭 This server's watchlist is empty.", ephemeral=True)
             return
 
         matches = []
@@ -1166,14 +1247,13 @@ class DenuvoWatch(commands.Cog):
                     matches.append((appid_str, info))
 
             if not matches:
-                await ctx.send(f"❌ No game matching `{query}` on the watchlist.", ephemeral=True)
+                await ctx.send(f"❌ No game matching `{query}` on this server's watchlist.", ephemeral=True)
                 return
 
         if len(matches) == 1:
             appid_str, info = matches[0]
-            del games[appid_str]
-            await self._save_games(games)
-            await ctx.send(f"🗑️ Removed **{info['name']}** from the watchlist.", ephemeral=True)
+            await self._unwatch(ctx.guild, appid_str)
+            await ctx.send(f"🗑️ Removed **{info['name']}** from this server's watchlist.", ephemeral=True)
             return
 
         options = [
@@ -1183,12 +1263,11 @@ class DenuvoWatch(commands.Cog):
         select = discord.ui.Select(placeholder="Which game to remove?", options=options)
 
         async def cb(inter: discord.Interaction):
-            fresh_games = await self._load_games()
             chosen_id = select.values[0]
-            name = fresh_games[chosen_id]["name"]
-            del fresh_games[chosen_id]
-            await self._save_games(fresh_games)
-            await inter.response.send_message(f"🗑️ Removed **{name}** from the watchlist.", ephemeral=True)
+            guild_games = await self._guild_games(inter.guild)
+            name = guild_games.get(chosen_id, {}).get("name", chosen_id)
+            await self._unwatch(inter.guild, chosen_id)
+            await inter.response.send_message(f"🗑️ Removed **{name}** from this server's watchlist.", ephemeral=True)
 
         select.callback = cb
         view = discord.ui.View(timeout=60)
@@ -1202,12 +1281,14 @@ class DenuvoWatch(commands.Cog):
     @commands.hybrid_command(name="dlist")
     async def dlist(self, ctx: commands.Context):
         """Show all watched games and their status."""
-        games_dict = await self._load_games()
+        if not await self._require_guild(ctx):
+            return
+        games_dict = await self._guild_games(ctx.guild)
         if not games_dict:
-            await ctx.send("📭 Watchlist is empty. Use `dadd` to add games.")
+            await ctx.send("📭 This server's watchlist is empty. Use `dadd` to add games.")
             return
 
-        games = list(games_dict.items())
+        games = sorted(games_dict.items(), key=lambda x: x[1].get("name", "").lower())
 
         if len(games) <= 25:
             embed = discord.Embed(
@@ -1322,16 +1403,20 @@ class DenuvoWatch(commands.Cog):
     @commands.hybrid_command(name="dforcecheck")
     @owner_only()
     async def dforcecheck(self, ctx: commands.Context):
-        """Manually trigger a full watchlist scan."""
-        await ctx.send("🔄 Running full watchlist check now…")
-        changes = await self.check_games_internal(full_refresh=True)
+        """Manually trigger a full scan of this server's watchlist."""
+        if not await self._require_guild(ctx):
+            return
+        await ctx.send("🔄 Running check for this server's watchlist…", ephemeral=True)
+        changes = await self.check_games_internal(full_refresh=True, scope=ctx.guild)
         if not changes:
-            await ctx.send("✅ Check complete — no changes detected.")
+            await ctx.send("✅ Check complete — no changes detected.", ephemeral=True)
 
     @commands.hybrid_command(name="dupcoming")
     async def dupcoming(self, ctx: commands.Context):
-        """Show all upcoming (unreleased) games in the watchlist."""
-        games = await self._load_games()
+        """Show all upcoming (unreleased) games in this server's watchlist."""
+        if not await self._require_guild(ctx):
+            return
+        games = await self._guild_games(ctx.guild)
 
         upcoming = [
             (appid_str, info) for appid_str, info in games.items()
@@ -1339,7 +1424,7 @@ class DenuvoWatch(commands.Cog):
         ]
 
         if not upcoming:
-            await ctx.send("📭 No upcoming games on the watchlist right now.")
+            await ctx.send("📭 No upcoming games on this server's watchlist right now.")
             return
 
         def sort_key(item):
@@ -1378,8 +1463,10 @@ class DenuvoWatch(commands.Cog):
         show_manifests="Also show manifest IDs (default: False)"
     )
     async def ddepots(self, ctx: commands.Context, query: str, index: int = 0, show_manifests: bool = False):
-        """Show depot info for a watched game."""
-        games = await self._load_games()
+        """Show depot info for a game on this server's watchlist."""
+        if not await self._require_guild(ctx):
+            return
+        games = await self._guild_games(ctx.guild)
 
         appid = None
         if query.isdigit():
@@ -1391,12 +1478,12 @@ class DenuvoWatch(commands.Cog):
                     break
 
         if appid is None:
-            await ctx.send(f"❌ `{query}` not found in your watchlist.")
+            await ctx.send(f"❌ `{query}` not found in this server's watchlist.")
             return
 
         info = games.get(str(appid))
         if not info:
-            await ctx.send(f"❌ `{query}` not found in your watchlist.")
+            await ctx.send(f"❌ `{query}` not found in this server's watchlist.")
             return
 
         if index < 0 or index > 3:
@@ -1451,10 +1538,12 @@ class DenuvoWatch(commands.Cog):
 
     @commands.command(name="dexport")
     async def dexport(self, ctx: commands.Context):
-        """Export the current watchlist as a JSON file (re-importable via dimport)."""
-        games = await self._load_games()
+        """Export this server's watchlist as a JSON file (re-importable via dimport)."""
+        if not await self._require_guild(ctx):
+            return
+        games = await self._guild_games(ctx.guild)
         if not games:
-            await ctx.send("📭 Watchlist is empty — nothing to export.")
+            await ctx.send("📭 This server's watchlist is empty — nothing to export.")
             return
 
         payload = {"games": games}
@@ -1469,7 +1558,9 @@ class DenuvoWatch(commands.Cog):
     @commands.command(name="dimport")
     @owner_only()
     async def dimport(self, ctx: commands.Context, url: str = None):
-        """Import games into the watchlist from a JSON file or URL."""
+        """Import games into this server's watchlist from a JSON file or URL."""
+        if not await self._require_guild(ctx):
+            return
         raw = None
 
         if url:
@@ -1515,55 +1606,63 @@ class DenuvoWatch(commands.Cog):
             return
 
         games = await self._load_games()
+        watched = await self.config.guild(ctx.guild).watched_appids()
         added, skipped_existing, skipped_full, invalid = 0, 0, 0, 0
+        master_changed = False
 
         for appid_str, info in incoming.items():
             if not str(appid_str).isdigit() or not isinstance(info, dict):
                 invalid += 1
                 continue
-            
+
             appid_str = str(appid_str)
-            if appid_str in games:
+            if appid_str in watched:
                 skipped_existing += 1
                 continue
-            if len(games) >= MAX_GAMES:
+            if len(watched) >= MAX_GAMES:
                 skipped_full += 1
                 continue
-            
-            # Safely extract all fields the current bot relies on
-            games[appid_str] = {
-                "name": info.get("name", f"AppID {appid_str}"),
-                "denuvo": bool(info.get("denuvo", False)),
-                "build_id": info.get("build_id"),
-                "build_time": info.get("build_time"),
-                "header": info.get("header"),
-                "manifests": info.get("manifests", {}),
-                "depot_sizes": info.get("depot_sizes", {}),
-            }
-            
-            # Only add release data if it exists in the import
-            if info.get("coming_soon"):
-                games[appid_str]["coming_soon"] = True
-                if info.get("release_date"):
-                    games[appid_str]["release_date"] = info["release_date"]
-                if info.get("release_ts"):
-                    games[appid_str]["release_ts"] = info["release_ts"]
-                if info.get("release_precision"):
-                    games[appid_str]["release_precision"] = info["release_precision"]
-                    
+
+            # Ensure the game exists in the master store. If another guild
+            # already tracks it, keep the live (fresher) snapshot rather than
+            # overwriting it with possibly-stale export data.
+            if appid_str not in games:
+                games[appid_str] = {
+                    "name": info.get("name", f"AppID {appid_str}"),
+                    "denuvo": bool(info.get("denuvo", False)),
+                    "build_id": info.get("build_id"),
+                    "build_time": info.get("build_time"),
+                    "header": info.get("header"),
+                    "manifests": info.get("manifests", {}),
+                    "depot_sizes": info.get("depot_sizes", {}),
+                }
+                # Only add release data if it exists in the import
+                if info.get("coming_soon"):
+                    games[appid_str]["coming_soon"] = True
+                    if info.get("release_date"):
+                        games[appid_str]["release_date"] = info["release_date"]
+                    if info.get("release_ts"):
+                        games[appid_str]["release_ts"] = info["release_ts"]
+                    if info.get("release_precision"):
+                        games[appid_str]["release_precision"] = info["release_precision"]
+                master_changed = True
+
+            # Subscribe this guild.
+            watched.append(appid_str)
             added += 1
 
-        # Use our custom helper to ensure alphabetical sorting
-        await self._save_games(games)
+        if master_changed:
+            await self._save_games(games)
+        await self.config.guild(ctx.guild).watched_appids.set(watched)
 
-        lines = [f"✅ Imported **{added}** game(s). Watchlist now {len(games)}/{MAX_GAMES}."]
+        lines = [f"✅ Imported **{added}** game(s). This server's watchlist now {len(watched)}/{MAX_GAMES}."]
         if skipped_existing:
-            lines.append(f"• Skipped {skipped_existing} already on the watchlist.")
+            lines.append(f"• Skipped {skipped_existing} already on this server's watchlist.")
         if skipped_full:
             lines.append(f"• Skipped {skipped_full} — watchlist full ({MAX_GAMES} cap).")
         if invalid:
             lines.append(f"• Ignored {invalid} invalid entr(y/ies).")
-            
+
         await ctx.send("\n".join(lines))
     	
     # ── settings commands (Prefix Only) ───────────────────────────────────
@@ -1576,33 +1675,44 @@ class DenuvoWatch(commands.Cog):
     @denuvowatch.command(name="settings", with_app_command=False)
     @owner_only()
     async def denuvowatch_settings(self, ctx: commands.Context):
-        """View current DenuvoWatch settings."""
-        channel_id = await self.config.notify_channel_id()
-        user_id = await self.config.notify_user_id()
-        role_id = await self.config.notify_role_id()
+        """View this server's DenuvoWatch settings."""
+        if not await self._require_guild(ctx):
+            return
+        gconf = self.config.guild(ctx.guild)
+        channel_id = await gconf.notify_channel_id()
+        user_id = await gconf.notify_user_id()
+        role_id = await gconf.notify_role_id()
+        watched = await gconf.watched_appids()
         embed = discord.Embed(title="⚙️ DenuvoWatch Settings", color=discord.Color.blurple())
         embed.add_field(name="Notify Channel", value=f"<#{channel_id}>" if channel_id else "Not set", inline=False)
         embed.add_field(name="Notify User", value=f"<@{user_id}>" if user_id else "Not set", inline=True)
         embed.add_field(name="Notify Role", value=f"<@&{role_id}>" if role_id else "Not set", inline=True)
+        embed.add_field(name="Watchlist", value=f"{len(watched)}/{MAX_GAMES} games", inline=True)
         await ctx.send(embed=embed)
 
     @denuvowatch.command(name="channel", with_app_command=False)
     @owner_only()
     async def denuvowatch_channel(self, ctx: commands.Context, channel: discord.TextChannel):
-        """Set the channel where update embeds are posted."""
-        await self.config.notify_channel_id.set(channel.id)
+        """Set the channel where this server's update embeds are posted."""
+        if not await self._require_guild(ctx):
+            return
+        await self.config.guild(ctx.guild).notify_channel_id.set(channel.id)
         await ctx.send(f"✅ Notify channel set to {channel.mention}.")
 
     @denuvowatch.command(name="role", with_app_command=False)
     @owner_only()
     async def denuvowatch_role(self, ctx: commands.Context, role: Optional[discord.Role] = None):
-        """Set (or clear, if omitted) the role pinged on build changes."""
-        await self.config.notify_role_id.set(role.id if role else None)
+        """Set (or clear, if omitted) the role pinged on build changes in this server."""
+        if not await self._require_guild(ctx):
+            return
+        await self.config.guild(ctx.guild).notify_role_id.set(role.id if role else None)
         await ctx.send(f"✅ Notify role set to {role.mention}." if role else "✅ Notify role cleared.")
 
     @denuvowatch.command(name="user", with_app_command=False)
     @owner_only()
     async def denuvowatch_user(self, ctx: commands.Context, user: Optional[discord.User] = None):
-        """Set (or clear, if omitted) the user pinged on build changes."""
-        await self.config.notify_user_id.set(user.id if user else None)
+        """Set (or clear, if omitted) the user pinged on build changes in this server."""
+        if not await self._require_guild(ctx):
+            return
+        await self.config.guild(ctx.guild).notify_user_id.set(user.id if user else None)
         await ctx.send(f"✅ Notify user set to {user.mention}." if user else "✅ Notify user cleared.")
