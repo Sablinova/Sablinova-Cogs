@@ -1,0 +1,15 @@
+{
+    "name": "TipModal",
+    "short": "Interactive modal and button showcase for tip verifications",
+    "description": "Showcases Discord UI button and modal interactions for collecting tip details and game verification.",
+    "end_user_data_statement": "This cog does not persistently store any personal user data.",
+    "install_msg": "TipModal loaded. Run `[p]tipmodal` or `/tipmodal` to post the interactive tip verification panel with a button modal.",
+    "author": ["Sablinova"],
+    "required_cogs": {},
+    "requirements": [],
+    "tags": ["modal", "button", "tipping", "ui", "showcase"],
+    "min_bot_version": "3.5.0",
+    "hidden": false,
+    "disabled": false,
+    "type": "COG"
+}

@@ -24,6 +24,7 @@ Custom cogs for [Red-DiscordBot](https://github.com/Cog-Creators/Red-DiscordBot)
 | [RoleAll](roleall/) | Mass-assign a specific role to every member in the server. |
 | [TidbStats](tidbstats/) | Auto-updating embed displaying live statistics from The Intro Database API. |
 | [Sabby](sabby/) | Two-way bridge routing Red bot owner-mentions to a Sabby OpenClaw AI webhook. |
+| [TipModal](tipmodal/) | Interactive button and modal showcase for collecting tip verification and game requests. |
 
 ## Requirements
 
