@@ -426,9 +426,22 @@ class ClaimRole(commands.Cog):
             pdata["buttons"] = existing_buttons
             panels[str(message_id)] = pdata
 
-        # Reconstruct view and edit message
         view = ClaimRoleView(existing_buttons, guild=ctx.guild)
-        await target_msg.edit(view=view)
+        if target_msg.webhook_id:
+            edited = False
+            try:
+                webhooks = await channel.webhooks()
+                for wh in webhooks:
+                    if wh.id == target_msg.webhook_id:
+                        await wh.edit_message(message_id, view=view)
+                        edited = True
+                        break
+            except Exception:
+                pass
+            if not edited:
+                await target_msg.edit(view=view)
+        else:
+            await target_msg.edit(view=view)
         self.bot.add_view(view, message_id=message_id)
 
         await ctx.send(f"✅ Added button for **{role.name}** ({color}) to message `{message_id}`.")
@@ -464,7 +477,21 @@ class ClaimRole(commands.Cog):
 
         if target_msg:
             view = ClaimRoleView(updated, guild=ctx.guild) if updated else None
-            await target_msg.edit(view=view)
+            if target_msg.webhook_id:
+                edited = False
+                try:
+                    webhooks = await channel.webhooks()
+                    for wh in webhooks:
+                        if wh.id == target_msg.webhook_id:
+                            await wh.edit_message(message_id, view=view)
+                            edited = True
+                            break
+                except Exception:
+                    pass
+                if not edited:
+                    await target_msg.edit(view=view)
+            else:
+                await target_msg.edit(view=view)
 
         await ctx.send(f"✅ Removed button for **{role.name}** from message `{message_id}`.")
 
@@ -549,6 +576,115 @@ class ClaimRole(commands.Cog):
         await ctx.send(
             f"✅ Webhook role panel posted in {channel.mention} as **{webhook_name}**!\n"
             f"Message ID: `{msg.id}`"
+        )
+
+    @claimrole_group.command(name="fromjson", aliases=["discohook", "import"])
+    async def claimrole_fromjson(
+        self,
+        ctx: commands.Context,
+        channel: discord.TextChannel,
+        *,
+        json_input: Optional[str] = None,
+    ) -> None:
+        """
+        Import and post a message designed on Discohook (discohook.org).
+
+        You can paste the Discohook JSON directly or attach a .json file!
+        Once posted, use '[p]claimrole addbutton' to attach role claim buttons to it.
+        """
+        import json
+
+        raw_json = json_input or ""
+        if ctx.message.attachments:
+            att = ctx.message.attachments[0]
+            if att.filename.lower().endswith(".json") or att.content_type in ("application/json", "text/plain"):
+                try:
+                    file_bytes = await att.read()
+                    raw_json = file_bytes.decode("utf-8")
+                except Exception as e:
+                    await ctx.send(f"❌ Failed to read attached file: {e}")
+                    return
+
+        if not raw_json.strip():
+            await ctx.send(
+                "❌ Please provide Discohook JSON! Paste it in the command or attach a `.json` file.\n"
+                "Tip: In Discohook (discohook.org), click **Copy JSON** at the bottom of the page."
+            )
+            return
+
+        clean_json = raw_json.strip()
+        codeblock_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", raw_json)
+        if codeblock_match:
+            clean_json = codeblock_match.group(1).strip()
+
+        try:
+            data = json.loads(clean_json)
+        except json.JSONDecodeError as err:
+            await ctx.send(f"❌ Invalid JSON format: `{err}`. Please verify your Discohook payload.")
+            return
+
+        content = data.get("content")
+        embed_dicts = data.get("embeds", [])
+        username = data.get("username")
+        avatar_url = data.get("avatar_url")
+
+        embeds = []
+        for ed in embed_dicts[:10]:
+            try:
+                embeds.append(discord.Embed.from_dict(ed))
+            except Exception as e:
+                logger.warning("Could not parse embed from JSON: %s", e)
+
+        if not content and not embeds:
+            await ctx.send("❌ The provided JSON has no text content or embeds to post.")
+            return
+
+        use_webhook = bool(username or avatar_url)
+        msg = None
+
+        if use_webhook and channel.permissions_for(ctx.guild.me).manage_webhooks:
+            try:
+                webhooks = await channel.webhooks()
+                webhook = None
+                for wh in webhooks:
+                    if wh.user and wh.user.id == self.bot.user.id:
+                        webhook = wh
+                        break
+                if not webhook:
+                    wh_name = username or "Role Panel"
+                    webhook = await channel.create_webhook(name=wh_name, reason="ClaimRole Discohook Import")
+
+                msg = await webhook.send(
+                    content=content,
+                    embeds=embeds,
+                    username=username or "Role Panel",
+                    avatar_url=avatar_url,
+                    wait=True,
+                )
+            except Exception as wh_err:
+                logger.warning("Webhook send failed, falling back to standard bot send: %s", wh_err)
+                use_webhook = False
+
+        if not msg:
+            try:
+                msg = await channel.send(content=content, embeds=embeds)
+            except discord.Forbidden:
+                await ctx.send("❌ I do not have permission to send messages or embeds in that channel.")
+                return
+
+        async with self.config.guild(ctx.guild).panels() as panels:
+            panels[str(msg.id)] = {
+                "channel_id": channel.id,
+                "message_id": msg.id,
+                "title": embeds[0].title if embeds else "Discohook Panel",
+                "buttons": [],
+            }
+
+        await ctx.send(
+            f"✅ **Discohook layout posted successfully in {channel.mention}!**\n"
+            f"Message ID: `{msg.id}`\n\n"
+            f"**To add role buttons, run:**\n"
+            f"`{ctx.clean_prefix}claimrole addbutton {channel.mention} {msg.id} @Role [color] [emoji] [label]`"
         )
 
     @claimrole_group.command(name="cooldown")

@@ -188,3 +188,49 @@ async def test_claim_role_view_custom_ids():
     assert view.children[2].custom_id == "claimrole:toggle:333"
     assert view.children[2].style == discord.ButtonStyle.danger
     assert view.is_persistent() is True
+
+
+@pytest.mark.asyncio
+async def test_claimrole_fromjson_command(mock_bot, mock_guild):
+    cog = ClaimRole(mock_bot)
+
+    ctx = MagicMock()
+    ctx.guild = mock_guild
+    ctx.clean_prefix = "-"
+    ctx.message.attachments = []
+    ctx.send = AsyncMock()
+
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = 111222333
+    channel.mention = "<#111222333>"
+    channel.permissions_for.return_value = MagicMock(manage_webhooks=False)
+
+    fake_msg = MagicMock()
+    fake_msg.id = 8877665544
+    channel.send = AsyncMock(return_value=fake_msg)
+
+    discohook_json = """```json
+    {
+        "content": "Welcome to role selection!",
+        "embeds": [
+            {
+                "title": "Choose your roles",
+                "description": "Click below",
+                "color": 3447003
+            }
+        ]
+    }
+    ```"""
+
+    await cog.claimrole_fromjson.callback(cog, ctx, channel, json_input=discohook_json)
+    channel.send.assert_awaited_once()
+    send_kwargs = channel.send.call_args[1]
+    assert send_kwargs["content"] == "Welcome to role selection!"
+    assert len(send_kwargs["embeds"]) == 1
+    assert send_kwargs["embeds"][0].title == "Choose your roles"
+
+    ctx.send.assert_awaited_once()
+    reply = ctx.send.call_args[0][0]
+    assert "Discohook layout posted successfully" in reply
+    assert "8877665544" in reply
+
