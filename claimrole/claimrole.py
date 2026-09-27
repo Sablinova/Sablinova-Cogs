@@ -5,16 +5,22 @@ and anti-abuse rate limiting and hierarchy safety.
 """
 
 import asyncio
+import io
 import logging
+from pathlib import Path
 import re
 import time
 from typing import Dict, List, Optional, Tuple, Union
 
+import aiohttp
 import discord
 from redbot.core import Config, commands
 from redbot.core.bot import Red
 
 logger = logging.getLogger("red.sablinova.claimrole")
+
+RESOURCES_DIR = Path(__file__).parent / "resources"
+DEFAULT_BANNER_FILE = RESOURCES_DIR / "roles_banner.png"
 
 # Color / Style mapping for Discord UI buttons
 STYLE_MAP = {
@@ -691,18 +697,23 @@ class ClaimRole(commands.Cog):
     async def claimrole_langpanel(
         self,
         ctx: commands.Context,
-        channel: discord.TextChannel,
+        channel: Optional[discord.TextChannel] = None,
         banner_url: Optional[str] = None,
     ) -> None:
         """
-        Deploy the complete language role claim panel with banner and flag buttons in one command!
+        Deploy the complete language role claim panel with only the banner picture and buttons!
+        Zero embed text or descriptions: purely the picture and the interactive buttons.
 
         Parameters:
-        - channel: Target channel to post the panel
-        - banner_url: Optional custom banner image URL
+        - channel: Target channel to post the panel (defaults to current channel)
+        - banner_url: Optional custom banner image URL or attached image
         """
+        target_channel = channel or ctx.channel
+        if not isinstance(target_channel, discord.TextChannel):
+            await ctx.send("❌ Please specify a valid text channel.")
+            return
+
         default_banner = "https://cdn.discordapp.com/attachments/1455330274232500461/1553860826816057485/qq173kj.png?ex=6abac92a&is=6ab977aa&hm=68a42cf995abc0623b7d4743b2b71d9463e95e8540e37227aed8294873addaf7&"
-        banner = banner_url or default_banner
 
         lang_specs = [
             {"name": "English Speaker", "label": "English", "emoji": "🇺🇸", "style": "blurple"},
@@ -743,42 +754,135 @@ class ClaimRole(commands.Cog):
             )
             return
 
-        embed = discord.Embed(
-            title="🌐 Select Your Language Roles",
-            description=(
-                "Choose your native or preferred languages to unlock international chat channels!\n\n"
-                "• 🇺🇸 **English**: English Speaker\n"
-                "• 🇧🇷 **Português**: PT BR Speaker\n"
-                "• 🇵🇭 **Tagalog**: Tagalog Speaker\n"
-                "• 🇮🇳 **Hindi**: Hindi Speaker\n"
-                "• 🇮🇩 **Indonesian**: Indonesian Speaker\n"
-                "• 🇸🇦 **Arabic**: Arabic Speaker\n"
-                "• 🇫🇷 **Français**: French Speaker\n\n"
-                "*Click once to claim a role. Click again anytime to remove it.*"
-            ),
-            color=discord.Color.dark_theme(),
-        )
-        if banner and banner.startswith(("http://", "https://")):
-            embed.set_image(url=banner)
-        embed.set_footer(text="Click buttons below to toggle roles • 2.5s anti-spam protection")
+        # Acquire banner image bytes
+        image_bytes: Optional[bytes] = None
+
+        if ctx.message.attachments:
+            for att in ctx.message.attachments:
+                if att.content_type and att.content_type.startswith("image/"):
+                    try:
+                        image_bytes = await att.read()
+                        break
+                    except Exception as e:
+                        logger.warning("Failed to read attached banner image: %s", e)
+
+        if not image_bytes and banner_url and banner_url.startswith(("http://", "https://")):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(banner_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                        if resp.status == 200:
+                            image_bytes = await resp.read()
+            except Exception as e:
+                logger.warning("Failed to download banner from URL: %s", e)
+
+        if not image_bytes and DEFAULT_BANNER_FILE.exists():
+            try:
+                image_bytes = DEFAULT_BANNER_FILE.read_bytes()
+            except Exception as e:
+                logger.warning("Failed to read bundled banner file: %s", e)
+
+        if not image_bytes:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(default_banner, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                        if resp.status == 200:
+                            image_bytes = await resp.read()
+            except Exception as e:
+                logger.warning("Failed to download default banner from CDN: %s", e)
 
         view = ClaimRoleView(buttons_data, guild=ctx.guild)
-        msg = await channel.send(embed=embed, view=view)
+        msg: Optional[discord.Message] = None
+
+        if image_bytes:
+            file = discord.File(io.BytesIO(image_bytes), filename="roles_banner.png")
+            msg = await target_channel.send(file=file, view=view)
+        else:
+            # Fallback to pure image embed (zero text, zero description, zero title)
+            embed = discord.Embed(color=discord.Color.dark_theme())
+            embed.set_image(url=banner_url or default_banner)
+            msg = await target_channel.send(embed=embed, view=view)
+
         self.bot.add_view(view, message_id=msg.id)
 
         async with self.config.guild(ctx.guild).panels() as panels:
             panels[str(msg.id)] = {
-                "channel_id": channel.id,
+                "channel_id": target_channel.id,
                 "message_id": msg.id,
-                "title": embed.title,
+                "title": "Language Roles",
                 "buttons": buttons_data,
             }
 
-        response_txt = f"✅ **Language role panel deployed in {channel.mention}!** (Message ID: `{msg.id}`)\n"
-        response_txt += f"Added {len(buttons_data)} buttons for: " + ", ".join([r.mention for r in found_roles])
+        response_txt = f"✅ **Language role panel deployed in {target_channel.mention}!** (Message ID: `{msg.id}`)\n"
+        response_txt += f"Added {len(buttons_data)} buttons: " + ", ".join([r.mention for r in found_roles])
         if missing_roles:
             response_txt += f"\n⚠️ Missing roles not found in server: " + ", ".join([f"`{m}`" for m in missing_roles])
         await ctx.send(response_txt)
+
+    @claimrole_group.command(name="imagepanel", aliases=["picturepanel", "picpanel"])
+    async def claimrole_imagepanel(
+        self,
+        ctx: commands.Context,
+        channel: Optional[discord.TextChannel] = None,
+        image_url: Optional[str] = None,
+    ) -> None:
+        """
+        Post a picture-only panel with no embed text.
+        You can provide an image URL or attach an image to your command message.
+        Then attach role buttons using '[p]claimrole addbutton'.
+        """
+        target_channel = channel or ctx.channel
+        if not isinstance(target_channel, discord.TextChannel):
+            await ctx.send("❌ Please specify a valid text channel.")
+            return
+
+        image_bytes: Optional[bytes] = None
+
+        if ctx.message.attachments:
+            for att in ctx.message.attachments:
+                if att.content_type and att.content_type.startswith("image/"):
+                    try:
+                        image_bytes = await att.read()
+                        break
+                    except Exception as e:
+                        logger.warning("Failed to read attached panel image: %s", e)
+
+        if not image_bytes and image_url and image_url.startswith(("http://", "https://")):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(image_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                        if resp.status == 200:
+                            image_bytes = await resp.read()
+            except Exception as e:
+                logger.warning("Failed to download image from URL: %s", e)
+
+        if not image_bytes and not image_url:
+            await ctx.send(
+                "❌ Please provide an image URL or attach an image to your message!"
+            )
+            return
+
+        if image_bytes:
+            file = discord.File(io.BytesIO(image_bytes), filename="panel_image.png")
+            msg = await target_channel.send(file=file)
+        else:
+            embed = discord.Embed(color=discord.Color.dark_theme())
+            embed.set_image(url=image_url)
+            msg = await target_channel.send(embed=embed)
+
+        async with self.config.guild(ctx.guild).panels() as panels:
+            panels[str(msg.id)] = {
+                "channel_id": target_channel.id,
+                "message_id": msg.id,
+                "title": "Image Panel",
+                "buttons": [],
+            }
+
+        await ctx.send(
+            f"✅ **Picture panel posted in {target_channel.mention}!**\n"
+            f"Message ID: `{msg.id}`\n\n"
+            f"**To add role buttons, run:**\n"
+            f"`{ctx.clean_prefix}claimrole addbutton {target_channel.mention} {msg.id} @Role [color] [emoji] [label]`"
+        )
 
     @claimrole_group.command(name="cooldown")
     async def claimrole_cooldown(self, ctx: commands.Context, seconds: float) -> None:

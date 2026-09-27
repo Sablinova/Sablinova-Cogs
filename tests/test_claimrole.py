@@ -255,6 +255,8 @@ async def test_claimrole_langpanel_command(mock_bot, mock_guild):
 
     ctx = MagicMock()
     ctx.guild = mock_guild
+    ctx.channel = MagicMock(spec=discord.TextChannel)
+    ctx.message.attachments = []
     ctx.send = AsyncMock()
 
     channel = MagicMock(spec=discord.TextChannel)
@@ -270,11 +272,17 @@ async def test_claimrole_langpanel_command(mock_bot, mock_guild):
 
     channel.send.assert_awaited_once()
     send_kwargs = channel.send.call_args[1]
-    embed = send_kwargs["embed"]
-    view = send_kwargs["view"]
 
-    assert embed.title == "🌐 Select Your Language Roles"
-    assert embed.image.url == banner_url
+    # Must be either native file attachment or text-free image embed
+    if "file" in send_kwargs:
+        assert isinstance(send_kwargs["file"], discord.File)
+        assert "embed" not in send_kwargs or send_kwargs["embed"] is None
+    else:
+        embed = send_kwargs["embed"]
+        assert embed.title is None
+        assert embed.description is None
+
+    view = send_kwargs["view"]
     assert len(view.children) == 7
 
     button_labels = [b.label for b in view.children]
@@ -290,5 +298,44 @@ async def test_claimrole_langpanel_command(mock_bot, mock_guild):
     response = ctx.send.call_args[0][0]
     assert "Language role panel deployed" in response
     assert "Added 7 buttons" in response
+
+
+@pytest.mark.asyncio
+async def test_claimrole_imagepanel_command(mock_bot, mock_guild):
+    cog = ClaimRole(mock_bot)
+
+    ctx = MagicMock()
+    ctx.guild = mock_guild
+    ctx.channel = MagicMock(spec=discord.TextChannel)
+    ctx.clean_prefix = "-"
+    ctx.message.attachments = []
+    ctx.send = AsyncMock()
+
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = 777666555
+    channel.mention = "<#777666555>"
+
+    fake_msg = MagicMock()
+    fake_msg.id = 44556677
+    channel.send = AsyncMock(return_value=fake_msg)
+
+    img_url = "https://example.com/banner.png"
+    await cog.claimrole_imagepanel.callback(cog, ctx, channel, image_url=img_url)
+
+    channel.send.assert_awaited_once()
+    send_kwargs = channel.send.call_args[1]
+
+    if "file" in send_kwargs:
+        assert isinstance(send_kwargs["file"], discord.File)
+    else:
+        embed = send_kwargs["embed"]
+        assert embed.title is None
+        assert embed.description is None
+        assert embed.image.url == img_url
+
+    ctx.send.assert_awaited_once()
+    response = ctx.send.call_args[0][0]
+    assert "Picture panel posted in" in response
+    assert "44556677" in response
 
 
