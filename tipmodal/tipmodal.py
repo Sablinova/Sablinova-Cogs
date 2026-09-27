@@ -1,10 +1,11 @@
 """
 TipModal Cog for Red-DiscordBot.
-Provides an interactive button panel and Discord modal for streamlined tip verification.
+Provides an interactive button panel, Discord modal, and automated screenshot binding for tip verification.
 """
 
 import logging
-from typing import Optional
+import time
+from typing import Dict, Optional, Tuple
 
 import discord
 from redbot.core import commands
@@ -44,6 +45,14 @@ class TipSubmissionModal(discord.ui.Modal, title="Tip & Pass Verification"):
         required=True,
     )
 
+    screenshot_link = discord.ui.TextInput(
+        label="Screenshot Link (Optional)",
+        placeholder="Paste image link, or upload your image in the channel after submitting",
+        max_length=300,
+        style=discord.TextStyle.short,
+        required=False,
+    )
+
     extra_info = discord.ui.TextInput(
         label="Extra Info / Gifting User ID (Optional)",
         placeholder="Gift recipient UserID, account change details, or type 'None'",
@@ -53,26 +62,40 @@ class TipSubmissionModal(discord.ui.Modal, title="Tip & Pass Verification"):
         required=False,
     )
 
+    def __init__(self, cog: "TipModal"):
+        super().__init__()
+        self.cog = cog
+
     async def on_submit(self, interaction: discord.Interaction) -> None:
         """Handle modal submission by posting a public ticket embed and ephemeral receipt."""
         submitter = interaction.user
         game_name = self.game.value.strip()
         tip_method = self.method.value.strip()
         proof_details = self.proof_id.value.strip()
+        image_url = self.screenshot_link.value.strip() if self.screenshot_link.value else ""
         extra = self.extra_info.value.strip() or "None"
 
+        has_image = bool(image_url and image_url.startswith(("http://", "https://")))
+
         # Ephemeral confirmation receipt for the user
-        await interaction.response.send_message(
-            f"✅ **Tip details submitted successfully!**\n"
-            f"Your request for **{game_name}** has been recorded.\n"
-            f"Please attach your screenshot proof in this channel now.",
-            ephemeral=True,
-        )
+        if has_image:
+            await interaction.response.send_message(
+                f"✅ **Tip details submitted successfully!**\n"
+                f"Your request for **{game_name}** with screenshot link has been recorded.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message(
+                f"✅ **Tip details submitted successfully!**\n"
+                f"Your request for **{game_name}** has been recorded.\n"
+                f"📸 **Next Step**: Drop or upload your screenshot proof in this channel now!",
+                ephemeral=True,
+            )
 
         # Public verification ticket embed sent into the channel
         embed = discord.Embed(
             title="🧾 Tip Verification Submission",
-            color=discord.Color.green(),
+            color=discord.Color.green() if has_image else discord.Color.orange(),
             timestamp=discord.utils.utcnow(),
         )
         embed.set_author(
@@ -89,22 +112,42 @@ class TipSubmissionModal(discord.ui.Modal, title="Tip & Pass Verification"):
         else:
             embed.add_field(name="📝 Extra Info / Gifting", value="*None specified*", inline=False)
 
-        embed.add_field(
-            name="📌 Next Step: Upload Screenshot Proof",
-            value=(
-                "Please upload **1 screenshot** in this channel showing your payment proof:\n"
-                "• **PayPal 1-Time Tip**: Note + game name (censor personal info)\n"
-                "• **PayPal Pub Pass**: Profile ID starting with `I-xxxxxxx`\n"
-                "• **Patreon**: Display name matching your active subscription\n"
-                "• **Steam**: Confirmation from Azam Direct Messages"
-            ),
-            inline=False,
-        )
+        if has_image:
+            embed.set_image(url=image_url)
+            embed.add_field(name="📊 Status", value="🟢 **Ready for Staff Review**", inline=False)
+            view: Optional[discord.ui.View] = StaffReviewView()
+        else:
+            embed.add_field(
+                name="📊 Status",
+                value="⏳ **Awaiting Screenshot Proof** (upload image below)",
+                inline=False,
+            )
+            embed.add_field(
+                name="📌 Next Step: Upload Screenshot Proof",
+                value=(
+                    "Please upload **1 screenshot** in this channel showing your payment proof:\n"
+                    "• **PayPal 1-Time Tip**: Note + game name (censor personal info)\n"
+                    "• **PayPal Pub Pass**: Profile ID starting with `I-xxxxxxx`\n"
+                    "• **Patreon**: Display name matching your active subscription\n"
+                    "• **Steam**: Confirmation from Azam Direct Messages"
+                ),
+                inline=False,
+            )
+            view = SubmissionGuidanceView()
+
         embed.set_footer(text=f"User ID: {submitter.id} • TipModal Verification System")
 
         channel = interaction.channel
         if channel:
-            await channel.send(embed=embed, view=SubmissionGuidanceView())
+            ticket_msg = await channel.send(embed=embed, view=view)
+            if not has_image and self.cog:
+                # Store pending submission so on_message can attach the screenshot automatically
+                key = (submitter.id, channel.id)
+                self.cog.pending_submissions[key] = {
+                    "message_id": ticket_msg.id,
+                    "created_at": time.time(),
+                    "game_name": game_name,
+                }
 
 
 class SubmissionGuidanceView(discord.ui.View):
@@ -139,11 +182,92 @@ class SubmissionGuidanceView(discord.ui.View):
         await interaction.response.send_message(embed=guidance_embed, ephemeral=True)
 
 
-class TipButtonView(discord.ui.View):
-    """Persistent button view that opens the Tip Verification Modal."""
+class StaffReviewView(discord.ui.View):
+    """Persistent staff review view for approving or requesting changes on a ticket."""
 
     def __init__(self):
         super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Approve",
+        style=discord.ButtonStyle.success,
+        emoji="✅",
+        custom_id="tipmodal:staff_approve",
+    )
+    async def approve_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        """Allow staff to approve the submitted tip."""
+        if not (interaction.user.guild_permissions.manage_messages or interaction.user.guild_permissions.administrator):
+            await interaction.response.send_message("❌ Only staff members can review submissions.", ephemeral=True)
+            return
+
+        msg = interaction.message
+        if msg and msg.embeds:
+            embed = msg.embeds[0]
+            embed.color = discord.Color.green()
+            # Update status field
+            new_fields = []
+            for f in embed.fields:
+                if f.name == "📊 Status":
+                    new_fields.append(("📊 Status", f"✅ **Approved by {interaction.user.mention}**", False))
+                else:
+                    new_fields.append((f.name, f.value, f.inline))
+            embed.clear_fields()
+            for name, val, inline in new_fields:
+                embed.add_field(name=name, value=val, inline=inline)
+
+            # Disable buttons
+            for child in self.children:
+                child.disabled = True
+
+            await interaction.response.edit_message(embed=embed, view=self)
+            await interaction.followup.send(f"✅ Submission approved by {interaction.user.mention}!", ephemeral=False)
+
+    @discord.ui.button(
+        label="Request Resubmit",
+        style=discord.ButtonStyle.danger,
+        emoji="⚠️",
+        custom_id="tipmodal:staff_resubmit",
+    )
+    async def resubmit_button(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        """Allow staff to request a resubmission if proof is missing or invalid."""
+        if not (interaction.user.guild_permissions.manage_messages or interaction.user.guild_permissions.administrator):
+            await interaction.response.send_message("❌ Only staff members can review submissions.", ephemeral=True)
+            return
+
+        msg = interaction.message
+        if msg and msg.embeds:
+            embed = msg.embeds[0]
+            embed.color = discord.Color.red()
+            new_fields = []
+            for f in embed.fields:
+                if f.name == "📊 Status":
+                    new_fields.append(("📊 Status", f"⚠️ **Resubmission Requested by {interaction.user.mention}**", False))
+                else:
+                    new_fields.append((f.name, f.value, f.inline))
+            embed.clear_fields()
+            for name, val, inline in new_fields:
+                embed.add_field(name=name, value=val, inline=inline)
+
+            for child in self.children:
+                child.disabled = True
+
+            await interaction.response.edit_message(embed=embed, view=self)
+            await interaction.followup.send(
+                f"⚠️ {interaction.user.mention} requested a resubmission. Please check your details and proof screenshot.",
+                ephemeral=False,
+            )
+
+
+class TipButtonView(discord.ui.View):
+    """Persistent button view that opens the Tip Verification Modal."""
+
+    def __init__(self, cog: Optional["TipModal"] = None):
+        super().__init__(timeout=None)
+        self.cog = cog
 
     @discord.ui.button(
         label="Fill Tip Verification Form",
@@ -155,7 +279,7 @@ class TipButtonView(discord.ui.View):
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
         """Open the interactive tip modal when clicked."""
-        modal = TipSubmissionModal()
+        modal = TipSubmissionModal(cog=self.cog)
         await interaction.response.send_modal(modal)
 
     @discord.ui.button(
@@ -189,16 +313,87 @@ class TipButtonView(discord.ui.View):
 
 
 class TipModal(commands.Cog):
-    """Interactive modal and button showcase for tip verifications."""
+    """Interactive modal, button, and screenshot workflow for tip verifications."""
 
     def __init__(self, bot: Red):
         self.bot = bot
+        # Mapping: (user_id, channel_id) -> {"message_id": int, "created_at": float, "game_name": str}
+        self.pending_submissions: Dict[Tuple[int, int], dict] = {}
 
     async def cog_load(self) -> None:
         """Register persistent views on startup so buttons survive restarts."""
-        self.bot.add_view(TipButtonView())
+        self.bot.add_view(TipButtonView(cog=self))
         self.bot.add_view(SubmissionGuidanceView())
+        self.bot.add_view(StaffReviewView())
         logger.info("TipModal persistent views registered.")
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message) -> None:
+        """Automatically detect when a user with a pending submission uploads a screenshot."""
+        if message.author.bot or not message.guild:
+            return
+
+        key = (message.author.id, message.channel.id)
+        pending = self.pending_submissions.get(key)
+        if not pending:
+            return
+
+        # Expire pending submissions older than 20 minutes
+        if time.time() - pending.get("created_at", 0) > 1200:
+            self.pending_submissions.pop(key, None)
+            return
+
+        # Check for image attachments
+        image_attachments = [
+            a for a in message.attachments
+            if a.content_type and a.content_type.startswith("image/")
+            or any(a.filename.lower().endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".webp", ".gif"))
+        ]
+
+        if not image_attachments:
+            return
+
+        # Pop the pending submission
+        self.pending_submissions.pop(key, None)
+        screenshot = image_attachments[0]
+
+        try:
+            ticket_msg = await message.channel.fetch_message(pending["message_id"])
+            if ticket_msg and ticket_msg.embeds:
+                embed = ticket_msg.embeds[0]
+                embed.set_image(url=screenshot.url)
+                embed.color = discord.Color.blue()
+
+                # Update status field and remove instructions field
+                new_fields = []
+                for f in embed.fields:
+                    if f.name == "📊 Status":
+                        new_fields.append(
+                            ("📊 Status", "🟢 **Ready for Staff Review** (Proof attached)", False)
+                        )
+                    elif f.name.startswith("📌 Next Step"):
+                        continue
+                    else:
+                        new_fields.append((f.name, f.value, f.inline))
+
+                embed.clear_fields()
+                for name, val, inline in new_fields:
+                    embed.add_field(name=name, value=val, inline=inline)
+
+                staff_view = StaffReviewView()
+                await ticket_msg.edit(embed=embed, view=staff_view)
+
+                try:
+                    await message.add_reaction("📸")
+                except Exception:
+                    pass
+
+                await message.reply(
+                    f"✅ **Screenshot attached!** Your tip submission for **{pending.get('game_name', 'game')}** is now ready for staff review.",
+                    delete_after=15,
+                )
+        except Exception as err:
+            logger.warning("Failed to auto-bind screenshot to ticket %d: %s", pending["message_id"], err)
 
     @commands.hybrid_command(
         name="tipmodal",
@@ -222,5 +417,5 @@ class TipModal(commands.Cog):
         embed.set_thumbnail(url=ctx.guild.icon.url if ctx.guild and ctx.guild.icon else None)
         embed.set_footer(text="TipModal Verification • Click below to open form")
 
-        view = TipButtonView()
+        view = TipButtonView(cog=self)
         await ctx.send(embed=embed, view=view)
