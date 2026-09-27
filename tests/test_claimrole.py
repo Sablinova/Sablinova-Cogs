@@ -56,6 +56,7 @@ def mock_interaction(mock_guild):
     interaction.user = member
 
     interaction.response = MagicMock()
+    interaction.response.is_done.return_value = False
     interaction.response.send_message = AsyncMock()
 
     return interaction
@@ -99,7 +100,7 @@ async def test_claim_role_toggle_add(mock_bot, mock_guild, mock_interaction):
     )
     mock_interaction.response.send_message.assert_awaited_once()
     msg = mock_interaction.response.send_message.call_args[0][0]
-    assert "You have been given the **Gamer** role!" in msg
+    assert "You got the **Gamer** role!" in msg
     assert mock_interaction.response.send_message.call_args[1].get("ephemeral") is True
 
 
@@ -125,30 +126,46 @@ async def test_claim_role_toggle_remove(mock_bot, mock_guild, mock_interaction):
     mock_interaction.response.send_message.assert_awaited_once()
     msg = mock_interaction.response.send_message.call_args[0][0]
     assert "Removed the **Gamer** role from you." in msg
+    assert mock_interaction.response.send_message.call_args[1].get("ephemeral") is True
 
 
 @pytest.mark.asyncio
 async def test_claim_role_anti_abuse_cooldown(mock_bot, mock_guild, mock_interaction):
     cog = ClaimRole(mock_bot)
 
-    target_role = MagicMock(spec=discord.Role)
-    target_role.id = 555666777
-    target_role.name = "Gamer"
-    target_role.position = 50
-    mock_guild.get_role.return_value = target_role
+    target_role_1 = MagicMock(spec=discord.Role)
+    target_role_1.id = 555666777
+    target_role_1.name = "Gamer"
+    target_role_1.position = 50
+
+    target_role_2 = MagicMock(spec=discord.Role)
+    target_role_2.id = 888999111
+    target_role_2.name = "VIP"
+    target_role_2.position = 40
+
+    mock_guild.get_role.side_effect = lambda rid: target_role_1 if rid == 555666777 else target_role_2
 
     # First click succeeds
-    await cog.handle_role_toggle(mock_interaction, target_role.id)
+    await cog.handle_role_toggle(mock_interaction, target_role_1.id)
     assert mock_interaction.user.add_roles.await_count == 1
 
-    # Immediate second click hits anti-abuse rate limit
+    # Immediate second click on the SAME button hits anti-abuse rate limit with snowtime
     mock_interaction.response.send_message.reset_mock()
-    await cog.handle_role_toggle(mock_interaction, target_role.id)
+    await cog.handle_role_toggle(mock_interaction, target_role_1.id)
 
     mock_interaction.response.send_message.assert_awaited_once()
     msg = mock_interaction.response.send_message.call_args[0][0]
-    assert "Please slow down!" in msg
+    assert "Cooldown active for this button!" in msg
+    assert "<t:" in msg and ":R>" in msg
+    assert mock_interaction.response.send_message.call_args[1].get("ephemeral") is True
     assert mock_interaction.user.add_roles.await_count == 1
+
+    # Click on a DIFFERENT button succeeds without hitting cooldown (per-button rate limiting)
+    mock_interaction.response.send_message.reset_mock()
+    await cog.handle_role_toggle(mock_interaction, target_role_2.id)
+    assert mock_interaction.user.add_roles.await_count == 2
+    second_msg = mock_interaction.response.send_message.call_args[0][0]
+    assert "You got the **VIP** role!" in second_msg
 
 
 @pytest.mark.asyncio
@@ -337,5 +354,27 @@ async def test_claimrole_imagepanel_command(mock_bot, mock_guild):
     response = ctx.send.call_args[0][0]
     assert "Picture panel posted in" in response
     assert "44556677" in response
+
+
+@pytest.mark.asyncio
+async def test_claimrole_cooldown_command(mock_bot, mock_guild):
+    cog = ClaimRole(mock_bot)
+
+    ctx = MagicMock()
+    ctx.guild = mock_guild
+    ctx.send = AsyncMock()
+
+    # Default should be 60.0
+    default_cd = await cog.config.guild(mock_guild).cooldown_seconds()
+    assert default_cd == 60.0
+
+    # Setting custom cooldown to 120s
+    await cog.claimrole_cooldown.callback(cog, ctx, seconds=120.0)
+    ctx.send.assert_awaited_once()
+    assert "120.0s" in ctx.send.call_args[0][0]
+
+    updated_cd = await cog.config.guild(mock_guild).cooldown_seconds()
+    assert updated_cd == 120.0
+
 
 

@@ -7,6 +7,7 @@ and anti-abuse rate limiting and hierarchy safety.
 import asyncio
 import io
 import logging
+import math
 from pathlib import Path
 import re
 import time
@@ -131,17 +132,7 @@ class ClaimRoleView(discord.ui.View):
                     emoji=emoji,
                     custom_id=f"claimrole:toggle:{role_id}",
                 )
-                btn.callback = self.make_callback(role_id)
                 self.add_item(btn)
-
-    def make_callback(self, role_id: int):
-        async def _callback(interaction: discord.Interaction):
-            cog = interaction.client.get_cog("ClaimRole")
-            if cog and hasattr(cog, "handle_role_toggle"):
-                await cog.handle_role_toggle(interaction, role_id)
-            else:
-                await interaction.response.send_message("❌ Role claim service is currently unavailable.", ephemeral=True)
-        return _callback
 
 
 class ClaimRole(commands.Cog):
@@ -153,39 +144,30 @@ class ClaimRole(commands.Cog):
 
         default_guild = {
             "panels": {},  # message_id_str -> panel_dict
-            "cooldown_seconds": 2.5,
+            "cooldown_seconds": 60.0,
         }
         self.config.register_guild(**default_guild)
 
-        # Anti-abuse tracking: (user_id, guild_id) -> timestamp
-        self._user_cooldowns: Dict[Tuple[int, int], float] = {}
+        # Anti-abuse tracking per button: (user_id, guild_id, role_id) -> unix_expiry_timestamp
+        self._button_cooldowns: Dict[Tuple[int, int, int], float] = {}
         # Concurrency protection: user_id -> asyncio.Lock
         self._user_locks: Dict[int, asyncio.Lock] = {}
 
     async def cog_load(self) -> None:
-        """Register persistent views and dynamic items on cog load."""
+        """Register persistent dynamic items on cog load."""
         try:
             self.bot.add_dynamic_items(ClaimRoleDynamicButton)
             logger.info("ClaimRoleDynamicButton registered with bot.")
         except Exception as e:
             logger.warning("Could not register DynamicItem: %s", e)
 
-        # Re-register stored views for all guild panels
+    def cog_unload(self) -> None:
+        """Unregister dynamic items on cog unload."""
         try:
-            all_guilds = await self.config.all_guilds()
-            count = 0
-            for guild_id, gdata in all_guilds.items():
-                guild = self.bot.get_guild(int(guild_id))
-                panels = gdata.get("panels", {})
-                for msg_id_str, pdata in panels.items():
-                    buttons_data = pdata.get("buttons", [])
-                    if buttons_data:
-                        view = ClaimRoleView(buttons_data, guild=guild)
-                        self.bot.add_view(view, message_id=int(msg_id_str))
-                        count += 1
-            logger.info("Re-registered %d ClaimRole panel views across servers.", count)
-        except Exception as err:
-            logger.warning("Error re-registering ClaimRole views: %s", err)
+            self.bot.remove_dynamic_items(ClaimRoleDynamicButton)
+            logger.info("ClaimRoleDynamicButton unregistered from bot.")
+        except Exception as e:
+            logger.warning("Could not unregister DynamicItem: %s", e)
 
     def get_user_lock(self, user_id: int) -> asyncio.Lock:
         """Return or create a mutex lock for a user to prevent race conditions."""
@@ -195,6 +177,9 @@ class ClaimRole(commands.Cog):
 
     async def handle_role_toggle(self, interaction: discord.Interaction, role_id: int) -> None:
         """Core anti-abuse role claim logic executed when a button is clicked."""
+        if interaction.response.is_done() is True:
+            return
+
         guild = interaction.guild
         if not guild:
             await interaction.response.send_message("❌ This button can only be used in a server.", ephemeral=True)
@@ -207,26 +192,28 @@ class ClaimRole(commands.Cog):
                 await interaction.response.send_message("❌ Could not resolve your server member profile.", ephemeral=True)
                 return
 
-        # 1. Anti-abuse rate limiting check
+        # 1. Anti-abuse rate limiting check per button
         cooldown_setting = await self.config.guild(guild).cooldown_seconds()
-        user_key = (member.id, guild.id)
-        now = time.monotonic()
-        last_click = self._user_cooldowns.get(user_key, 0.0)
-        elapsed = now - last_click
+        button_key = (member.id, guild.id, role_id)
+        now_unix = time.time()
+        expire_time = self._button_cooldowns.get(button_key, 0.0)
 
-        if elapsed < cooldown_setting:
-            remaining = cooldown_setting - elapsed
+        if now_unix < expire_time:
+            remaining = expire_time - now_unix
+            expire_unix = int(expire_time)
+            rem_sec = max(1, int(math.ceil(remaining)))
             await interaction.response.send_message(
-                f"⏳ Please slow down! You can click again in **{remaining:.1f}s**.",
+                f"⏳ Cooldown active for this button! You can click again in **{rem_sec}s** (<t:{expire_unix}:R>).",
                 ephemeral=True,
             )
             return
 
-        self._user_cooldowns[user_key] = now
-
         # 2. Acquire user lock to prevent concurrent double-click races
         lock = self.get_user_lock(member.id)
         async with lock:
+            if interaction.response.is_done() is True:
+                return
+
             role = guild.get_role(role_id)
             if not role:
                 await interaction.response.send_message("❌ This role no longer exists in this server.", ephemeral=True)
@@ -254,14 +241,16 @@ class ClaimRole(commands.Cog):
             try:
                 if role in member.roles:
                     await member.remove_roles(role, reason=f"ClaimRole button: toggled off by {member}")
+                    self._button_cooldowns[button_key] = time.time() + cooldown_setting
                     await interaction.response.send_message(
                         f"❌ Removed the **{role.name}** role from you.",
                         ephemeral=True,
                     )
                 else:
                     await member.add_roles(role, reason=f"ClaimRole button: toggled on by {member}")
+                    self._button_cooldowns[button_key] = time.time() + cooldown_setting
                     await interaction.response.send_message(
-                        f"✅ You have been given the **{role.name}** role!",
+                        f"✅ You got the **{role.name}** role!",
                         ephemeral=True,
                     )
             except discord.Forbidden:
@@ -448,7 +437,6 @@ class ClaimRole(commands.Cog):
                 await target_msg.edit(view=view)
         else:
             await target_msg.edit(view=view)
-        self.bot.add_view(view, message_id=message_id)
 
         await ctx.send(f"✅ Added button for **{role.name}** ({color}) to message `{message_id}`.")
 
@@ -802,8 +790,6 @@ class ClaimRole(commands.Cog):
             embed.set_image(url=banner_url or default_banner)
             msg = await target_channel.send(embed=embed, view=view)
 
-        self.bot.add_view(view, message_id=msg.id)
-
         async with self.config.guild(ctx.guild).panels() as panels:
             panels[str(msg.id)] = {
                 "channel_id": target_channel.id,
@@ -887,11 +873,11 @@ class ClaimRole(commands.Cog):
     @claimrole_group.command(name="cooldown")
     async def claimrole_cooldown(self, ctx: commands.Context, seconds: float) -> None:
         """
-        Set anti-abuse button spam cooldown per user (in seconds).
-        Default is 2.5 seconds. Recommended: 1.5 to 5.0 seconds.
+        Set anti-abuse button spam cooldown per button (in seconds).
+        Default is 60 seconds.
         """
-        if seconds < 0.5 or seconds > 30.0:
-            await ctx.send("❌ Cooldown must be between 0.5 and 30 seconds.")
+        if seconds < 0.0 or seconds > 3600.0:
+            await ctx.send("❌ Cooldown must be between 0 and 3600 seconds.")
             return
 
         await self.config.guild(ctx.guild).cooldown_seconds.set(seconds)
