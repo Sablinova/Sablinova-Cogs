@@ -687,6 +687,99 @@ class ClaimRole(commands.Cog):
             f"`{ctx.clean_prefix}claimrole addbutton {channel.mention} {msg.id} @Role [color] [emoji] [label]`"
         )
 
+    @claimrole_group.command(name="langpanel", aliases=["languages", "lang"])
+    async def claimrole_langpanel(
+        self,
+        ctx: commands.Context,
+        channel: discord.TextChannel,
+        banner_url: Optional[str] = None,
+    ) -> None:
+        """
+        Deploy the complete language role claim panel with banner and flag buttons in one command!
+
+        Parameters:
+        - channel: Target channel to post the panel
+        - banner_url: Optional custom banner image URL
+        """
+        default_banner = "https://cdn.discordapp.com/attachments/1455330274232500461/1553860826816057485/qq173kj.png?ex=6abac92a&is=6ab977aa&hm=68a42cf995abc0623b7d4743b2b71d9463e95e8540e37227aed8294873addaf7&"
+        banner = banner_url or default_banner
+
+        lang_specs = [
+            {"name": "English Speaker", "label": "English", "emoji": "🇺🇸", "style": "blurple"},
+            {"name": "PT BR Speaker", "label": "Português", "emoji": "🇧🇷", "style": "green"},
+            {"name": "Tagalog Speaker", "label": "Tagalog", "emoji": "🇵🇭", "style": "blurple"},
+            {"name": "Hindi Speaker", "label": "Hindi", "emoji": "🇮🇳", "style": "green"},
+            {"name": "Indonesian Speaker", "label": "Indonesian", "emoji": "🇮🇩", "style": "red"},
+            {"name": "Arabic Speaker", "label": "Arabic", "emoji": "🇸🇦", "style": "green"},
+            {"name": "French Speaker", "label": "Français", "emoji": "🇫🇷", "style": "blurple"},
+        ]
+
+        buttons_data = []
+        found_roles = []
+        missing_roles = []
+
+        for spec in lang_specs:
+            matched = None
+            for r in ctx.guild.roles:
+                if r.name.lower() == spec["name"].lower():
+                    matched = r
+                    break
+            if matched:
+                buttons_data.append({
+                    "role_id": matched.id,
+                    "label": spec["label"],
+                    "style": spec["style"],
+                    "emoji": spec["emoji"],
+                })
+                found_roles.append(matched)
+            else:
+                missing_roles.append(spec["name"])
+
+        if not buttons_data:
+            roles_list = ", ".join([f"`{s['name']}`" for s in lang_specs])
+            await ctx.send(
+                f"❌ None of the language roles were found in this server!\n"
+                f"Please create the roles first in Server Settings > Roles:\n{roles_list}"
+            )
+            return
+
+        embed = discord.Embed(
+            title="🌐 Select Your Language Roles",
+            description=(
+                "Choose your native or preferred languages to unlock international chat channels!\n\n"
+                "• 🇺🇸 **English**: English Speaker\n"
+                "• 🇧🇷 **Português**: PT BR Speaker\n"
+                "• 🇵🇭 **Tagalog**: Tagalog Speaker\n"
+                "• 🇮🇳 **Hindi**: Hindi Speaker\n"
+                "• 🇮🇩 **Indonesian**: Indonesian Speaker\n"
+                "• 🇸🇦 **Arabic**: Arabic Speaker\n"
+                "• 🇫🇷 **Français**: French Speaker\n\n"
+                "*Click once to claim a role. Click again anytime to remove it.*"
+            ),
+            color=discord.Color.dark_theme(),
+        )
+        if banner and banner.startswith(("http://", "https://")):
+            embed.set_image(url=banner)
+        embed.set_footer(text="Click buttons below to toggle roles • 2.5s anti-spam protection")
+
+        view = ClaimRoleView(buttons_data, guild=ctx.guild)
+        msg = await channel.send(embed=embed, view=view)
+        self.bot.add_view(view, message_id=msg.id)
+
+        async with self.config.guild(ctx.guild).panels() as panels:
+            panels[str(msg.id)] = {
+                "channel_id": channel.id,
+                "message_id": msg.id,
+                "title": embed.title,
+                "buttons": buttons_data,
+            }
+
+        response_txt = f"✅ **Language role panel deployed in {channel.mention}!** (Message ID: `{msg.id}`)\n"
+        response_txt += f"Added {len(buttons_data)} buttons for: " + ", ".join([r.mention for r in found_roles])
+        if missing_roles:
+            response_txt += f"\n⚠️ Missing roles not found in server: " + ", ".join([f"`{m}`" for m in missing_roles])
+        await ctx.send(response_txt)
+
     @claimrole_group.command(name="cooldown")
     async def claimrole_cooldown(self, ctx: commands.Context, seconds: float) -> None:
         """

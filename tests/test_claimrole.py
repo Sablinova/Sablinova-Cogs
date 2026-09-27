@@ -234,3 +234,61 @@ async def test_claimrole_fromjson_command(mock_bot, mock_guild):
     assert "Discohook layout posted successfully" in reply
     assert "8877665544" in reply
 
+
+@pytest.mark.asyncio
+async def test_claimrole_langpanel_command(mock_bot, mock_guild):
+    cog = ClaimRole(mock_bot)
+
+    # Setup guild roles
+    role_names = [
+        "English Speaker", "PT BR Speaker", "Tagalog Speaker",
+        "Hindi Speaker", "Indonesian Speaker", "Arabic Speaker", "French Speaker"
+    ]
+    mock_roles = []
+    for idx, name in enumerate(role_names, 1):
+        r = MagicMock(spec=discord.Role)
+        r.id = 1000 + idx
+        r.name = name
+        r.mention = f"<@&{1000 + idx}>"
+        mock_roles.append(r)
+    mock_guild.roles = mock_roles
+
+    ctx = MagicMock()
+    ctx.guild = mock_guild
+    ctx.send = AsyncMock()
+
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = 555444333
+    channel.mention = "<#555444333>"
+
+    fake_msg = MagicMock()
+    fake_msg.id = 99112233
+    channel.send = AsyncMock(return_value=fake_msg)
+
+    banner_url = "https://cdn.discordapp.com/attachments/banner.png"
+    await cog.claimrole_langpanel.callback(cog, ctx, channel, banner_url=banner_url)
+
+    channel.send.assert_awaited_once()
+    send_kwargs = channel.send.call_args[1]
+    embed = send_kwargs["embed"]
+    view = send_kwargs["view"]
+
+    assert embed.title == "🌐 Select Your Language Roles"
+    assert embed.image.url == banner_url
+    assert len(view.children) == 7
+
+    button_labels = [b.label for b in view.children]
+    assert "English" in button_labels
+    assert "Português" in button_labels
+    assert "Tagalog" in button_labels
+    assert "Hindi" in button_labels
+    assert "Indonesian" in button_labels
+    assert "Arabic" in button_labels
+    assert "Français" in button_labels
+
+    ctx.send.assert_awaited_once()
+    response = ctx.send.call_args[0][0]
+    assert "Language role panel deployed" in response
+    assert "Added 7 buttons" in response
+
+
