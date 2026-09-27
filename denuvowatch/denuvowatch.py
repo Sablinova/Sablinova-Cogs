@@ -641,6 +641,35 @@ class ListView(discord.ui.View):
                 pass
 
 
+class ConfirmView(discord.ui.View):
+    """Minimal yes/no confirmation, locked to one user."""
+
+    def __init__(self, author_id: int, timeout: float = 30.0):
+        super().__init__(timeout=timeout)
+        self.author_id = author_id
+        self.value: Optional[bool] = None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                "This confirmation isn't for you.", ephemeral=True
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="Clear", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.value = True
+        self.stop()
+        await interaction.response.edit_message(content="🗑️ Clearing…", view=None)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.value = False
+        self.stop()
+        await interaction.response.edit_message(content="❌ Cancelled.", view=None)
+
+
 # ─── Cog ───────────────────────────────────────────────────────────────────
 class DenuvoWatch(commands.Cog):
     """Tracks Denuvo status, build updates, and release dates for a Steam watchlist."""
@@ -657,6 +686,7 @@ class DenuvoWatch(commands.Cog):
             notify_channel_id=None,
             notify_user_id=None,
             notify_role_id=None,
+            mirror_guild_id=None,   # when set, this guild reads another guild's watchlist (read-only)
         )
         self.session = aiohttp.ClientSession() # Added session
         self._startup_task: Optional[asyncio.Task] = None
@@ -760,8 +790,12 @@ class DenuvoWatch(commands.Cog):
                 print(f"[DenuvoWatch][WARN] dispatch to guild {gid} failed: {e}")
 
     async def _guild_games(self, guild) -> dict:
-        """Subset of the master `games` store that `guild` watches."""
-        watched = set(await self.config.guild(guild).watched_appids())
+        """Subset of the master `games` store that `guild` watches.
+
+        If `guild` mirrors another server, resolves against that server's
+        watchlist instead (read-only view)."""
+        source_id = await self.config.guild(guild).mirror_guild_id() or guild.id
+        watched = set(await self.config.guild_from_id(source_id).watched_appids())
         games = await self._load_games()
         return {a: info for a, info in games.items() if a in watched}
 
@@ -770,6 +804,18 @@ class DenuvoWatch(commands.Cog):
             await ctx.send("❌ This command can only be used in a server, not in DMs.", ephemeral=True)
             return False
         return True
+
+    async def _block_if_mirrored(self, ctx) -> bool:
+        """True (and warns) if this guild mirrors another, so it can't manage
+        its own list. Turn the mirror off first."""
+        mirror = await self.config.guild(ctx.guild).mirror_guild_id()
+        if mirror:
+            await ctx.send(
+                f"❌ This server is mirroring server `{mirror}` (read-only). "
+                f"Run `dmirror off` first to manage its own watchlist."
+            )
+            return True
+        return False
 
     async def _unwatch(self, guild, appid_str: str) -> bool:
         """Unsubscribe `guild` from `appid_str`. When no guild watches it any
@@ -1159,6 +1205,8 @@ class DenuvoWatch(commands.Cog):
         """Add a game to this server's watchlist by name or AppID."""
         if not await self._require_guild(ctx):
             return
+        if await self._block_if_mirrored(ctx):
+            return
         async with ctx.typing():
             if query.isdigit():
                 appid = int(query)
@@ -1222,6 +1270,8 @@ class DenuvoWatch(commands.Cog):
     async def dremove(self, ctx: commands.Context, *, query: str):
         """Remove a game from this server's watchlist."""
         if not await self._require_guild(ctx):
+            return
+        if await self._block_if_mirrored(ctx):
             return
         games = await self._guild_games(ctx.guild)
         if not games:
@@ -1406,6 +1456,8 @@ class DenuvoWatch(commands.Cog):
         """Manually trigger a full scan of this server's watchlist."""
         if not await self._require_guild(ctx):
             return
+        if await self._block_if_mirrored(ctx):
+            return
         await ctx.send("🔄 Running check for this server's watchlist…", ephemeral=True)
         changes = await self.check_games_internal(full_refresh=True, scope=ctx.guild)
         if not changes:
@@ -1561,6 +1613,8 @@ class DenuvoWatch(commands.Cog):
         """Import games into this server's watchlist from a JSON file or URL."""
         if not await self._require_guild(ctx):
             return
+        if await self._block_if_mirrored(ctx):
+            return
         raw = None
 
         if url:
@@ -1665,6 +1719,100 @@ class DenuvoWatch(commands.Cog):
 
         await ctx.send("\n".join(lines))
     	
+    @commands.command(name="dmirror")
+    @owner_only()
+    async def dmirror(self, ctx: commands.Context, source: str = None):
+        """Mirror another server's watchlist here (owner only).
+
+        `dmirror <guild_id>` — read that server's list live (no duplication,
+        always in sync). `dmirror off` — stop. `dmirror` — show status.
+
+        While mirroring, this server is a read-only view: `dlist`, `dcheck`,
+        `dupcoming` and `ddepots` read the source list; management commands
+        (`dadd`/`dremove`/`dimport`/`dclear`/`dforcecheck`) are disabled until
+        you turn the mirror off.
+        """
+        if not await self._require_guild(ctx):
+            return
+
+        current = await self.config.guild(ctx.guild).mirror_guild_id()
+
+        # Status
+        if source is None:
+            if current:
+                n = len(await self.config.guild_from_id(current).watched_appids())
+                await ctx.send(
+                    f"🔗 This server is mirroring server `{current}` ({n} game(s)). "
+                    f"Use `dmirror off` to stop."
+                )
+            else:
+                await ctx.send(
+                    "This server is not mirroring any other server. "
+                    "Use `dmirror <guild_id>` to start."
+                )
+            return
+
+        # Turn off
+        if source.lower() == "off":
+            if not current:
+                await ctx.send("This server isn't mirroring anything.")
+                return
+            await self.config.guild(ctx.guild).mirror_guild_id.set(None)
+            await ctx.send("✅ Stopped mirroring. This server uses its own watchlist again.")
+            return
+
+        # Set
+        if not source.isdigit():
+            await ctx.send("❌ Provide a server ID, `off`, or nothing to see status.")
+            return
+        source_id = int(source)
+        if source_id == ctx.guild.id:
+            await ctx.send("❌ A server can't mirror itself.")
+            return
+        if await self.config.guild_from_id(source_id).mirror_guild_id():
+            await ctx.send(
+                f"❌ Server `{source_id}` is itself a mirror — point at the server that owns the list."
+            )
+            return
+
+        source_watched = await self.config.guild_from_id(source_id).watched_appids()
+        await self.config.guild(ctx.guild).mirror_guild_id.set(source_id)
+        note = "" if source_watched else " (its watchlist is currently empty)"
+        await ctx.send(
+            f"🔗 Now mirroring server `{source_id}` — {len(source_watched)} game(s){note}. "
+            f"`dlist`, `dcheck`, `dupcoming`, and `ddepots` here now read that server's list live."
+        )
+
+    @commands.command(name="dclear")
+    @owner_only()
+    async def dclear(self, ctx: commands.Context):
+        """Clear this server's entire watchlist (owner only)."""
+        if not await self._require_guild(ctx):
+            return
+        if await self._block_if_mirrored(ctx):
+            return
+        watched = await self.config.guild(ctx.guild).watched_appids()
+        if not watched:
+            await ctx.send("📭 This server's watchlist is already empty.")
+            return
+
+        view = ConfirmView(ctx.author.id)
+        prompt = await ctx.send(
+            f"⚠️ This will clear **{len(watched)}** game(s) from this server's watchlist. Continue?",
+            view=view,
+        )
+        await view.wait()
+        if view.value is not True:
+            if view.value is None:
+                await prompt.edit(content="❌ Timed out — watchlist unchanged.", view=None)
+            return
+
+        count = len(watched)
+        async with ctx.typing():
+            for appid_str in list(watched):
+                await self._unwatch(ctx.guild, appid_str)
+        await ctx.send(f"🗑️ Cleared **{count}** game(s) from this server's watchlist.")
+
     # ── settings commands (Prefix Only) ───────────────────────────────────
     @commands.group(name="denuvowatch", invoke_without_command=True)
     @owner_only()
