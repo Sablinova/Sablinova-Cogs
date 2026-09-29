@@ -17,6 +17,8 @@ import tempfile
 import time
 import zipfile
 from pathlib import Path
+import urllib.parse
+import urllib.request
 from urllib.parse import unquote, urlparse
 
 import aiohttp
@@ -1096,6 +1098,131 @@ class SaveInstListView(discord.ui.View):
         await interaction.response.send_message(**kwargs)
 
 
+MYMEMORY_LANG_MAP = {
+    "es": "es-ES",
+    "pt": "pt-BR",
+    "fr": "fr-FR",
+    "de": "de-DE",
+    "ro": "ro-RO",
+    "ru": "ru-RU",
+    "ar": "ar-SA",
+    "ary": "ar-MA",
+    "ur": "ur-PK",
+    "tr": "tr-TR",
+    "ja": "ja-JP",
+    "ko": "ko-KR",
+    "tl": "tl-PH",
+    "zh-CN": "zh-CN",
+    "zh-TW": "zh-TW",
+    "hi": "hi-IN",
+    "id": "id-ID",
+    "th": "th-TH",
+    "vi": "vi-VN",
+}
+
+
+def _translate_google_chrome_dict(text: str, target_lang: str) -> str:
+    """Translate text using the Google Chrome dictionary extension API endpoint.
+
+    Uses POST to avoid query string length limits and bypasses rate limits.
+    """
+    url = f"https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=en&tl={target_lang}"
+    payload = urllib.parse.urlencode({"q": text}).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            "Content-Type": "application/x-www-form-urlencoded;charset=utf-8",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+        if isinstance(data, list):
+            result = "".join(item for item in data if isinstance(item, str))
+            if result:
+                return result
+        elif isinstance(data, str) and data:
+            return data
+    raise RuntimeError("Empty response from Google Chrome dictionary endpoint")
+
+
+def _translate_mymemory(text: str, target_lang: str) -> str:
+    """Translate text using MyMemoryTranslator with regional locale mapping."""
+    from deep_translator import MyMemoryTranslator
+
+    mm_target = MYMEMORY_LANG_MAP.get(target_lang, target_lang)
+    result = MyMemoryTranslator(source="en-US", target=mm_target).translate(text)
+    if result:
+        return result
+    raise RuntimeError("Empty response from MyMemory")
+
+
+def _translate_google_scraper(text: str, target_lang: str) -> str:
+    """Translate text using deep_translator GoogleTranslator scraper."""
+    from deep_translator import GoogleTranslator
+
+    gl_target = "ar" if target_lang == "ary" else target_lang
+    result = GoogleTranslator(source="en", target=gl_target).translate(text)
+    if result:
+        return result
+    raise RuntimeError("Empty response from GoogleTranslator scraper")
+
+
+def _translate_text(text: str, target_lang: str) -> str:
+    """Resilient multi-tier translation pipeline.
+
+    Tier 1: Google Chrome dict-chrome-ex API (fast, multiline, avoids 429 errors).
+    Tier 2: MyMemoryTranslator with regional locale mapping.
+    Tier 3: Google Chrome dict-chrome-ex with 'ar' fallback if 'ary' fails MyMemory.
+    Tier 4: deep_translator GoogleTranslator scraper fallback.
+    """
+    errors: list[str] = []
+
+    # Moroccan Arabic (ary): Google lacks an 'ary' code, so try MyMemory first
+    if target_lang == "ary":
+        try:
+            return _translate_mymemory(text, target_lang)
+        except Exception as e:
+            errors.append(f"MyMemory(ar-MA): {e}")
+
+        try:
+            return _translate_google_chrome_dict(text, "ar")
+        except Exception as e:
+            errors.append(f"GoogleChrome(ar): {e}")
+
+        try:
+            return _translate_google_scraper(text, "ar")
+        except Exception as e:
+            errors.append(f"GoogleScraper(ar): {e}")
+
+        raise RuntimeError(f"All translation tiers failed for {target_lang}: {'; '.join(errors)}")
+
+    # Standard languages: Tier 1: Google Chrome endpoint
+    try:
+        return _translate_google_chrome_dict(text, target_lang)
+    except Exception as e:
+        errors.append(f"GoogleChrome: {e}")
+
+    # Tier 2: MyMemory
+    try:
+        return _translate_mymemory(text, target_lang)
+    except Exception as e:
+        errors.append(f"MyMemory: {e}")
+
+    # Tier 3: Google scraper
+    try:
+        return _translate_google_scraper(text, target_lang)
+    except Exception as e:
+        errors.append(f"GoogleScraper: {e}")
+
+    raise RuntimeError(f"All translation tiers failed for {target_lang}: {'; '.join(errors)}")
+
+
 class SaveInstTranslateView(discord.ui.View):
     """Persistent translate dropdown attached to /saveinst responses."""
 
@@ -1121,7 +1248,7 @@ class SaveInstTranslateView(discord.ui.View):
         lang_code = interaction.data["values"][0]
         await interaction.response.defer(ephemeral=True, thinking=True)
 
-        # Funny local transforms — no API, no cache (randomised each time)
+        # Funny local transforms: no API, no cache (randomised each time)
         if lang_code.startswith("__"):
             if lang_code == "__brainrot__":
                 manual = self.cog.get_manual_funny_override(
@@ -1143,14 +1270,10 @@ class SaveInstTranslateView(discord.ui.View):
             return
 
         try:
-            from deep_translator import GoogleTranslator
-
             masked, placeholders, fence = _mask_protected(self.source_text)
             raw = await asyncio.get_event_loop().run_in_executor(
                 None,
-                lambda: GoogleTranslator(source="en", target=lang_code).translate(
-                    masked
-                ),
+                lambda: _translate_text(masked, lang_code),
             )
             translated = _unmask_protected(raw, placeholders, fence)
         except Exception as e:
