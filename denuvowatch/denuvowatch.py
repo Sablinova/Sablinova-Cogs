@@ -1278,22 +1278,24 @@ class DenuvoWatch(commands.Cog):
             await ctx.send("📭 This server's watchlist is empty.", ephemeral=True)
             return
 
-        matches = []
-        query_lower = query.lower()
+        query_norm = normalize_game_name(query)
 
-        # Exact name match first (covers autocomplete selections, which supply the exact stored name)
+        # Exact normalized-name match first (covers autocomplete selections,
+        # which supply the exact stored name, plus punctuation/trademark/roman
+        # numeral differences like "elden ring 3" vs "ELDEN RING™ III")
         exact_matches = [
             (appid_str, info) for appid_str, info in games.items()
-            if info["name"].lower() == query_lower
+            if normalize_game_name(info["name"]) == query_norm
         ]
         if exact_matches:
             matches = exact_matches
         else:
+            matches = []
             for appid_str, info in games.items():
                 if query.isdigit() and appid_str == query:
                     matches = [(appid_str, info)]
                     break
-                elif query_lower in info["name"].lower():
+                elif query_norm in normalize_game_name(info["name"]):
                     matches.append((appid_str, info))
 
             if not matches:
@@ -1379,8 +1381,9 @@ class DenuvoWatch(commands.Cog):
                 appid = int(query)
             else:
                 if item_type == "game":
+                    query_norm = normalize_game_name(query)
                     for appid_str, info in games.items():
-                        if query.lower() in info["name"].lower():
+                        if query_norm in normalize_game_name(info["name"]):
                             appid = int(appid_str)
                             break
                 if appid is None:
@@ -1524,8 +1527,9 @@ class DenuvoWatch(commands.Cog):
         if query.isdigit():
             appid = int(query)
         else:
+            query_norm = normalize_game_name(query)
             for appid_str, info in games.items():
-                if query.lower() in info["name"].lower():
+                if query_norm in normalize_game_name(info["name"]):
                     appid = int(appid_str)
                     break
 
