@@ -1540,13 +1540,8 @@ class DenuvoWatch(commands.Cog):
 
         is_coming_soon = snapshot.get("coming_soon")
         embed.add_field(name="Denuvo", value="⚠️ Yes" if snapshot["denuvo"] else "✅ No", inline=True)
-        if is_coming_soon:
-            aa = snapshot.get("advance_access_ts")
-            if aa:
-                embed.add_field(name="Advanced Access", value=f"<t:{aa}:F>", inline=True)
-            release_field = release_display(snapshot)
-            if release_field:
-                embed.add_field(name="Release Date", value=release_field, inline=True)
+        if not is_coming_soon:
+            embed.add_field(name="Build ID", value=f"`{snapshot['build_id']}`" if snapshot["build_id"] else "Unknown", inline=True)
         embed.add_field(name="Watchlist", value="👁️ Watching" if in_watchlist else "➕ Use `dadd`", inline=True)
         if depot_sizes:
             total = sum(depot_sizes.values())
@@ -1555,6 +1550,9 @@ class DenuvoWatch(commands.Cog):
             embed.add_field(name="Build Pushed", value=f"<t:{snapshot['build_time']}:R>", inline=True)
 
         if is_coming_soon:
+            aa = snapshot.get("advance_access_ts")
+            if aa:
+                embed.add_field(name="Advanced Access", value=f"<t:{aa}:F>", inline=True)
             release_field = release_display(snapshot)
             if release_field:
                 embed.add_field(name="Release Date", value=release_field, inline=True)
