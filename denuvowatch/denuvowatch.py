@@ -8,6 +8,7 @@ import discord
 import requests
 import json
 import aiohttp
+import time
 from bs4 import BeautifulSoup
 from dateutil import parser as date_parser
 from discord.ext import tasks
@@ -153,6 +154,56 @@ def fetch_release_info(appid: int) -> dict:
         }
     except Exception:
         return {}
+
+def fetch_advance_access(appid: int) -> Optional[int]:
+    """Return the earliest *upcoming* advanced-access start (unix ts) across
+    every edition/package of `appid`, or None if there isn't one."""
+    def _get_items(ids):
+        input_json = json.dumps({
+            "ids": ids,
+            "context": {"language": "english", "country_code": "US"},
+            "data_request": {"include_release": True, "include_all_purchase_options": True},
+        })
+        r = requests.get(
+            "https://api.steampowered.com/IStoreBrowseService/GetItems/v1/",
+            params={"input_json": input_json},
+            headers=HEADERS, timeout=10,
+        )
+        r.raise_for_status()
+        return r.json().get("response", {}).get("store_items", [])
+
+    try:
+        candidates: list[int] = []
+        package_ids: set[int] = set()
+
+        def scan(item: dict):
+            aa = (item.get("release") or {}).get("advance_access_date")
+            if aa:
+                candidates.append(int(aa))
+            options = list(item.get("purchase_options") or [])
+            options.append(item.get("best_purchase_option") or {})
+            for opt in options:
+                if opt.get("packageid"):
+                    package_ids.add(int(opt["packageid"]))
+
+        for item in _get_items([{"appid": appid}]):
+            scan(item)
+
+        details = fetch_app_details(appid)
+        for group in details.get("package_groups", []) or []:
+            for sub in group.get("subs", []) or []:
+                if sub.get("packageid"):
+                    package_ids.add(int(sub["packageid"]))
+
+        if package_ids:
+            for item in _get_items([{"packageid": p} for p in sorted(package_ids)]):
+                scan(item)
+
+        now = time.time()
+        upcoming = [t for t in candidates if t > now]
+        return min(upcoming) if upcoming else None
+    except Exception:
+        return None
 
 
 def fetch_build_id_only(appid: int) -> tuple:
@@ -523,6 +574,27 @@ def build_release_embed(appid: int, old: dict, new: dict) -> discord.Embed:
     embed.add_field(name="Denuvo", value="⚠️ Yes" if new.get("denuvo") else "✅ No", inline=True)
     if new.get("header"):
         embed.set_thumbnail(url=new["header"])
+    embed.set_footer(text=f"AppID {appid} • DenuvoWatch")
+    embed.timestamp = datetime.now(timezone.utc)
+    return embed
+
+def build_advance_access_embed(appid: int, info: dict) -> discord.Embed:
+    name = info.get("name", f"AppID {appid}")
+    url = f"https://store.steampowered.com/app/{appid}/"
+    embed = discord.Embed(
+        title="✈️ Advanced Access Started!",
+        description=f"**[{name}]({url})** advanced access is now live for eligible editions.",
+        color=discord.Color.orange()
+    )
+    ts = info.get("advance_access_ts")
+    if ts:
+        embed.add_field(name="Started", value=f"<t:{ts}:F>", inline=True)
+    full_release = release_display(info)
+    if full_release:
+        embed.add_field(name="Full Release", value=full_release, inline=True)
+    embed.add_field(name="Denuvo", value="⚠️ Yes" if info.get("denuvo") else "✅ No", inline=True)
+    if info.get("header"):
+        embed.set_thumbnail(url=info["header"])
     embed.set_footer(text=f"AppID {appid} • DenuvoWatch")
     embed.timestamp = datetime.now(timezone.utc)
     return embed
@@ -1010,12 +1082,27 @@ class DenuvoWatch(commands.Cog):
                         games[appid_str]["release_precision"] = new["release_precision"]
                 else:
                     dropped = False
-                    for key in ("coming_soon", "release_date", "release_ts", "release_precision"):
+                    for key in ("coming_soon", "release_date", "release_ts", "release_precision", "advance_access_ts"):
                         if key in games[appid_str]:
                             games[appid_str].pop(key)
                             dropped = True
                     if dropped:
                         print(f"[INFO] {new['name']} has released, cleared coming_soon + release_date.")
+
+            # Advanced access start: notify once, then drop the value
+            now_ts = int(time.time())
+            for appid_str in target_ids:
+                info = games.get(appid_str)
+                aa_ts = info.get("advance_access_ts") if info else None
+                if aa_ts and now_ts >= aa_ts:
+                    await self._dispatch_change(
+                        appid_str,
+                        build_advance_access_embed(int(appid_str), info),
+                        # mention=True,  # uncomment to ping the notify role/user
+                    )
+                    info.pop("advance_access_ts", None)
+                    changes = True
+                    print(f"[INFO] {info.get('name', appid_str)} advanced access has started.")
 
             # Full refresh for unchanged games (within scope)
             if full_refresh:
@@ -1032,6 +1119,21 @@ class DenuvoWatch(commands.Cog):
                         games[appid_str]["manifests"] = manifests
                     if depot_sizes:
                         games[appid_str]["depot_sizes"] = depot_sizes
+
+                aa_targets = [
+                    a for a in target_ids
+                    if games[a].get("coming_soon") and not games[a].get("advance_access_ts")
+                ]
+
+                async def aa_single(appid_str):
+                    ts = await asyncio.to_thread(fetch_advance_access, int(appid_str))
+                    return appid_str, ts
+
+                aa_results = await asyncio.gather(*[aa_single(a) for a in aa_targets])
+                for appid_str, ts in aa_results:
+                    if ts:
+                        games[appid_str]["advance_access_ts"] = ts
+                        print(f"[INFO] {games[appid_str].get('name', appid_str)}: advanced access set to {ts}.")
 
             await self._save_games(games)
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Check complete.")
@@ -1088,6 +1190,9 @@ class DenuvoWatch(commands.Cog):
                     entry["release_ts"] = snapshot["release_ts"]
                 if snapshot.get("release_precision"):
                     entry["release_precision"] = snapshot["release_precision"]
+                aa_ts = await asyncio.to_thread(fetch_advance_access, appid)
+                if aa_ts:
+                    entry["advance_access_ts"] = aa_ts
             entry["manifests"] = manifests
             entry["depot_sizes"] = depot_sizes
 
@@ -1105,6 +1210,8 @@ class DenuvoWatch(commands.Cog):
         embed.add_field(name="Denuvo", value="⚠️ Yes" if entry.get("denuvo") else "✅ No", inline=True)
         embed.add_field(name="Build ID", value=f"`{entry['build_id']}`" if entry.get("build_id") else "Unknown", inline=True)
         embed.add_field(name="Watchlist", value=f"{len(watched)}/{MAX_GAMES} games", inline=True)
+        if entry.get("advance_access_ts"):
+            embed.add_field(name="Advanced Access", value=f"<t:{entry['advance_access_ts']}:F>", inline=False)
         if entry.get("header"):
             embed.set_thumbnail(url=entry["header"])
         embed.set_footer(text=f"AppID {appid}")
@@ -1411,12 +1518,15 @@ class DenuvoWatch(commands.Cog):
                     "release_date": stored.get("release_date"),
                     "release_ts": stored.get("release_ts"),
                     "release_precision": stored.get("release_precision"),
+                    "advance_access_ts": stored.get("advance_access_ts"),
                 }
             else:
                 snapshot = await asyncio.to_thread(get_game_snapshot, appid)
                 if snapshot is None:
                     await ctx.send(f"❌ Couldn't fetch data for AppID `{appid}`.")
                     return
+                if snapshot.get("coming_soon"):
+                    snapshot["advance_access_ts"] = await asyncio.to_thread(fetch_advance_access, appid)
 
             depot_sizes = stored.get("depot_sizes", {})
             if not depot_sizes:
@@ -1430,8 +1540,13 @@ class DenuvoWatch(commands.Cog):
 
         is_coming_soon = snapshot.get("coming_soon")
         embed.add_field(name="Denuvo", value="⚠️ Yes" if snapshot["denuvo"] else "✅ No", inline=True)
-        if not is_coming_soon:
-            embed.add_field(name="Build ID", value=f"`{snapshot['build_id']}`" if snapshot["build_id"] else "Unknown", inline=True)
+        if is_coming_soon:
+            aa = snapshot.get("advance_access_ts")
+            if aa:
+                embed.add_field(name="Advanced Access", value=f"<t:{aa}:F>", inline=True)
+            release_field = release_display(snapshot)
+            if release_field:
+                embed.add_field(name="Release Date", value=release_field, inline=True)
         embed.add_field(name="Watchlist", value="👁️ Watching" if in_watchlist else "➕ Use `dadd`", inline=True)
         if depot_sizes:
             total = sum(depot_sizes.values())
@@ -1484,15 +1599,20 @@ class DenuvoWatch(commands.Cog):
 
         def sort_key(item):
             _, info = item
+            base = None
             ts = info.get("release_ts")
             if ts and info.get("release_precision") in EXACT_RELEASE_PRECISIONS:
-                return (0, float(ts))
-            parsed = parse_release_date(info.get("release_date"))
-            if parsed:
-                if parsed.tzinfo is None:
-                    parsed = parsed.replace(tzinfo=timezone.utc)
-                return (0, parsed.timestamp())
-            return (1, float("inf"))
+                base = float(ts)
+            else:
+                parsed = parse_release_date(info.get("release_date"))
+                if parsed:
+                    if parsed.tzinfo is None:
+                        parsed = parsed.replace(tzinfo=timezone.utc)
+                    base = parsed.timestamp()
+            aa = info.get("advance_access_ts")
+            if aa:
+                base = min(base, float(aa)) if base is not None else float(aa)
+            return (0, base) if base is not None else (1, float("inf"))
 
         upcoming.sort(key=sort_key)
 
@@ -1507,7 +1627,11 @@ class DenuvoWatch(commands.Cog):
                 date = f"<t:{ts}:f>"
             else:
                 date = info.get("release_date") or "Date TBA"
-            lines.append(f"**{info['name']}** `{appid_str}` — {date}")
+            line = f"**{info['name']}** `{appid_str}` — {date}"
+            aa = info.get("advance_access_ts")
+            if aa:
+                line += f"\n> ✈️ Advanced access: <t:{aa}:f>"
+            lines.append(line)
         embed.description = "\n".join(lines)
         await ctx.send(embed=embed)
 
@@ -1703,6 +1827,8 @@ class DenuvoWatch(commands.Cog):
                         games[appid_str]["release_ts"] = info["release_ts"]
                     if info.get("release_precision"):
                         games[appid_str]["release_precision"] = info["release_precision"]
+                    if info.get("advance_access_ts") and int(info["advance_access_ts"]) > time.time():
+                        games[appid_str]["advance_access_ts"] = int(info["advance_access_ts"])
                 master_changed = True
 
             # Subscribe this guild.
