@@ -769,6 +769,11 @@ class DenuvoWatch(commands.Cog):
         self._name_cache_ts: float = 0.0
         self._name_cache_ttl: float = 30.0
 
+        # Short-lived cache for dadd Steam-search autocomplete, keyed on the
+        # lowercased query. Dampens per-keystroke fetches to the Steam API.
+        self._dadd_search_cache: dict[str, tuple[float, list]] = {}
+        self._dadd_search_cache_ttl: float = 60.0
+
         self._pending_denuvo_confirms: dict[str, asyncio.Task] = {}
 
     # ── lifecycle ────────────────────────────────────────────────────────
@@ -1370,6 +1375,35 @@ class DenuvoWatch(commands.Cog):
         view = discord.ui.View(timeout=60)
         view.add_item(select)
         await ctx.send("Multiple results found — pick one:", view=view)
+
+    @dadd.autocomplete("query")
+    async def dadd_query_autocomplete(self, interaction: discord.Interaction, current: str):
+        current = current.strip()
+        # Need at least 3 chars before hitting Steam, so it does not fetch on
+        # every keystroke. Digits are treated as a raw AppID — no search.
+        if len(current) < 3 or current.isdigit():
+            return []
+
+        key = current.lower()
+        now = time.monotonic()
+        cached = self._dadd_search_cache.get(key)
+        if cached and (now - cached[0]) < self._dadd_search_cache_ttl:
+            results = cached[1]
+        else:
+            try:
+                results = await asyncio.wait_for(
+                    asyncio.to_thread(search_steam, current), timeout=2.5
+                )
+            except Exception:
+                return []  # never let autocomplete hang past Discord's ~3s window
+            self._dadd_search_cache[key] = (now, results)
+
+        # Value is the AppID string, so picking a choice routes dadd straight
+        # into its isdigit() branch and skips a second Steam search.
+        return [
+            discord.app_commands.Choice(name=r["name"][:100], value=str(r["appid"]))
+            for r in results[:25]
+        ]
 
     @commands.hybrid_command(name="dremove")
     @owner_only()
