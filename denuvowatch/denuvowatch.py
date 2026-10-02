@@ -775,6 +775,12 @@ class DenuvoWatch(commands.Cog):
         self._dadd_search_cache_ttl: float = 60.0
 
         self._pending_denuvo_confirms: dict[str, asyncio.Task] = {}
+        self._pending_release_confirms: dict[str, asyncio.Task] = {}
+
+        # Serialises scans (background loop, dforcecheck, startup) and the
+        # release-confirm task so overlapping load/modify/save cycles can't
+        # overwrite each other or double-notify.
+        self._check_lock = asyncio.Lock()
 
     # ── lifecycle ────────────────────────────────────────────────────────
     async def cog_load(self):
@@ -785,7 +791,10 @@ class DenuvoWatch(commands.Cog):
             self._startup_task.cancel()
         if self.check_games_loop.is_running():
             self.check_games_loop.cancel()
-        for task in self._pending_denuvo_confirms.values():
+        for task in (
+            *self._pending_denuvo_confirms.values(),
+            *self._pending_release_confirms.values(),
+        ):
             task.cancel()
         asyncio.create_task(self.session.close())
 
@@ -959,8 +968,60 @@ class DenuvoWatch(commands.Cog):
         finally:
             self._pending_denuvo_confirms.pop(appid_str, None)
 
+    async def _confirm_release(self, appid_str: str):
+        """Re-verify a possible release after 2 minutes before announcing it,
+        so a transient coming_soon flip on Steam's side can't cause a
+        misfire or duplicate embeds."""
+        try:
+            await asyncio.sleep(120)
+            appid = int(appid_str)
+
+            recheck = await asyncio.to_thread(get_game_snapshot, appid)
+            if recheck is None:
+                return
+            if recheck.get("coming_soon"):
+                print(f"[DenuvoWatch] {recheck['name']}: release did not persist, ignoring.")
+                return
+
+            async with self._check_lock:
+                games = await self._load_games()
+                current = games.get(appid_str)
+                if not current or not current.get("coming_soon"):
+                    return  # removed, or already handled
+
+                old_snapshot = dict(current)   # still holds release_ts/release_date for "Expected Date"
+                new_snapshot = dict(current)
+                new_snapshot.update(
+                    name=recheck["name"],
+                    denuvo=recheck["denuvo"],
+                    header=recheck.get("header") or current.get("header"),
+                    build_id=recheck.get("build_id") or current.get("build_id"),
+                )
+                await self._dispatch_change(
+                    appid_str, build_release_embed(appid, old_snapshot, new_snapshot)
+                )
+
+                for key in ("coming_soon", "release_date", "release_ts",
+                            "release_precision", "advance_access_ts"):
+                    current.pop(key, None)
+                current["released"] = True
+                await self._save_games(games)
+                print(f"[INFO] {recheck['name']} release confirmed and announced.")
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"[DenuvoWatch][ERROR] release confirm for {appid_str} crashed: {e}")
+        finally:
+            self._pending_release_confirms.pop(appid_str, None)
+
     # ── background check ─────────────────────────────────────────────────
     async def check_games_internal(self, full_refresh: bool = False, scope=None) -> bool:
+        """Serialised entry point so overlapping scans can't double-notify
+        or overwrite each other's saves."""
+        async with self._check_lock:
+            return await self._check_games_locked(full_refresh=full_refresh, scope=scope)
+
+    async def _check_games_locked(self, full_refresh: bool = False, scope=None) -> bool:
         """Scan watched games and fan out notifications.
 
         `scope=None` scans every game in the master store (background loop).
@@ -1005,6 +1066,15 @@ class DenuvoWatch(commands.Cog):
                 old = games[appid_str]
                 appid = int(appid_str)
 
+                # Steam's appdetails can briefly flip back to coming_soon=True after
+                # launch (stale cache). A released game never un-releases, so ignore it.
+                if new.get("coming_soon") and old.get("released"):
+                    print(f"[INFO] {new['name']}: ignoring stale coming_soon=True (already released).")
+                    new["coming_soon"] = False
+                    new["release_date"] = None
+                    new["release_ts"] = None
+                    new["release_precision"] = None
+
                 # Denuvo change — don't notify immediately, confirm with a
                 # targeted re-check in 2 minutes to filter out flakiness/outages
                 if appid_str in self._pending_denuvo_confirms:
@@ -1015,11 +1085,17 @@ class DenuvoWatch(commands.Cog):
                     print(f"[DenuvoWatch] {new['name']}: possible denuvo change "
                           f"({old.get('denuvo')} -> {new['denuvo']}), confirming in 2 min…")
 
-                # Release notification
-                if old.get("coming_soon") and not new.get("coming_soon"):
-                    await self._dispatch_change(appid_str, build_release_embed(appid, old, new))
-                    changes = True
-                    print(f"[INFO] {new['name']} has released!")
+                # Release: confirm with a recheck in 2 min instead of announcing
+                # on first sighting (same idea as the Denuvo confirm).
+                if (
+                    old.get("coming_soon")
+                    and not new.get("coming_soon")
+                    and appid_str not in self._pending_release_confirms
+                ):
+                    self._pending_release_confirms[appid_str] = asyncio.create_task(
+                        self._confirm_release(appid_str)
+                    )
+                    print(f"[DenuvoWatch] {new['name']}: possible release, confirming in 2 min…")
 
                 # Build ID change
                 old_build = old.get("build_id")
@@ -1085,7 +1161,10 @@ class DenuvoWatch(commands.Cog):
                         games[appid_str]["release_ts"] = new["release_ts"]
                     if new.get("release_precision"):
                         games[appid_str]["release_precision"] = new["release_precision"]
+                elif appid_str in self._pending_release_confirms:
+                    pass  # keep coming_soon/release data until the confirm task decides
                 else:
+                    games[appid_str]["released"] = True
                     dropped = False
                     for key in ("coming_soon", "release_date", "release_ts", "release_precision", "advance_access_ts"):
                         if key in games[appid_str]:
@@ -1099,7 +1178,7 @@ class DenuvoWatch(commands.Cog):
             for appid_str in target_ids:
                 info = games.get(appid_str)
                 aa_ts = info.get("advance_access_ts") if info else None
-                if aa_ts and now_ts >= aa_ts:
+                if aa_ts and now_ts >= aa_ts and appid_str not in self._pending_release_confirms:
                     await self._dispatch_change(
                         appid_str,
                         build_advance_access_embed(int(appid_str), info),
@@ -1198,6 +1277,8 @@ class DenuvoWatch(commands.Cog):
                 aa_ts = await asyncio.to_thread(fetch_advance_access, appid)
                 if aa_ts:
                     entry["advance_access_ts"] = aa_ts
+            else:
+                entry["released"] = True
             entry["manifests"] = manifests
             entry["depot_sizes"] = depot_sizes
 
@@ -1766,7 +1847,7 @@ class DenuvoWatch(commands.Cog):
             f"📤 Exported **{len(games)}** game(s).",
             file=discord.File(fp=buffer, filename=filename),
         )
-	
+
     @commands.command(name="dimport")
     @owner_only()
     async def dimport(self, ctx: commands.Context, url: str = None):
@@ -1880,7 +1961,7 @@ class DenuvoWatch(commands.Cog):
             lines.append(f"• Ignored {invalid} invalid entr(y/ies).")
 
         await ctx.send("\n".join(lines))
-    	
+
     @commands.command(name="dmirror")
     @owner_only()
     async def dmirror(self, ctx: commands.Context, source: str = None):
