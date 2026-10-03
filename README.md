@@ -26,6 +26,7 @@ Custom cogs for [Red-DiscordBot](https://github.com/Cog-Creators/Red-DiscordBot)
 | [Sabby](sabby/) | Two-way bridge routing Red bot owner-mentions to a Sabby OpenClaw AI webhook. |
 | [TipModal](tipmodal/) | Interactive button and modal showcase for collecting tip verification and game requests. |
 | [ClaimRole](claimrole/) | Interactive button role claim panels with emojis, colors, webhooks, and anti-abuse protection. |
+| [SabbyInviteCog](sabbyinvitecog/) | High-precision invite tracker and contest leaderboard cog with anti-alt protection and invite pruner. |
 
 ## Requirements
 

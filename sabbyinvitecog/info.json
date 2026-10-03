@@ -1,0 +1,11 @@
+{
+    "author": ["Sabby"],
+    "description": "High-precision invite tracker and contest leaderboard cog with anti-alt fraud protection, leave deduction, 1000-invite pruner, and dedicated contest links.",
+    "end_user_data_statement": "This cog stores member IDs and invite counts for invite tracking within the guild.",
+    "install_msg": "SabbyInviteCog installed. Run `[p]sabbyinviteset` to configure logging or `[p]inviteprune` to clear 0-use dead invites.",
+    "min_bot_version": "3.5.0",
+    "min_python_version": [3, 9, 0],
+    "name": "SabbyInviteCog",
+    "short": "Precise invite tracking, contest leaderboard, and invite pruner.",
+    "tags": ["invites", "leaderboard", "contest", "tracking", "prune", "anticheat"]
+}
