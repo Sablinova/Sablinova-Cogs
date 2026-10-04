@@ -23,6 +23,108 @@ IDENTIFIER = 847291048201
 DISCORD_INVITE_CAP = 1000
 
 
+class InvitedPaginationView(discord.ui.View):
+    """
+    Pagination view for navigating through large invite record lists.
+    Features First, Previous, Page Indicator, Next, and Last buttons.
+    """
+
+    def __init__(
+        self,
+        cog: "SabbyInviteCog",
+        guild: discord.Guild,
+        target: Any,
+        author_id: int,
+        prefix: str = "[p]",
+        include_privacy_hint: bool = False,
+        page: int = 1,
+        total_pages: int = 1,
+        per_page: int = 10,
+        timeout: float = 180.0,
+    ):
+        super().__init__(timeout=timeout)
+        self.cog = cog
+        self.guild = guild
+        self.target = target
+        self.author_id = author_id
+        self.prefix = prefix
+        self.include_privacy_hint = include_privacy_hint
+        self.page = page
+        self.total_pages = total_pages
+        self.per_page = per_page
+        self.message: Optional[discord.Message] = None
+        self._update_buttons()
+
+    def _update_buttons(self):
+        self.first_button.disabled = (self.page <= 1)
+        self.prev_button.disabled = (self.page <= 1)
+        self.page_indicator.label = f"Page {self.page} / {self.total_pages}"
+        self.page_indicator.disabled = True
+        self.next_button.disabled = (self.page >= self.total_pages)
+        self.last_button.disabled = (self.page >= self.total_pages)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.author_id:
+            return True
+        is_owner = await self.cog.bot.is_owner(interaction.user)
+        if is_owner:
+            return True
+        if isinstance(interaction.user, discord.Member) and interaction.user.guild_permissions.manage_guild:
+            return True
+
+        await interaction.response.send_message(
+            "Only the person who requested this invite list (or server staff) can use these buttons.",
+            ephemeral=True
+        )
+        return False
+
+    async def _goto_page(self, interaction: discord.Interaction, new_page: int):
+        self.page = max(1, min(new_page, self.total_pages))
+        self._update_buttons()
+        embed, _ = await self.cog._build_invite_info_embed(
+            self.guild,
+            self.target,
+            prefix=self.prefix,
+            include_privacy_hint=self.include_privacy_hint,
+            page=self.page,
+            per_page=self.per_page,
+        )
+        if not interaction.response.is_done():
+            await interaction.response.edit_message(embed=embed, view=self)
+        else:
+            await interaction.edit_original_response(embed=embed, view=self)
+
+    @discord.ui.button(emoji="⏮", style=discord.ButtonStyle.secondary, row=0)
+    async def first_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._goto_page(interaction, 1)
+
+    @discord.ui.button(emoji="◀", label="Prev", style=discord.ButtonStyle.primary, row=0)
+    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._goto_page(interaction, self.page - 1)
+
+    @discord.ui.button(label="Page 1 / 1", style=discord.ButtonStyle.secondary, disabled=True, row=0)
+    async def page_indicator(self, interaction: discord.Interaction, button: discord.ui.Button):
+        pass
+
+    @discord.ui.button(emoji="▶", label="Next", style=discord.ButtonStyle.primary, row=0)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._goto_page(interaction, self.page + 1)
+
+    @discord.ui.button(emoji="⏭", style=discord.ButtonStyle.secondary, row=0)
+    async def last_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._goto_page(interaction, self.total_pages)
+
+    async def on_timeout(self):
+        for item in self.children:
+            if isinstance(item, discord.ui.Button):
+                item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except (discord.NotFound, discord.HTTPException):
+                pass
+
+
 class LeaderboardLiveView(discord.ui.View):
     """
     Persistent Discord UI view with Get Link, My Stats, and Refresh buttons.
@@ -138,8 +240,24 @@ class LeaderboardLiveView(discord.ui.View):
             )
             return
 
-        embed = await self.cog._build_invite_info_embed(guild, member, include_privacy_hint=True)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        embed, total_pages = await self.cog._build_invite_info_embed(
+            guild, member, include_privacy_hint=True, page=1, per_page=10
+        )
+        if total_pages > 1:
+            view = InvitedPaginationView(
+                cog=self.cog,
+                guild=guild,
+                target=member,
+                author_id=member.id,
+                prefix="[p]",
+                include_privacy_hint=True,
+                page=1,
+                total_pages=total_pages,
+                per_page=10,
+            )
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @discord.ui.button(
         label="Refresh",
@@ -1097,11 +1215,35 @@ class SabbyInviteCog(commands.Cog):
     async def _build_invite_info_embed(
         self,
         guild: discord.Guild,
-        target: Union[discord.Member, discord.User],
+        target: Union[discord.Member, discord.User, int, Any],
         prefix: str = "[p]",
-        include_privacy_hint: bool = False
-    ) -> discord.Embed:
+        include_privacy_hint: bool = False,
+        page: int = 1,
+        per_page: int = 10,
+    ) -> Tuple[discord.Embed, int]:
         """Construct the comprehensive invite breakdown embed for a member."""
+        if isinstance(target, int):
+            resolved = guild.get_member(target) or self.bot.get_user(target)
+            if not resolved:
+                try:
+                    resolved = await self.bot.fetch_user(target)
+                except Exception:
+                    resolved = None
+            if resolved:
+                target = resolved
+            else:
+                class _FallbackAvatar:
+                    url = "https://cdn.discordapp.com/embed/avatars/0.png"
+
+                class _FallbackUser:
+                    def __init__(self, uid: int):
+                        self.id = uid
+                        self.display_name = f"User {uid}"
+                        self.mention = f"<@{uid}>"
+                        self.display_avatar = _FallbackAvatar()
+
+                target = _FallbackUser(target)
+
         data = await self.config.member_from_ids(guild.id, target.id).all()
         real = data.get("real", 0)
         left = data.get("left", 0)
@@ -1134,6 +1276,11 @@ class SabbyInviteCog(commands.Cog):
             key=lambda x: (x[1].get("joined_at") or 0, x[0]),
             reverse=True
         )
+
+        total_records = len(invited_records)
+        per_page = max(1, per_page)
+        total_pages = max(1, (total_records + per_page - 1) // per_page)
+        page = max(1, min(page, total_pages))
 
         pts_label = "point" if abs(net) == 1 else "points"
         embed = discord.Embed(
@@ -1183,17 +1330,20 @@ class SabbyInviteCog(commands.Cog):
             overview_lines.append("⚠️ **Disqualified by Administrator**")
 
         overview_lines.append("")
-        overview_lines.append(f"__**Invited Members ({len(invited_records)})**__")
+        overview_lines.append(f"__**Invited Members ({total_records})**__")
 
         if not invited_records:
             overview_lines.append("*No recorded invites found for this user.*")
             embed.description = "\n".join(overview_lines)
         else:
+            start_idx = (page - 1) * per_page
+            end_idx = start_idx + per_page
+            page_records = invited_records[start_idx:end_idx]
+
             desc_lines = list(overview_lines)
             max_desc_length = 3800
-            truncated_count = 0
 
-            for idx, (mid, d) in enumerate(invited_records, start=1):
+            for idx, (mid, d) in enumerate(page_records, start=start_idx + 1):
                 m_obj = guild.get_member(mid)
                 is_fake = d.get("is_fake", False)
                 is_rejoin = d.get("is_rejoin", False)
@@ -1240,21 +1390,21 @@ class SabbyInviteCog(commands.Cog):
 
                 current_len = sum(len(line) + 1 for line in desc_lines)
                 if current_len + len(entry_text) + 80 > max_desc_length:
-                    truncated_count = len(invited_records) - idx + 1
                     break
 
                 desc_lines.append(entry_text)
 
-            if truncated_count > 0:
-                desc_lines.append(f"\n*... and {truncated_count} more invited member(s).*")
-
             embed.description = "\n".join(desc_lines)
 
-        footer_text = f"{guild.name} • Total Recorded: {len(invited_records)}"
+        if total_pages > 1:
+            footer_text = f"{guild.name} • Page {page} of {total_pages} • Total Recorded: {total_records}"
+        else:
+            footer_text = f"{guild.name} • Total Recorded: {total_records}"
+
         if include_privacy_hint:
             footer_text += " • Only you can see this message"
         embed.set_footer(text=footer_text)
-        return embed
+        return embed, total_pages
 
     async def _rpc_get_status(self, guild_id: Optional[int] = None) -> Dict[str, Any]:
         """RPC handler returning invite tracking and capacity status for all guilds."""
@@ -2412,13 +2562,49 @@ class SabbyInviteCog(commands.Cog):
     @commands.command(name="inviteinfo", aliases=["invited", "invitelist", "whoinvited"])
     @commands.guild_only()
     @commands.cooldown(1, 15, commands.BucketType.user)
-    async def inviteinfo(self, ctx: commands.Context, *, member: Optional[Union[discord.Member, discord.User]] = None):
+    async def inviteinfo(
+        self,
+        ctx: commands.Context,
+        *,
+        member: Optional[Union[discord.Member, discord.User, int]] = None
+    ):
         """
         Inspect all members invited by a user, including IDs, codes, join dates, and statuses.
         """
         target = member or ctx.author
-        embed = await self._build_invite_info_embed(ctx.guild, target, prefix=ctx.clean_prefix)
-        await ctx.send(embed=embed)
+        if isinstance(target, int):
+            resolved = ctx.guild.get_member(target) or self.bot.get_user(target)
+            if not resolved:
+                try:
+                    resolved = await self.bot.fetch_user(target)
+                except Exception:
+                    resolved = None
+            if resolved:
+                target = resolved
+
+        embed, total_pages = await self._build_invite_info_embed(
+            ctx.guild,
+            target,
+            prefix=ctx.clean_prefix,
+            page=1,
+            per_page=10
+        )
+        if total_pages > 1:
+            view = InvitedPaginationView(
+                cog=self,
+                guild=ctx.guild,
+                target=target,
+                author_id=ctx.author.id,
+                prefix=ctx.clean_prefix,
+                include_privacy_hint=False,
+                page=1,
+                total_pages=total_pages,
+                per_page=10,
+            )
+            msg = await ctx.send(embed=embed, view=view)
+            view.message = msg
+        else:
+            await ctx.send(embed=embed)
 
     async def cog_command_error(self, ctx: commands.Context, error: Exception):
         if isinstance(error, commands.CommandOnCooldown):
