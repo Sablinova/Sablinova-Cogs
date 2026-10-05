@@ -668,27 +668,85 @@ async def _download_spotify(
     temp_dir: str,
     timeout: int = 120,
     cookies_file: Optional[str] = None,
+    deezer_arl: Optional[str] = None,
+    qobuz_token: Optional[str] = None,
 ) -> Tuple[List[str], Optional[dict]]:
-    """Download audio from Spotify using SpotiFLAC CLI with spotdl fallback.
+    """Download audio from Spotify using cascading fallback tiers.
 
-    Primary: SpotiFLAC (lossless FLAC from Tidal/Amazon/Qobuz).
-    Fallback: spotdl (MP3 via SoundCloud/Piped/YouTube) when SpotiFLAC APIs are unavailable.
+    Tier 1: SpotiFLAC (lossless FLAC from Tidal/Amazon/Qobuz).
+    Tier 2: Deezer HiFi via Deemix (bit-perfect 16-bit 44.1kHz FLAC).
+    Tier 3: Qobuz Studio via qobuz-dl (24-bit Hi-Res FLAC).
+    Tier 4: spotdl (SoundCloud / Piped / YouTube audio with Spotify tags).
+    Tier 5: Direct yt-dlp search (universal safety net).
 
     Returns (list of file paths, metadata dict or None).
     """
+    errors: List[str] = []
+
+    # Tier 1: SpotiFLAC True FLAC
     try:
-        return await _download_spotify_spotiflac(url, temp_dir, timeout)
+        log.info("[_download_spotify] Tier 1: Trying SpotiFLAC (lossless FLAC)...")
+        files, meta = await _download_spotify_spotiflac(url, temp_dir, timeout=min(timeout, 40))
+        if files:
+            return files, meta
     except Exception as exc:
-        log.info("[SpotiFLAC] Failed, falling back to spotdl: %s", exc)
-        return await _download_spotify_spotdl(url, temp_dir, timeout, cookies_file=cookies_file)
+        log.info("[_download_spotify] Tier 1 (SpotiFLAC) failed: %s", exc)
+        errors.append(f"SpotiFLAC: {exc}")
+        _purge_temp_files(temp_dir)
+
+    # Tier 2: Deezer HiFi via Deemix
+    try:
+        log.info("[_download_spotify] Tier 2: Trying Deezer HiFi FLAC...")
+        files, meta = await _download_spotify_deezer(url, temp_dir, timeout=timeout, arl=deezer_arl)
+        if files:
+            return files, meta
+    except Exception as exc:
+        log.info("[_download_spotify] Tier 2 (Deezer) failed: %s", exc)
+        errors.append(f"Deezer: {exc}")
+        _purge_temp_files(temp_dir)
+
+    # Tier 3: Qobuz Studio via qobuz-dl
+    try:
+        log.info("[_download_spotify] Tier 3: Trying Qobuz Studio FLAC...")
+        files, meta = await _download_spotify_qobuz(url, temp_dir, timeout=timeout, token=qobuz_token)
+        if files:
+            return files, meta
+    except Exception as exc:
+        log.info("[_download_spotify] Tier 3 (Qobuz) failed: %s", exc)
+        errors.append(f"Qobuz: {exc}")
+        _purge_temp_files(temp_dir)
+
+    # Tier 4: spotdl multi-source audio
+    try:
+        log.info("[_download_spotify] Tier 4: Trying spotdl audio...")
+        files, meta = await _download_spotify_spotdl(url, temp_dir, timeout=timeout, cookies_file=cookies_file)
+        if files:
+            return files, meta
+    except Exception as exc:
+        log.info("[_download_spotify] Tier 4 (spotdl) failed: %s", exc)
+        errors.append(f"spotdl: {exc}")
+        _purge_temp_files(temp_dir)
+
+    # Tier 5: Direct yt-dlp search fallback
+    try:
+        log.info("[_download_spotify] Tier 5: Trying yt-dlp direct audio extraction...")
+        files, meta = await _download_spotify_ytdlp(url, temp_dir, timeout=timeout, cookies_file=cookies_file)
+        if files:
+            return files, meta
+    except Exception as exc:
+        log.warning("[_download_spotify] Tier 5 (yt-dlp) failed: %s", exc)
+        errors.append(f"yt-dlp: {exc}")
+        _purge_temp_files(temp_dir)
+
+    raise RuntimeError(f"All 5 audio download tiers failed: {'; '.join(errors)}")
 
 
 async def _download_spotify_spotiflac(
     url: str,
     temp_dir: str,
-    timeout: int = 120,
+    timeout: int = 40,
 ) -> Tuple[List[str], Optional[dict]]:
-    """Download from Spotify via SpotiFLAC CLI."""
+    """Download from Spotify via SpotiFLAC CLI (Tier 1)."""
     if not os.path.isfile(SPOTIFLAC_PATH):
         raise RuntimeError(
             f"SpotiFLAC CLI not found at {SPOTIFLAC_PATH}. "
@@ -723,27 +781,19 @@ async def _download_spotify_spotiflac(
     stderr_text = stderr.decode(errors="replace")
     combined = stdout_text + stderr_text
 
-    log.debug("[SpotiFLAC] stdout: %s", stdout_text[:500])
-    log.debug("[SpotiFLAC] stderr: %s", stderr_text[:500])
-
-    # Parse JSON result from output
     result = _parse_spotiflac_json(combined)
 
     if result is None:
-        # No JSON found : binary might have crashed
         error_hint = stderr_text.strip() or stdout_text.strip()
         raise RuntimeError(f"SpotiFLAC produced no JSON output: {error_hint[:200]}")
 
-    # Check if any tracks succeeded
     if result.get("success", 0) == 0:
-        # All tracks failed : extract error from first result
         results = result.get("results", [])
         if results:
             err = results[0].get("error", "Unknown error")
             raise RuntimeError(f"SpotiFLAC download failed: {err}")
         raise RuntimeError("SpotiFLAC download failed with no results")
 
-    # Collect files from the result JSON (more reliable than scanning dir)
     files = []
     metadata = None
     for r in result.get("results", []):
@@ -751,7 +801,6 @@ async def _download_spotify_spotiflac(
             fpath = r["file"]
             if os.path.isfile(fpath):
                 files.append(fpath)
-                # Use first successful track for metadata
                 if metadata is None:
                     parts = []
                     if r.get("artist"):
@@ -766,7 +815,6 @@ async def _download_spotify_spotiflac(
                         "spotiflac_format": "FLAC",
                     }
 
-    # Fallback: scan directory if JSON file paths didn't work
     if not files:
         files = _collect_real_files(temp_dir)
 
@@ -782,13 +830,193 @@ async def _download_spotify_spotiflac(
     return files, metadata
 
 
+async def _download_spotify_deezer(
+    url: str,
+    temp_dir: str,
+    timeout: int = 90,
+    arl: Optional[str] = None,
+) -> Tuple[List[str], Optional[dict]]:
+    """Download from Spotify via Deezer HiFi using Deemix (Tier 2)."""
+    active_arl = arl or os.environ.get("DEEZER_ARL")
+    arl_file = os.path.expanduser("~/.config/deemix/.arl")
+    alt_arl_file = "/home/sablinova/.deezer_arl"
+
+    if not active_arl:
+        if os.path.isfile(arl_file):
+            try:
+                with open(arl_file, "r", encoding="utf-8") as f:
+                    active_arl = f.read().strip()
+            except Exception:
+                pass
+        elif os.path.isfile(alt_arl_file):
+            try:
+                with open(alt_arl_file, "r", encoding="utf-8") as f:
+                    active_arl = f.read().strip()
+            except Exception:
+                pass
+
+    if not active_arl:
+        raise RuntimeError("Deezer ARL not configured")
+
+    os.makedirs(os.path.dirname(arl_file), exist_ok=True)
+    try:
+        with open(arl_file, "w", encoding="utf-8") as f:
+            f.write(active_arl.strip() + "\n")
+    except Exception as err:
+        log.debug("Could not write deemix .arl file: %s", err)
+
+    deemix_bin = shutil.which("deemix") or "/home/sablinova/redenv/bin/deemix"
+    if not os.path.isfile(deemix_bin):
+        raise RuntimeError(f"deemix binary not found at {deemix_bin}")
+
+    cmd = [
+        deemix_bin,
+        "-b",
+        "FLAC",
+        "-p",
+        temp_dir,
+        url,
+    ]
+
+    log.info("[deemix] Running: %s", " ".join(cmd))
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise RuntimeError(f"deemix timed out after {timeout}s")
+
+    files = _collect_real_files(temp_dir)
+    if not files:
+        stdout_text = stdout.decode(errors="replace")
+        stderr_text = stderr.decode(errors="replace")
+        err_hint = stderr_text.strip() or stdout_text.strip()
+        raise RuntimeError(f"deemix produced no output files: {err_hint[:300]}")
+
+    metadata = None
+    for fpath in files:
+        basename = os.path.basename(fpath)
+        name = os.path.splitext(basename)[0]
+        if metadata is None:
+            metadata = {
+                "title": name,
+                "extractor": "spotify",
+                "spotiflac_service": "deezer",
+                "spotiflac_format": "FLAC",
+            }
+
+    log.info(
+        "[deemix] Downloaded %d file(s), total %.1f MB",
+        len(files),
+        sum(os.path.getsize(f) for f in files) / (1024 * 1024),
+    )
+
+    return files, metadata
+
+
+async def _download_spotify_qobuz(
+    url: str,
+    temp_dir: str,
+    timeout: int = 90,
+    token: Optional[str] = None,
+) -> Tuple[List[str], Optional[dict]]:
+    """Download from Spotify via Qobuz Studio using qobuz-dl (Tier 3)."""
+    active_token = token or os.environ.get("QOBUZ_TOKEN")
+    qobuz_cfg = os.path.expanduser("~/.config/qobuz-dl/config.ini")
+    alt_token_file = "/home/sablinova/.qobuz_token"
+
+    if not active_token:
+        if os.path.isfile(alt_token_file):
+            try:
+                with open(alt_token_file, "r", encoding="utf-8") as f:
+                    active_token = f.read().strip()
+            except Exception:
+                pass
+        elif os.path.isfile(qobuz_cfg):
+            try:
+                with open(qobuz_cfg, "r", encoding="utf-8") as f:
+                    cfg_content = f.read()
+                    if "user_auth_token" in cfg_content or "token" in cfg_content:
+                        active_token = "configured"
+            except Exception:
+                pass
+
+    if not active_token:
+        raise RuntimeError("Qobuz token not configured")
+
+    qobuz_bin = shutil.which("qobuz-dl") or "/home/sablinova/redenv/bin/qobuz-dl"
+    if not os.path.isfile(qobuz_bin):
+        raise RuntimeError(f"qobuz-dl binary not found at {qobuz_bin}")
+
+    cmd = [
+        qobuz_bin,
+        "dl",
+        url,
+        "-q",
+        "27",
+        "-d",
+        temp_dir,
+        "--no-fallback",
+    ]
+
+    log.info("[qobuz-dl] Running: %s", " ".join(cmd))
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise RuntimeError(f"qobuz-dl timed out after {timeout}s")
+
+    files = _collect_real_files(temp_dir)
+    if not files:
+        stdout_text = stdout.decode(errors="replace")
+        stderr_text = stderr.decode(errors="replace")
+        err_hint = stderr_text.strip() or stdout_text.strip()
+        raise RuntimeError(f"qobuz-dl produced no output files: {err_hint[:300]}")
+
+    metadata = None
+    for fpath in files:
+        basename = os.path.basename(fpath)
+        name = os.path.splitext(basename)[0]
+        if metadata is None:
+            metadata = {
+                "title": name,
+                "extractor": "spotify",
+                "spotiflac_service": "qobuz",
+                "spotiflac_format": "FLAC",
+            }
+
+    log.info(
+        "[qobuz-dl] Downloaded %d file(s), total %.1f MB",
+        len(files),
+        sum(os.path.getsize(f) for f in files) / (1024 * 1024),
+    )
+
+    return files, metadata
+
+
 async def _download_spotify_spotdl(
     url: str,
     temp_dir: str,
     timeout: int = 120,
     cookies_file: Optional[str] = None,
 ) -> Tuple[List[str], Optional[dict]]:
-    """Download from Spotify via spotdl CLI (MP3 fallback)."""
+    """Download from Spotify via spotdl CLI (Tier 4)."""
     log.info("[spotdl] Downloading from Spotify URL: %s", url)
 
     spotdl_bin = shutil.which("spotdl") or "/home/sablinova/redenv/bin/spotdl"
@@ -853,6 +1081,101 @@ async def _download_spotify_spotdl(
 
     log.info(
         "[spotdl] Downloaded %d file(s), total %.1f MB",
+        len(files),
+        sum(os.path.getsize(f) for f in files) / (1024 * 1024),
+    )
+
+    return files, metadata
+
+
+async def _download_spotify_ytdlp(
+    url: str,
+    temp_dir: str,
+    timeout: int = 120,
+    cookies_file: Optional[str] = None,
+) -> Tuple[List[str], Optional[dict]]:
+    """Download audio from Spotify via direct yt-dlp search extraction (Tier 5)."""
+    log.info("[yt-dlp] Downloading Spotify track via yt-dlp search: %s", url)
+
+    ytdlp_bin = shutil.which("yt-dlp") or "/home/sablinova/redenv/bin/yt-dlp"
+    if not os.path.isfile(ytdlp_bin):
+        raise RuntimeError(f"yt-dlp binary not found at {ytdlp_bin}")
+
+    track_title = None
+    try:
+        oembed_url = f"https://open.spotify.com/oembed?url={quote(url, safe='')}"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(oembed_url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                if resp.status == 200:
+                    odata = await resp.json(content_type=None)
+                    track_title = odata.get("title")
+    except Exception as err:
+        log.debug("Spotify oEmbed resolution failed: %s", err)
+
+    if not track_title:
+        match = re.search(r"/(track|album|episode)/([a-zA-Z0-9]+)", url)
+        if match:
+            track_title = f"spotify {match.group(1)} {match.group(2)}"
+        else:
+            track_title = url
+
+    cmd = [
+        ytdlp_bin,
+        f"ytsearch1:{track_title}",
+        "-x",
+        "--audio-format",
+        "mp3",
+        "--audio-quality",
+        "0",
+        "-o",
+        os.path.join(temp_dir, "%(title)s.%(ext)s"),
+        "--no-playlist",
+        "--no-warnings",
+    ]
+
+    if not cookies_file:
+        for default_cookie in ("/home/sablinova/youtube_cookies.txt", "/home/sablinova/cookies.txt"):
+            if os.path.isfile(default_cookie):
+                cookies_file = default_cookie
+                break
+
+    if cookies_file and os.path.isfile(cookies_file):
+        cmd.extend(["--cookies", cookies_file])
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise RuntimeError(f"yt-dlp search timed out after {timeout}s")
+
+    files = _collect_real_files(temp_dir)
+    if not files:
+        stdout_text = stdout.decode(errors="replace")
+        stderr_text = stderr.decode(errors="replace")
+        err_hint = stderr_text.strip() or stdout_text.strip()
+        raise RuntimeError(f"yt-dlp search produced no output files: {err_hint[:300]}")
+
+    metadata = None
+    for fpath in files:
+        basename = os.path.basename(fpath)
+        name = os.path.splitext(basename)[0]
+        if metadata is None:
+            metadata = {
+                "title": name,
+                "extractor": "spotify",
+                "spotiflac_service": "yt-dlp",
+                "spotiflac_format": "MP3",
+            }
+
+    log.info(
+        "[yt-dlp] Downloaded %d file(s), total %.1f MB",
         len(files),
         sum(os.path.getsize(f) for f in files) / (1024 * 1024),
     )
@@ -2326,6 +2649,8 @@ class SabDownloader(commands.Cog):
             anondrop_userkey=None,
             log_channel=None,
             delete_command=True,
+            deezer_arl=None,
+            qobuz_token=None,
         )
         self._semaphore: Optional[asyncio.Semaphore] = None
         self._cooldowns: Dict[int, float] = {}  # user_id -> last_use timestamp
@@ -2648,12 +2973,14 @@ class SabDownloader(commands.Cog):
                         url=url,
                         temp_dir=temp_dir,
                         cookies_file=cookies_file,
+                        deezer_arl=await self.config.deezer_arl(),
+                        qobuz_token=await self.config.qobuz_token(),
                     )
                     if files:
                         return files, info_dict
                 except Exception as e:
                     last_error = e
-                    log.warning("[_try_download] SpotiFLAC failed: %s", e)
+                    log.warning("[_try_download] Spotify download pipeline failed: %s", e)
 
                 _purge_temp_files(temp_dir)
 
@@ -3274,6 +3601,10 @@ class SabDownloader(commands.Cog):
                 value=str(global_config.get("delete_command", True)),
                 inline=True,
             )
+            deezer_arl_status = "Configured" if global_config.get("deezer_arl") else "Not set"
+            embed.add_field(name="Deezer ARL (Tier 2)", value=deezer_arl_status, inline=True)
+            qobuz_token_status = "Configured" if global_config.get("qobuz_token") else "Not set"
+            embed.add_field(name="Qobuz Token (Tier 3)", value=qobuz_token_status, inline=True)
 
         embed.set_footer(
             text=ctx.guild.name,
@@ -3422,56 +3753,152 @@ class SabDownloader(commands.Cog):
     # Spotify Configuration
     # ------------------------------------------------------------------
 
-    @sabdownloader.group(name="spotify", invoke_without_command=True)
+    # ------------------------------------------------------------------
+    # Music / Lossless Configuration & Status
+    # ------------------------------------------------------------------
+
+    @sabdownloader.group(name="spotify", aliases=["music"], invoke_without_command=True)
     @commands.is_owner()
     async def sd_spotify(self, ctx: commands.Context):
-        """Spotify configuration for lossless downloads.
-
-        Uses SpotiFLAC CLI to download lossless FLAC from Tidal/Amazon/Qobuz
-        via Spotify URLs. No API credentials required.
-        """
+        """Configure cascading music download tiers (lossless FLAC and fallbacks)."""
         await ctx.send_help(ctx.command)
 
-    @sd_spotify.command(name="status")
+    @sd_spotify.command(name="status", aliases=["pipeline"])
     async def sd_spotify_status(self, ctx: commands.Context):
-        """Check Spotify download status."""
-        binary_exists = os.path.isfile(SPOTIFLAC_PATH)
+        """Check live status of all 5 music download tiers."""
+        await self._show_music_status(ctx)
 
-        if binary_exists:
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    SPOTIFLAC_PATH,
-                    "--help",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
-                status_text = "Ready"
-                # Extract first line for version/description
-                first_line = stdout.decode().split("\n")[0].strip()
-            except Exception:
-                status_text = "Binary found but not executable"
-                first_line = "Error running binary"
-        else:
-            status_text = "Not installed"
-            first_line = f"Binary not found at `{SPOTIFLAC_PATH}`"
+    @sabdownloader.command(name="musicstatus")
+    @commands.is_owner()
+    async def sd_musicstatus(self, ctx: commands.Context):
+        """(Bot Owner) Display live status of all 5 music download tiers."""
+        await self._show_music_status(ctx)
 
+    async def _show_music_status(self, ctx: commands.Context) -> None:
+        """Internal helper to render status of all 5 music download tiers."""
         embed = discord.Embed(
-            title="Spotify Status (SpotiFLAC)",
-            color=discord.Color.green()
-            if status_text == "Ready"
-            else discord.Color.red(),
+            title="Music Download Fallback Pipeline Status",
+            color=discord.Color.green(),
         )
-        embed.add_field(name="Backend", value=f"`{first_line}`", inline=False)
-        embed.add_field(name="Binary", value=f"`{SPOTIFLAC_PATH}`", inline=False)
-        embed.add_field(name="Status", value=status_text, inline=False)
+
+        # Tier 1: SpotiFLAC
+        spotiflac_ok = os.path.isfile(SPOTIFLAC_PATH)
+        session_path = os.path.expanduser("~/.spotiflac/community_session.json")
+        spotiflac_session = os.path.isfile(session_path)
+        t1_parts = [f"Binary: {'Ready' if spotiflac_ok else 'Not found'}"]
+        if spotiflac_session:
+            t1_parts.append("SpotBye Session: Active")
+        else:
+            t1_parts.append("SpotBye Session: None")
         embed.add_field(
-            name="Format",
-            value="Lossless FLAC (Tidal > Amazon > Qobuz fallback)",
+            name="Tier 1: SpotiFLAC (Tidal/Amazon Lossless)",
+            value=" | ".join(t1_parts),
+            inline=False,
+        )
+
+        # Tier 2: Deezer HiFi (Deemix)
+        deemix_bin = shutil.which("deemix") or "/home/sablinova/redenv/bin/deemix"
+        deemix_ok = os.path.isfile(deemix_bin)
+        saved_arl = await self.config.deezer_arl()
+        file_arl = os.path.isfile(os.path.expanduser("~/.config/deemix/.arl")) or os.path.isfile("/home/sablinova/.deezer_arl")
+        arl_active = bool(saved_arl or file_arl or os.environ.get("DEEZER_ARL"))
+        t2_status = f"Binary: {'Installed' if deemix_ok else 'Not installed'} | ARL: {'Configured' if arl_active else 'Not set'}"
+        embed.add_field(
+            name="Tier 2: Deezer HiFi (Deemix 16-bit FLAC)",
+            value=t2_status,
+            inline=False,
+        )
+
+        # Tier 3: Qobuz Studio (qobuz-dl)
+        qobuz_bin = shutil.which("qobuz-dl") or "/home/sablinova/redenv/bin/qobuz-dl"
+        qobuz_ok = os.path.isfile(qobuz_bin)
+        saved_qtoken = await self.config.qobuz_token()
+        file_qtoken = os.path.isfile(os.path.expanduser("~/.config/qobuz-dl/config.ini")) or os.path.isfile("/home/sablinova/.qobuz_token")
+        qtoken_active = bool(saved_qtoken or file_qtoken or os.environ.get("QOBUZ_TOKEN"))
+        t3_status = f"Binary: {'Installed' if qobuz_ok else 'Not installed'} | Token: {'Configured' if qtoken_active else 'Not set'}"
+        embed.add_field(
+            name="Tier 3: Qobuz Studio (24-bit Hi-Res FLAC)",
+            value=t3_status,
+            inline=False,
+        )
+
+        # Tier 4: spotdl
+        spotdl_bin = shutil.which("spotdl") or "/home/sablinova/redenv/bin/spotdl"
+        spotdl_ok = os.path.isfile(spotdl_bin)
+        t4_status = "Binary: Ready (SoundCloud, Piped, YouTube audio)" if spotdl_ok else "Not installed"
+        embed.add_field(
+            name="Tier 4: spotdl (Multi-Source Audio + Tags)",
+            value=t4_status,
+            inline=False,
+        )
+
+        # Tier 5: yt-dlp
+        ytdlp_bin = shutil.which("yt-dlp") or "/home/sablinova/redenv/bin/yt-dlp"
+        ytdlp_ok = os.path.isfile(ytdlp_bin)
+        cookie_ok = os.path.isfile("/home/sablinova/youtube_cookies.txt") or os.path.isfile("/home/sablinova/cookies.txt")
+        t5_status = f"Binary: {'Ready' if ytdlp_ok else 'Not installed'} | Cookies: {'Ready' if cookie_ok else 'None'}"
+        embed.add_field(
+            name="Tier 5: yt-dlp Direct Search (Universal Fallback)",
+            value=t5_status,
             inline=False,
         )
 
         await ctx.send(embed=embed)
+
+    @sd_spotify.command(name="deezerarl")
+    async def sd_spotify_deezerarl(self, ctx: commands.Context, arl: Optional[str] = None):
+        """Set or clear the Deezer ARL token for Tier 2 lossless FLAC downloads."""
+        await self._set_deezer_arl(ctx, arl)
+
+    @sabdownloader.command(name="deezerarl")
+    @commands.is_owner()
+    async def sd_deezerarl(self, ctx: commands.Context, arl: Optional[str] = None):
+        """(Bot Owner) Set or clear the Deezer ARL token for Tier 2 lossless FLAC downloads."""
+        await self._set_deezer_arl(ctx, arl)
+
+    async def _set_deezer_arl(self, ctx: commands.Context, arl: Optional[str] = None) -> None:
+        """Internal helper to set or clear Deezer ARL token."""
+        if not arl or arl.lower() in ("clear", "none", "remove", "reset"):
+            await self.config.deezer_arl.set(None)
+            arl_file = os.path.expanduser("~/.config/deemix/.arl")
+            if os.path.isfile(arl_file):
+                try:
+                    os.remove(arl_file)
+                except Exception:
+                    pass
+            await ctx.send("Deezer ARL token cleared.")
+            return
+        clean_arl = arl.strip()
+        await self.config.deezer_arl.set(clean_arl)
+        arl_file = os.path.expanduser("~/.config/deemix/.arl")
+        os.makedirs(os.path.dirname(arl_file), exist_ok=True)
+        try:
+            with open(arl_file, "w", encoding="utf-8") as f:
+                f.write(clean_arl + "\n")
+        except Exception as err:
+            log.debug("Could not write deemix .arl file: %s", err)
+        await ctx.send("Deezer ARL token configured successfully for Tier 2 lossless FLAC.")
+
+    @sd_spotify.command(name="qobuztoken")
+    async def sd_spotify_qobuztoken(self, ctx: commands.Context, token: Optional[str] = None):
+        """Set or clear the Qobuz auth token for Tier 3 lossless FLAC downloads."""
+        await self._set_qobuz_token(ctx, token)
+
+    @sabdownloader.command(name="qobuztoken")
+    @commands.is_owner()
+    async def sd_qobuztoken(self, ctx: commands.Context, token: Optional[str] = None):
+        """(Bot Owner) Set or clear the Qobuz auth token for Tier 3 lossless FLAC downloads."""
+        await self._set_qobuz_token(ctx, token)
+
+    async def _set_qobuz_token(self, ctx: commands.Context, token: Optional[str] = None) -> None:
+        """Internal helper to set or clear Qobuz auth token."""
+        if not token or token.lower() in ("clear", "none", "remove", "reset"):
+            await self.config.qobuz_token.set(None)
+            await ctx.send("Qobuz token cleared.")
+            return
+        clean_token = token.strip()
+        await self.config.qobuz_token.set(clean_token)
+        await ctx.send("Qobuz auth token configured successfully for Tier 3 lossless FLAC.")
 
     # ------------------------------------------------------------------
     # Download commands: [p]dl
