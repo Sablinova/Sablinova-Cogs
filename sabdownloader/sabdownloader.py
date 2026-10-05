@@ -2435,36 +2435,7 @@ async def _ffmpeg_compress(
     return True
 
 
-async def _ffmpeg_transcode_audio(
-    input_path: str,
-    output_path: str,
-    bitrate: str = "320k",
-) -> bool:
-    """Transcode oversized audio to high quality MP3 using ffmpeg."""
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-i",
-        input_path,
-        "-c:a",
-        "libmp3lame",
-        "-b:a",
-        bitrate,
-        "-vn",
-        output_path,
-    ]
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=60.0)
-        return proc.returncode == 0 and os.path.isfile(output_path)
-    except Exception as e:
-        log.warning("ffmpeg audio transcode failed: %s", e)
-        return False
-
+# ---------------------------------------------------------------------------
 # AnonDrop upload helper
 # ---------------------------------------------------------------------------
 
@@ -3421,31 +3392,10 @@ class SabDownloader(commands.Cog):
                         compression_used = True
                         continue
 
-            if is_too_large and self._is_audio(fp):
-                log.info(
-                    "Audio %s exceeds Discord limit (%s > %s), transcoding to 320k MP3",
-                    fname,
-                    _human_size(file_size),
-                    _human_size(filesize_limit),
-                )
-                tracker.stage = "Transcoding Audio"
-                tracker.percent = 0
-
-                mp3_path = os.path.splitext(fp)[0] + ".mp3"
-                success = await _ffmpeg_transcode_audio(
-                    input_path=fp,
-                    output_path=mp3_path,
-                    bitrate="320k",
-                )
-                if success and os.path.isfile(mp3_path):
-                    mp3_size = os.path.getsize(mp3_path)
-                    if mp3_size <= filesize_limit:
-                        ready_files.append(mp3_path)
-                        total_compressed_size = (
-                            total_compressed_size - file_size + mp3_size
-                        )
-                        compression_used = True
-                        continue
+            # Audio files are ALWAYS kept pure lossless and attempted directly on Discord.
+            if self._is_audio(fp):
+                ready_files.append(fp)
+                continue
 
             if is_too_large:
                 if anondrop_enabled:
@@ -3601,6 +3551,25 @@ class SabDownloader(commands.Cog):
                         else:
                             await ctx.send(files=[single_file])
                         successfully_uploaded.append(fp)
+                    except discord.HTTPException as single_err:
+                        log.error(
+                            "Single file upload error for %s: %s", fp, single_err
+                        )
+                        if single_err.status == 413 and anondrop_enabled:
+                            fname = os.path.basename(fp)
+                            log.info(
+                                "Discord upload rejected with 413 for %s, uploading to AnonDrop as fallback",
+                                fname,
+                            )
+                            link = await _anondrop_upload(
+                                file_path=fp,
+                                progress_tracker=tracker,
+                                userkey=anondrop_userkey,
+                            )
+                            if link:
+                                link = _anondrop_to_embed(link, filename=fname)
+                                anondrop_links.append(link)
+                                anondrop_used = True
                     except Exception as single_err:
                         log.error(
                             "Single file upload error for %s: %s", fp, single_err
@@ -3608,7 +3577,7 @@ class SabDownloader(commands.Cog):
 
         # Post AnonDrop links: send metadata embed then plain text so player embeds
         if anondrop_links:
-            if not ready_files:
+            if not successfully_uploaded:
                 ad_size = sum(
                     os.path.getsize(fp) for fp in files if os.path.exists(fp)
                 )

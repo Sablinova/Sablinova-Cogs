@@ -163,37 +163,31 @@ async def test_handle_file_upload_embed_behavior(cog, tmp_path):
     assert fields.get("File Type") == "FLAC"
     assert "Size" in fields
 
-    # 4. Oversized audio: transcodes to MP3 and uploads to Discord
+    # 4. Large audio: attempted directly on Discord as lossless FLAC without transcoding
     large_flac = tmp_path / "large_track.flac"
     large_flac.write_bytes(b"large audio data" * 100)
     ctx.send.reset_mock()
     tracker = ProgressTracker()
-    with patch("sabdownloader.sabdownloader._ffmpeg_transcode_audio") as mock_transcode:
-        async def fake_transcode(input_path, output_path, bitrate="320k"):
-            with open(output_path, "wb") as f:
-                f.write(b"fake compressed mp3")
-            return True
-        mock_transcode.side_effect = fake_transcode
-        with patch("os.path.getsize") as mock_getsize:
-            def fake_getsize(path):
-                if str(path).endswith(".flac"):
-                    return 30 * 1024 * 1024
-                return 8 * 1024 * 1024
-            mock_getsize.side_effect = fake_getsize
+    with patch("os.path.getsize") as mock_getsize:
+        def fake_getsize(path):
+            if str(path).endswith(".flac"):
+                return 30 * 1024 * 1024
+            return 1024
+        mock_getsize.side_effect = fake_getsize
 
-            await cog._handle_file_upload(
-                ctx=ctx,
-                files=[str(large_flac)],
-                status_msg=status_msg,
-                tracker=tracker,
-                url="https://open.spotify.com/track/456",
-                platform="Spotify",
-                guild_config=guild_config,
-            )
-            assert ctx.send.called
-            kwargs = ctx.send.call_args.kwargs
-            assert "embed" in kwargs and kwargs["embed"] is not None
-            embed = kwargs["embed"]
-            fields = {f.name: f.value for f in embed.fields}
-            assert fields.get("File Type") == "MP3"
+        await cog._handle_file_upload(
+            ctx=ctx,
+            files=[str(large_flac)],
+            status_msg=status_msg,
+            tracker=tracker,
+            url="https://open.spotify.com/track/456",
+            platform="Spotify",
+            guild_config=guild_config,
+        )
+        assert ctx.send.called
+        kwargs = ctx.send.call_args.kwargs
+        assert "embed" in kwargs and kwargs["embed"] is not None
+        embed = kwargs["embed"]
+        fields = {f.name: f.value for f in embed.fields}
+        assert fields.get("File Type") == "FLAC"
 
