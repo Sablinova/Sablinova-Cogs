@@ -48,46 +48,18 @@ def test_detect_platform():
 
 
 def test_embed_rules_decision(cog):
-    def should_use_embed(platform: str, files: list[str]) -> bool:
-        return (
-            platform in ("Facebook", "Instagram")
-            and bool(files)
-            and all(cog._is_image(fp) for fp in files)
-        )
+    def should_use_embed(files: list[str]) -> bool:
+        return bool(files)
 
-    # Instagram photos -> Embed
-    assert should_use_embed("Instagram", ["photo1.jpg", "photo2.png"]) is True
-    assert should_use_embed("Instagram", ["single.webp"]) is True
+    # Downloads with files include an embed
+    assert should_use_embed(["photo1.jpg", "photo2.png"]) is True
+    assert should_use_embed(["single.webp"]) is True
+    assert should_use_embed(["video.mp4"]) is True
+    assert should_use_embed(["song.flac"]) is True
+    assert should_use_embed(["audio.mp3"]) is True
 
-    # Facebook photos -> Embed
-    assert should_use_embed("Facebook", ["photo1.jpg", "photo2.jpeg"]) is True
-
-    # Instagram videos / reels -> NO Embed
-    assert should_use_embed("Instagram", ["video.mp4"]) is False
-    assert should_use_embed("Instagram", ["photo1.jpg", "video.mp4"]) is False
-
-    # Facebook videos -> NO Embed
-    assert should_use_embed("Facebook", ["reel.mp4"]) is False
-    assert should_use_embed("Facebook", ["photo1.jpg", "video.mp4"]) is False
-
-    # YouTube videos -> NO Embed
-    assert should_use_embed("YouTube", ["video.mp4"]) is False
-    assert should_use_embed("YouTube", ["audio.mp3"]) is False
-
-    # TikTok videos -> NO Embed
-    assert should_use_embed("TikTok", ["tiktok.mp4"]) is False
-
-    # Twitter/X photos and videos -> NO Embed
-    assert should_use_embed("Twitter/X", ["photo.jpg"]) is False
-    assert should_use_embed("Twitter/X", ["video.mp4"]) is False
-
-    # Reddit photos and videos -> NO Embed
-    assert should_use_embed("Reddit", ["meme.png"]) is False
-    assert should_use_embed("Reddit", ["clip.mp4"]) is False
-
-    # Empty files list -> NO Embed
-    assert should_use_embed("Instagram", []) is False
-    assert should_use_embed("Facebook", []) is False
+    # Empty files list does not send embed
+    assert should_use_embed([]) is False
 
 
 @pytest.mark.asyncio
@@ -95,11 +67,13 @@ async def test_handle_file_upload_embed_behavior(cog, tmp_path):
     from sabdownloader.sabdownloader import ProgressTracker
 
     img1 = tmp_path / "img1.jpg"
-    img1.write_bytes(b"fake image 1")
+    img1.write_bytes(b"fake image 1" * 100)
     img2 = tmp_path / "img2.png"
-    img2.write_bytes(b"fake image 2")
+    img2.write_bytes(b"fake image 2" * 100)
     vid = tmp_path / "video.mp4"
-    vid.write_bytes(b"fake video")
+    vid.write_bytes(b"fake video" * 100)
+    flac = tmp_path / "track.flac"
+    flac.write_bytes(b"fake flac audio" * 200)
 
     ctx = MagicMock()
     ctx.guild = MagicMock()
@@ -125,7 +99,7 @@ async def test_handle_file_upload_embed_behavior(cog, tmp_path):
     cog.config.delete_command = AsyncMock(return_value=False)
     cog.config.log_channel = AsyncMock(return_value=None)
 
-    # 1. Instagram photos: should send with embed
+    # 1. Instagram photos: sends with embed containing requester, file type, and size
     ctx.send.reset_mock()
     tracker = ProgressTracker()
     await cog._handle_file_upload(
@@ -140,24 +114,14 @@ async def test_handle_file_upload_embed_behavior(cog, tmp_path):
     assert ctx.send.called
     kwargs = ctx.send.call_args.kwargs
     assert "embed" in kwargs and kwargs["embed"] is not None
+    embed = kwargs["embed"]
+    assert embed.author.name == "TestUser"
+    fields = {f.name: f.value for f in embed.fields}
+    assert fields.get("Requested by") == "@TestUser"
+    assert "JPG" in fields.get("File Type", "") and "PNG" in fields.get("File Type", "")
+    assert "Size" in fields
 
-    # 2. Instagram video: should send WITHOUT embed
-    ctx.send.reset_mock()
-    tracker = ProgressTracker()
-    await cog._handle_file_upload(
-        ctx=ctx,
-        files=[str(vid)],
-        status_msg=status_msg,
-        tracker=tracker,
-        url="https://instagram.com/reel/123",
-        platform="Instagram",
-        guild_config=guild_config,
-    )
-    assert ctx.send.called
-    kwargs = ctx.send.call_args.kwargs
-    assert "embed" not in kwargs
-
-    # 3. YouTube video: should send WITHOUT embed
+    # 2. Video download: sends with embed
     ctx.send.reset_mock()
     tracker = ProgressTracker()
     await cog._handle_file_upload(
@@ -171,21 +135,30 @@ async def test_handle_file_upload_embed_behavior(cog, tmp_path):
     )
     assert ctx.send.called
     kwargs = ctx.send.call_args.kwargs
-    assert "embed" not in kwargs
+    assert "embed" in kwargs and kwargs["embed"] is not None
+    embed = kwargs["embed"]
+    fields = {f.name: f.value for f in embed.fields}
+    assert fields.get("Requested by") == "@TestUser"
+    assert fields.get("File Type") == "MP4"
+    assert "Size" in fields
 
-    # 4. Twitter photo: should send WITHOUT embed
+    # 3. Audio FLAC download: sends with embed
     ctx.send.reset_mock()
     tracker = ProgressTracker()
     await cog._handle_file_upload(
         ctx=ctx,
-        files=[str(img1)],
+        files=[str(flac)],
         status_msg=status_msg,
         tracker=tracker,
-        url="https://x.com/user/status/123",
-        platform="Twitter/X",
+        url="https://open.spotify.com/track/123",
+        platform="Spotify",
         guild_config=guild_config,
     )
     assert ctx.send.called
     kwargs = ctx.send.call_args.kwargs
-    assert "embed" not in kwargs
-
+    assert "embed" in kwargs and kwargs["embed"] is not None
+    embed = kwargs["embed"]
+    fields = {f.name: f.value for f in embed.fields}
+    assert fields.get("Requested by") == "@TestUser"
+    assert fields.get("File Type") == "FLAC"
+    assert "Size" in fields

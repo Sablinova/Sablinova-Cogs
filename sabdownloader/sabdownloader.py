@@ -3203,9 +3203,33 @@ class SabDownloader(commands.Cog):
                 else:
                     log.warning("HD AnonDrop upload failed for %s", fname)
 
-            # Post results : send as plain text so Discord auto-embeds
-            # the video player from AnonDrop's og:video meta tags
+            # Post results: send embed with metadata and links for player
             if anondrop_links:
+                hd_size = sum(os.path.getsize(fp) for fp in files if os.path.exists(fp))
+                hd_size_str = _human_size(hd_size) if hd_size > 0 else _human_size(total_original_size)
+                hd_types = []
+                for fp in files:
+                    ext = os.path.splitext(fp)[1].lstrip(".").upper()
+                    if ext and ext not in hd_types:
+                        hd_types.append(ext)
+                hd_type_str = ", ".join(hd_types) if hd_types else "Unknown"
+
+                hd_embed = discord.Embed(color=discord.Color.blurple())
+                avatar_url = (
+                    ctx.author.display_avatar.url
+                    if hasattr(ctx.author, "display_avatar") and ctx.author.display_avatar
+                    else None
+                )
+                if avatar_url:
+                    hd_embed.set_author(name=ctx.author.display_name, icon_url=avatar_url)
+                else:
+                    hd_embed.set_author(name=ctx.author.display_name)
+                hd_embed.add_field(name="Requested by", value=ctx.author.mention, inline=True)
+                hd_embed.add_field(name="File Type", value=hd_type_str, inline=True)
+                hd_embed.add_field(name="Size", value=hd_size_str, inline=True)
+                hd_embed.set_footer(text=f"{platform}")
+                await ctx.send(embed=hd_embed)
+
                 links_text = "\n".join(anondrop_links)
                 await ctx.send(links_text)
             else:
@@ -3409,30 +3433,65 @@ class SabDownloader(commands.Cog):
             batches.append(current_batch)
 
         # Determine whether to send in an embed:
-        # Only Facebook and Instagram photo uploads are sent in an embed.
-        # All other uploads (videos, audio, or non-FB/IG media) are sent directly
-        # without an embed so Discord displays full-width standalone media players.
-        use_embed = (
-            platform in ("Facebook", "Instagram")
-            and bool(ready_files)
-            and all(self._is_image(fp) for fp in ready_files)
+        # Uploads include an embed displaying requester, file type, and size.
+        use_embed = bool(ready_files)
+
+        avatar_url = (
+            ctx.author.display_avatar.url
+            if hasattr(ctx.author, "display_avatar") and ctx.author.display_avatar
+            else None
         )
 
         result_embed = None
         if use_embed:
-            total_size_str = _human_size(total_original_size)
-            result_embed = discord.Embed(color=discord.Color.blurple())
-            result_embed.set_author(
-                name=ctx.author.display_name,
-                icon_url=ctx.author.display_avatar.url,
+            actual_size = sum(
+                os.path.getsize(fp) for fp in ready_files if os.path.exists(fp)
             )
+            total_size_str = (
+                _human_size(actual_size)
+                if actual_size > 0
+                else _human_size(total_original_size)
+            )
+            result_embed = discord.Embed(color=discord.Color.blurple())
+            if avatar_url:
+                result_embed.set_author(
+                    name=ctx.author.display_name,
+                    icon_url=avatar_url,
+                )
+            else:
+                result_embed.set_author(name=ctx.author.display_name)
+
+            result_embed.add_field(
+                name="Requested by",
+                value=ctx.author.mention,
+                inline=True,
+            )
+
+            file_types = []
+            for fp in ready_files:
+                ext = os.path.splitext(fp)[1].lstrip(".").upper()
+                if ext and ext not in file_types:
+                    file_types.append(ext)
+            file_type_str = ", ".join(file_types) if file_types else "Unknown"
+
+            result_embed.add_field(
+                name="File Type",
+                value=file_type_str,
+                inline=True,
+            )
+            result_embed.add_field(
+                name="Size",
+                value=total_size_str,
+                inline=True,
+            )
+
             item_count = len(ready_files)
             if item_count > 1:
                 result_embed.set_footer(
-                    text=f"{platform} | {item_count} items | {total_size_str}"
+                    text=f"{platform} | {item_count} items"
                 )
             else:
-                result_embed.set_footer(text=f"{platform} | {total_size_str}")
+                result_embed.set_footer(text=f"{platform}")
 
         successfully_uploaded = []
         for i, batch in enumerate(batches):
@@ -3454,6 +3513,19 @@ class SabDownloader(commands.Cog):
                             title=f"Media ({i + 1}/{len(batches)})",
                             color=discord.Color.blurple(),
                         )
+                        if avatar_url:
+                            batch_embed.set_author(
+                                name=ctx.author.display_name,
+                                icon_url=avatar_url,
+                            )
+                        else:
+                            batch_embed.set_author(name=ctx.author.display_name)
+                        batch_embed.add_field(
+                            name="Requested by",
+                            value=ctx.author.mention,
+                            inline=True,
+                        )
+                        batch_embed.set_footer(text=f"{platform}")
                         await ctx.send(embed=batch_embed, files=discord_files)
                     else:
                         await ctx.send(files=discord_files)
@@ -3479,9 +3551,50 @@ class SabDownloader(commands.Cog):
                             "Single file upload error for %s: %s", fp, single_err
                         )
 
-        # Post AnonDrop links: send as plain text so Discord auto-embeds
-        # the video player from AnonDrop's og:video meta tags
+        # Post AnonDrop links: send metadata embed then plain text so player embeds
         if anondrop_links:
+            if not ready_files:
+                ad_size = sum(
+                    os.path.getsize(fp) for fp in files if os.path.exists(fp)
+                )
+                ad_size_str = (
+                    _human_size(ad_size)
+                    if ad_size > 0
+                    else _human_size(total_original_size)
+                )
+                ad_types = []
+                for fp in files:
+                    ext = os.path.splitext(fp)[1].lstrip(".").upper()
+                    if ext and ext not in ad_types:
+                        ad_types.append(ext)
+                ad_type_str = ", ".join(ad_types) if ad_types else "Unknown"
+
+                ad_embed = discord.Embed(color=discord.Color.blurple())
+                if avatar_url:
+                    ad_embed.set_author(
+                        name=ctx.author.display_name,
+                        icon_url=avatar_url,
+                    )
+                else:
+                    ad_embed.set_author(name=ctx.author.display_name)
+                ad_embed.add_field(
+                    name="Requested by",
+                    value=ctx.author.mention,
+                    inline=True,
+                )
+                ad_embed.add_field(
+                    name="File Type",
+                    value=ad_type_str,
+                    inline=True,
+                )
+                ad_embed.add_field(
+                    name="Size",
+                    value=ad_size_str,
+                    inline=True,
+                )
+                ad_embed.set_footer(text=f"{platform}")
+                await ctx.send(embed=ad_embed)
+
             links_text = "\n".join(anondrop_links)
             await ctx.send(links_text)
 
