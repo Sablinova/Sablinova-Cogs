@@ -2435,7 +2435,36 @@ async def _ffmpeg_compress(
     return True
 
 
-# ---------------------------------------------------------------------------
+async def _ffmpeg_transcode_audio(
+    input_path: str,
+    output_path: str,
+    bitrate: str = "320k",
+) -> bool:
+    """Transcode oversized audio to high quality MP3 using ffmpeg."""
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        input_path,
+        "-c:a",
+        "libmp3lame",
+        "-b:a",
+        bitrate,
+        "-vn",
+        output_path,
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=60.0)
+        return proc.returncode == 0 and os.path.isfile(output_path)
+    except Exception as e:
+        log.warning("ffmpeg audio transcode failed: %s", e)
+        return False
+
 # AnonDrop upload helper
 # ---------------------------------------------------------------------------
 
@@ -3388,6 +3417,32 @@ class SabDownloader(commands.Cog):
                         ready_files.append(compressed_path)
                         total_compressed_size = (
                             total_compressed_size - file_size + compressed_size
+                        )
+                        compression_used = True
+                        continue
+
+            if is_too_large and self._is_audio(fp):
+                log.info(
+                    "Audio %s exceeds Discord limit (%s > %s), transcoding to 320k MP3",
+                    fname,
+                    _human_size(file_size),
+                    _human_size(filesize_limit),
+                )
+                tracker.stage = "Transcoding Audio"
+                tracker.percent = 0
+
+                mp3_path = os.path.splitext(fp)[0] + ".mp3"
+                success = await _ffmpeg_transcode_audio(
+                    input_path=fp,
+                    output_path=mp3_path,
+                    bitrate="320k",
+                )
+                if success and os.path.isfile(mp3_path):
+                    mp3_size = os.path.getsize(mp3_path)
+                    if mp3_size <= filesize_limit:
+                        ready_files.append(mp3_path)
+                        total_compressed_size = (
+                            total_compressed_size - file_size + mp3_size
                         )
                         compression_used = True
                         continue
