@@ -848,6 +848,55 @@ async def _download_spotify_spotiflac(
     return files, metadata
 
 
+async def _resolve_spotify_to_deezer(url: str) -> Optional[str]:
+    """Resolve a Spotify track URL to a Deezer track URL using public Deezer search API."""
+    try:
+        async with aiohttp.ClientSession(headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}) as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                if resp.status != 200:
+                    return None
+                html = await resp.text()
+
+        m_title = re.search(r'property="og:title"\s+content="([^"]+)"', html)
+        m_desc = re.search(r'property="og:description"\s+content="([^"]+)"', html)
+        if not m_title:
+            return None
+
+        track_title = m_title.group(1).replace("&amp;", "&").strip()
+        artist_name = ""
+        album_name = ""
+        if m_desc:
+            desc_parts = [p.strip() for p in m_desc.group(1).split("·")]
+            if len(desc_parts) >= 1:
+                artist_name = desc_parts[0].replace("&amp;", "&").strip()
+            if len(desc_parts) >= 2:
+                album_name = desc_parts[1].replace("&amp;", "&").strip()
+
+        queries = []
+        if artist_name and album_name:
+            queries.append(f"{artist_name} {album_name} {track_title}")
+        if artist_name:
+            queries.append(f"{artist_name} {track_title}")
+        queries.append(track_title)
+
+        async with aiohttp.ClientSession(headers={"User-Agent": "Mozilla/5.0"}) as session:
+            for q_str in queries:
+                encoded_q = quote(q_str)
+                async with session.get(f"https://api.deezer.com/search?q={encoded_q}", timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        items = data.get("data", [])
+                        if items:
+                            clean_t = track_title.lower()
+                            for it in items:
+                                if it.get("title", "").strip().lower() == clean_t or it.get("title_short", "").strip().lower() == clean_t:
+                                    return it.get("link")
+                            return items[0].get("link")
+    except Exception as err:
+        log.debug("Failed to resolve Spotify to Deezer URL: %s", err)
+    return None
+
+
 async def _download_spotify_deezer(
     url: str,
     temp_dir: str,
@@ -887,13 +936,22 @@ async def _download_spotify_deezer(
     if not os.path.isfile(deemix_bin):
         raise RuntimeError(f"deemix binary not found at {deemix_bin}")
 
+    target_url = url
+    if "spotify.com" in url.lower():
+        resolved_deezer = await _resolve_spotify_to_deezer(url)
+        if resolved_deezer:
+            log.info("[_download_spotify_deezer] Resolved Spotify track to Deezer: %s", resolved_deezer)
+            target_url = resolved_deezer
+        else:
+            raise RuntimeError("Could not resolve Spotify track to a matching Deezer track")
+
     cmd = [
         deemix_bin,
         "-b",
         "FLAC",
         "-p",
         temp_dir,
-        url,
+        target_url,
     ]
 
     log.info("[deemix] Running: %s", " ".join(cmd))
