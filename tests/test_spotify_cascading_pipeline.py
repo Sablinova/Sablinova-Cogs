@@ -91,3 +91,66 @@ def test_music_commands_registered():
     assert hasattr(cog, "sd_deezerarl")
     assert hasattr(cog, "sd_qobuztoken")
     assert hasattr(cog, "sd_spotify")
+    assert hasattr(cog, "sd_spotiflacverify")
+    assert hasattr(cog, "sd_spotiflacgrant")
+    assert hasattr(cog, "sd_spotiflacsession")
+    assert hasattr(cog, "sd_spotiflacstatus")
+
+
+def test_find_spotiflac_binary():
+    from sabdownloader.sabdownloader import _find_spotiflac_binary
+    with patch("os.path.isfile", return_value=True), patch("os.access", return_value=True):
+        found = _find_spotiflac_binary()
+        assert found is not None
+
+
+@pytest.mark.asyncio
+async def test_start_spotiflac_verification():
+    bot = MagicMock()
+    cog = SabDownloader(bot)
+    ctx = MagicMock()
+    ctx.typing = MagicMock()
+    ctx.clean_prefix = "!"
+    ctx.send = AsyncMock()
+
+    mock_proc = MagicMock()
+    mock_proc.communicate = AsyncMock(return_value=(
+        b'{"challenge_url": "https://verify.spotbye.qzz.io/challenge?id=test", "install_id": "test_id"}',
+        b""
+    ))
+
+    with patch("sabdownloader.sabdownloader._find_spotiflac_binary", return_value="/tmp/spotiflac_cli"), \
+         patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_proc):
+        await cog._start_spotiflac_verification(ctx)
+        assert ctx.send.called
+        call_kwargs = ctx.send.call_args[1]
+        assert "embed" in call_kwargs
+        embed = call_kwargs["embed"]
+        assert "SpotiFLAC True FLAC Verification" in embed.title
+        assert "https://verify.spotbye.qzz.io/challenge" in embed.description
+
+
+@pytest.mark.asyncio
+async def test_complete_spotiflac_grant():
+    bot = MagicMock()
+    cog = SabDownloader(bot)
+    ctx = MagicMock()
+    ctx.typing = MagicMock()
+    ctx.send = AsyncMock()
+
+    mock_proc = MagicMock()
+    mock_proc.communicate = AsyncMock(return_value=(
+        b'{"session_id": "sess_1234567890abcdef", "expires_at": "2026-11-01T00:00:00Z"}',
+        b""
+    ))
+
+    with patch("sabdownloader.sabdownloader._find_spotiflac_binary", return_value="/tmp/spotiflac_cli"), \
+         patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_proc):
+        await cog._complete_spotiflac_grant(ctx, "grant_token_123")
+        assert ctx.send.called
+        call_kwargs = ctx.send.call_args[1]
+        assert "embed" in call_kwargs
+        embed = call_kwargs["embed"]
+        assert "Activated" in embed.title
+        assert "sess_1234567890" in embed.description
+

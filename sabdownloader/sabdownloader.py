@@ -638,6 +638,21 @@ def _is_spotify_url(url: str) -> bool:
 SPOTIFLAC_PATH = "/tmp/spotiflac_cli"
 
 
+def _find_spotiflac_binary() -> Optional[str]:
+    """Find the spotiflac_cli binary on the system."""
+    candidates = [
+        SPOTIFLAC_PATH,
+        os.path.expanduser("~/.local/bin/spotiflac_cli"),
+        "/home/sablinova/.local/bin/spotiflac_cli",
+        "/usr/local/bin/spotiflac_cli",
+        shutil.which("spotiflac_cli") or "",
+    ]
+    for c in candidates:
+        if c and os.path.isfile(c) and os.access(c, os.X_OK):
+            return c
+    return None
+
+
 def _parse_spotiflac_json(output: str) -> Optional[dict]:
     """Extract the JSON object from SpotiFLAC CLI output.
 
@@ -747,14 +762,15 @@ async def _download_spotify_spotiflac(
     timeout: int = 40,
 ) -> Tuple[List[str], Optional[dict]]:
     """Download from Spotify via SpotiFLAC CLI (Tier 1)."""
-    if not os.path.isfile(SPOTIFLAC_PATH):
+    bin_path = _find_spotiflac_binary()
+    if not bin_path:
         raise RuntimeError(
-            f"SpotiFLAC CLI not found at {SPOTIFLAC_PATH}. "
-            "Install the headless binary from Sablinova/SabFlacker."
+            "SpotiFLAC CLI not found at /tmp/spotiflac_cli or ~/.local/bin/spotiflac_cli. "
+            "Install the headless binary from Sablinova/SabFLACer."
         )
 
     cmd = [
-        SPOTIFLAC_PATH,
+        bin_path,
         "-json",
         "-fallback",
         "-o",
@@ -3782,14 +3798,26 @@ class SabDownloader(commands.Cog):
         )
 
         # Tier 1: SpotiFLAC
-        spotiflac_ok = os.path.isfile(SPOTIFLAC_PATH)
+        bin_path = _find_spotiflac_binary()
+        spotiflac_ok = bool(bin_path)
         session_path = os.path.expanduser("~/.spotiflac/community_session.json")
         spotiflac_session = os.path.isfile(session_path)
+        session_status = "None"
+        if spotiflac_ok:
+            try:
+                res = subprocess.run([bin_path, "-status", "-json"], capture_output=True, text=True, timeout=5)
+                if res.returncode == 0:
+                    data = _json.loads(res.stdout)
+                    if data.get("valid"):
+                        exp = data.get("expires_at", "")[:10]
+                        session_status = f"Active (Expires: {exp})" if exp else "Active"
+                    elif data.get("install_id"):
+                        session_status = "Unverified (Run [p]sabdownloader spotiflacverify)"
+            except Exception:
+                if spotiflac_session:
+                    session_status = "Present"
         t1_parts = [f"Binary: {'Ready' if spotiflac_ok else 'Not found'}"]
-        if spotiflac_session:
-            t1_parts.append("SpotBye Session: Active")
-        else:
-            t1_parts.append("SpotBye Session: None")
+        t1_parts.append(f"SpotBye Session: {session_status}")
         embed.add_field(
             name="Tier 1: SpotiFLAC (Tidal/Amazon Lossless)",
             value=" | ".join(t1_parts),
@@ -3899,6 +3927,238 @@ class SabDownloader(commands.Cog):
         clean_token = token.strip()
         await self.config.qobuz_token.set(clean_token)
         await ctx.send("Qobuz auth token configured successfully for Tier 3 lossless FLAC.")
+
+    @sd_spotify.command(name="verify", aliases=["spotiflacverify"])
+    async def sd_spotify_verify(self, ctx: commands.Context):
+        """Start SpotiFLAC Turnstile verification to activate Tier 1 true FLAC."""
+        await self._start_spotiflac_verification(ctx)
+
+    @sabdownloader.command(name="spotiflacverify")
+    @commands.is_owner()
+    async def sd_spotiflacverify(self, ctx: commands.Context):
+        """(Bot Owner) Start SpotiFLAC Turnstile verification to activate Tier 1 true FLAC."""
+        await self._start_spotiflac_verification(ctx)
+
+    async def _start_spotiflac_verification(self, ctx: commands.Context) -> None:
+        """Internal helper to generate a Turnstile challenge URL."""
+        bin_path = _find_spotiflac_binary()
+        if not bin_path:
+            await ctx.send("SpotiFLAC CLI binary not found. Please ensure it is installed.")
+            return
+
+        async with ctx.typing():
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    bin_path,
+                    "-verify",
+                    "-json",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await proc.communicate()
+                out_str = stdout.decode().strip()
+                parsed = None
+                try:
+                    parsed = _json.loads(out_str)
+                except Exception:
+                    pass
+
+                if not parsed or "challenge_url" not in parsed:
+                    err = stderr.decode().strip() or out_str
+                    await ctx.send(f"Failed to generate verification challenge: {err}")
+                    return
+
+                challenge_url = parsed["challenge_url"]
+                embed = discord.Embed(
+                    title="SpotiFLAC True FLAC Verification",
+                    description=(
+                        "To activate Tier 1 true lossless FLAC downloads without a paid account, "
+                        "solve this quick 2-second Cloudflare Turnstile challenge in your browser:\n\n"
+                        f"**1.** Open this verification link:\n"
+                        f"[**Click here to solve Turnstile Challenge**]({challenge_url})\n\n"
+                        "**2.** Solve the Turnstile check.\n"
+                        "**3.** Once solved, your browser redirects to a URL starting with `http://127.0.0.1:45678/session-grant?grant=...`\n"
+                        "**4.** Copy that full URL (or the `grant` code) from your browser address bar.\n"
+                        "**5.** Run this command here in Discord:\n"
+                        f"`{ctx.clean_prefix}sabdownloader spotiflacgrant <paste_url_or_grant>`\n"
+                    ),
+                    color=discord.Color.blue(),
+                )
+                embed.set_footer(text="Creates a signed SpotBye session for true uncompressed Tidal FLAC.")
+                await ctx.send(embed=embed)
+            except Exception as exc:
+                log.exception("Error starting spotiflac verification")
+                await ctx.send(f"Error starting verification: {exc}")
+
+    @sd_spotify.command(name="grant", aliases=["spotiflacgrant"])
+    async def sd_spotify_grant(self, ctx: commands.Context, grant_or_url: str):
+        """Submit the Turnstile grant token or redirect URL to complete verification."""
+        await self._complete_spotiflac_grant(ctx, grant_or_url)
+
+    @sabdownloader.command(name="spotiflacgrant")
+    @commands.is_owner()
+    async def sd_spotiflacgrant(self, ctx: commands.Context, grant_or_url: str):
+        """(Bot Owner) Submit the Turnstile grant token or redirect URL to complete verification."""
+        await self._complete_spotiflac_grant(ctx, grant_or_url)
+
+    async def _complete_spotiflac_grant(self, ctx: commands.Context, grant_or_url: str) -> None:
+        """Internal helper to exchange grant code and write community_session.json."""
+        bin_path = _find_spotiflac_binary()
+        if not bin_path:
+            await ctx.send("SpotiFLAC CLI binary not found.")
+            return
+
+        async with ctx.typing():
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    bin_path,
+                    "-grant",
+                    grant_or_url.strip(),
+                    "-json",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await proc.communicate()
+                out_str = stdout.decode().strip()
+                parsed = None
+                try:
+                    parsed = _json.loads(out_str)
+                except Exception:
+                    pass
+
+                if not parsed or not parsed.get("session_id"):
+                    err = stderr.decode().strip() or out_str
+                    await ctx.send(f"Failed to activate session: {err}")
+                    return
+
+                expires = parsed.get("expires_at", "Unknown")
+                embed = discord.Embed(
+                    title="SpotiFLAC Community Session Activated!",
+                    description=(
+                        "True FLAC downloads from Tidal are now fully active.\n\n"
+                        f"**Session ID:** `{parsed.get('session_id')[:16]}...`\n"
+                        f"**Expires At:** `{expires}`\n\n"
+                        "All incoming Spotify requests will now attempt Tier 1 true lossless FLAC first!"
+                    ),
+                    color=discord.Color.green(),
+                )
+                await ctx.send(embed=embed)
+            except Exception as exc:
+                log.exception("Error completing spotiflac grant")
+                await ctx.send(f"Error completing grant: {exc}")
+
+    @sd_spotify.command(name="session", aliases=["spotiflacsession"])
+    async def sd_spotify_session(self, ctx: commands.Context, *, session_json: Optional[str] = None):
+        """Import a community_session.json directly from your local SpotiFLAC installation."""
+        await self._import_spotiflac_session(ctx, session_json)
+
+    @sabdownloader.command(name="spotiflacsession")
+    @commands.is_owner()
+    async def sd_spotiflacsession(self, ctx: commands.Context, *, session_json: Optional[str] = None):
+        """(Bot Owner) Import a community_session.json directly from your local SpotiFLAC installation."""
+        await self._import_spotiflac_session(ctx, session_json)
+
+    async def _import_spotiflac_session(self, ctx: commands.Context, session_json: Optional[str] = None) -> None:
+        """Internal helper to import a community_session.json file or JSON string."""
+        bin_path = _find_spotiflac_binary()
+        if not bin_path:
+            await ctx.send("SpotiFLAC CLI binary not found.")
+            return
+
+        raw_data = ""
+        if ctx.message.attachments:
+            att = ctx.message.attachments[0]
+            try:
+                raw_data = (await att.read()).decode("utf-8")
+            except Exception as exc:
+                await ctx.send(f"Failed to read attached file: {exc}")
+                return
+        elif session_json:
+            raw_data = session_json.strip()
+        else:
+            await ctx.send("Please attach a `community_session.json` file or paste the JSON content.")
+            return
+
+        try:
+            parsed = _json.loads(raw_data)
+            if not parsed.get("session_id") or not parsed.get("session_secret"):
+                await ctx.send("Invalid session JSON: missing `session_id` or `session_secret`.")
+                return
+        except Exception as exc:
+            await ctx.send(f"Failed to parse JSON: {exc}")
+            return
+
+        async with ctx.typing():
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    bin_path,
+                    "-import-session",
+                    raw_data,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await proc.communicate()
+                out_str = stdout.decode().strip()
+                if proc.returncode != 0:
+                    err = stderr.decode().strip() or out_str
+                    await ctx.send(f"Failed to import session: {err}")
+                    return
+
+                await ctx.send("Session imported successfully! Tier 1 true FLAC is active.")
+            except Exception as exc:
+                log.exception("Error importing spotiflac session")
+                await ctx.send(f"Error importing session: {exc}")
+
+    @sd_spotify.command(name="spotiflacstatus")
+    async def sd_spotify_spotiflacstatus(self, ctx: commands.Context):
+        """Check live SpotiFLAC session and token validity."""
+        await self._check_spotiflac_status(ctx)
+
+    @sabdownloader.command(name="spotiflacstatus")
+    @commands.is_owner()
+    async def sd_spotiflacstatus(self, ctx: commands.Context):
+        """(Bot Owner) Check live SpotiFLAC session and token validity."""
+        await self._check_spotiflac_status(ctx)
+
+    async def _check_spotiflac_status(self, ctx: commands.Context) -> None:
+        """Internal helper to check and report SpotiFLAC session status."""
+        bin_path = _find_spotiflac_binary()
+        if not bin_path:
+            await ctx.send("SpotiFLAC CLI binary not found.")
+            return
+
+        async with ctx.typing():
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    bin_path,
+                    "-status",
+                    "-json",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await proc.communicate()
+                out_str = stdout.decode().strip()
+                parsed = _json.loads(out_str)
+                valid = parsed.get("valid", False)
+                expires = parsed.get("expires_at", "Not available")
+                install_id = parsed.get("install_id", "Not set")
+
+                color = discord.Color.green() if valid else discord.Color.gold()
+                embed = discord.Embed(
+                    title="SpotiFLAC Community Session Status",
+                    color=color,
+                )
+                embed.add_field(name="Status", value="Active & Valid" if valid else "Not active / Unverified", inline=False)
+                if expires:
+                    embed.add_field(name="Expires At", value=str(expires), inline=True)
+                embed.add_field(name="Install ID", value=str(install_id), inline=True)
+
+                if not valid:
+                    embed.set_footer(text=f"Run {ctx.clean_prefix}sabdownloader spotiflacverify to activate!")
+
+                await ctx.send(embed=embed)
+            except Exception as exc:
+                await ctx.send(f"Failed to check session status: {exc}")
 
     # ------------------------------------------------------------------
     # Download commands: [p]dl
