@@ -772,7 +772,9 @@ async def _download_spotify_spotiflac(
     cmd = [
         bin_path,
         "-json",
-        "-fallback",
+        "-service",
+        "tidal",
+        "-fallback=false",
         "-o",
         temp_dir,
         url,
