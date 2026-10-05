@@ -421,7 +421,7 @@ _YTDLP_PRIORITY = {
     "v.redd.it",
 }
 
-# TikTok domains — handled by direct scraper instead of yt-dlp
+# TikTok domains : handled by direct scraper instead of yt-dlp
 _TIKTOK_DOMAINS = {
     "tiktok.com",
     "www.tiktok.com",
@@ -633,7 +633,7 @@ def _is_spotify_url(url: str) -> bool:
     )
 
 
-# SpotiFLAC CLI binary path — headless build of afkarxyz/SpotiFLAC
+# SpotiFLAC CLI binary path : headless build of afkarxyz/SpotiFLAC
 # Downloads lossless FLAC from Tidal/Amazon/Qobuz via Spotify URLs
 SPOTIFLAC_PATH = "/tmp/spotiflac_cli"
 
@@ -667,11 +667,12 @@ async def _download_spotify(
     url: str,
     temp_dir: str,
     timeout: int = 120,
+    cookies_file: Optional[str] = None,
 ) -> Tuple[List[str], Optional[dict]]:
     """Download audio from Spotify using SpotiFLAC CLI with spotdl fallback.
 
     Primary: SpotiFLAC (lossless FLAC from Tidal/Amazon/Qobuz).
-    Fallback: spotdl (MP3 via YouTube) when SpotiFLAC APIs are unavailable.
+    Fallback: spotdl (MP3 via SoundCloud/Piped/YouTube) when SpotiFLAC APIs are unavailable.
 
     Returns (list of file paths, metadata dict or None).
     """
@@ -679,7 +680,7 @@ async def _download_spotify(
         return await _download_spotify_spotiflac(url, temp_dir, timeout)
     except Exception as exc:
         log.info("[SpotiFLAC] Failed, falling back to spotdl: %s", exc)
-        return await _download_spotify_spotdl(url, temp_dir, timeout)
+        return await _download_spotify_spotdl(url, temp_dir, timeout, cookies_file=cookies_file)
 
 
 async def _download_spotify_spotiflac(
@@ -729,13 +730,13 @@ async def _download_spotify_spotiflac(
     result = _parse_spotiflac_json(combined)
 
     if result is None:
-        # No JSON found — binary might have crashed
+        # No JSON found : binary might have crashed
         error_hint = stderr_text.strip() or stdout_text.strip()
         raise RuntimeError(f"SpotiFLAC produced no JSON output: {error_hint[:200]}")
 
     # Check if any tracks succeeded
     if result.get("success", 0) == 0:
-        # All tracks failed — extract error from first result
+        # All tracks failed : extract error from first result
         results = result.get("results", [])
         if results:
             err = results[0].get("error", "Unknown error")
@@ -785,18 +786,34 @@ async def _download_spotify_spotdl(
     url: str,
     temp_dir: str,
     timeout: int = 120,
+    cookies_file: Optional[str] = None,
 ) -> Tuple[List[str], Optional[dict]]:
     """Download from Spotify via spotdl CLI (MP3 fallback)."""
     log.info("[spotdl] Downloading from Spotify URL: %s", url)
 
+    spotdl_bin = shutil.which("spotdl") or "/home/sablinova/redenv/bin/spotdl"
+
     cmd = [
-        "spotdl",
+        spotdl_bin,
         url,
+        "--audio",
+        "soundcloud",
+        "piped",
+        "youtube",
         "--output",
-        os.path.join(temp_dir, "{artist} - {title}.{ext}"),
+        os.path.join(temp_dir, "{artist} - {title}.{output-ext}"),
         "--log-level",
         "ERROR",
     ]
+
+    if not cookies_file:
+        for default_cookie in ("/home/sablinova/youtube_cookies.txt", "/home/sablinova/cookies.txt"):
+            if os.path.isfile(default_cookie):
+                cookies_file = default_cookie
+                break
+
+    if cookies_file and os.path.isfile(cookies_file):
+        cmd.extend(["--cookie-file", cookies_file])
 
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -1531,7 +1548,7 @@ def _ytdlp_download(
     }
 
     if format_id:
-        # User-selected format from resolution picker — override all format logic
+        # User-selected format from resolution picker : override all format logic
         opts["format"] = format_id
         opts.pop("max_filesize", None)
     elif audio_only:
@@ -1554,11 +1571,11 @@ def _ytdlp_download(
             max_filesize if max_filesize and max_filesize <= DISCORD_MIN_FILESIZE_LIMIT else None
         )
         if discord_limit:
-            # Reserve 3MB for audio stream
-            video_cap = max(1024 * 1024, discord_limit - (3 * 1024 * 1024))
+            video_cap = max(1024 * 1024, discord_limit - (5 * 1024 * 1024))
             opts["format"] = (
-                f"bestvideo[filesize<=?{video_cap}]+bestaudio[filesize<=?3M]/"
                 f"best[filesize<=?{discord_limit}]/"
+                f"bestvideo[filesize<=?{video_cap}]+bestaudio[ext=m4a]/"
+                f"bestvideo[filesize<=?{video_cap}]+bestaudio/"
                 f"bestvideo*+bestaudio/bestvideo+bestaudio/best[ext=mp4]/best"
             )
         else:
@@ -1652,7 +1669,7 @@ def _ytdlp_extract_formats(
 
     formats = info.get("formats") or []
     if not formats:
-        # Single-format media (e.g. direct file URL) — no picker needed
+        # Single-format media (e.g. direct file URL) : no picker needed
         return []
 
     # Group by resolution height, keeping best quality per height.
@@ -1758,7 +1775,7 @@ def _format_resolution_menu(formats: List[dict]) -> str:
             if fmt["filesize_approx"]
             else "unknown size"
         )
-        lines.append(f"`{i}.` **{fmt['label']}** — ~{size_str} ({fmt['vcodec']})")
+        lines.append(f"`{i}.` **{fmt['label']}** : ~{size_str} ({fmt['vcodec']})")
     lines.append("\nSelect a resolution from the dropdown below.")
     return "\n".join(lines)
 
@@ -2259,10 +2276,10 @@ def _anondrop_to_embed(link: str, filename: Optional[str] = None) -> str:
     # Check whether the path already contains a filename (id/filename)
     parts = path.split("/", 1)
     if len(parts) == 1 and filename:
-        # Only the ID — append the URL-encoded filename
+        # Only the ID : append the URL-encoded filename
         path = f"{parts[0]}/{quote(filename)}"
     elif len(parts) == 2:
-        # Already has filename — URL-encode it
+        # Already has filename : URL-encode it
         path = f"{parts[0]}/{quote(parts[1])}"
 
     # Determine the final filename to check if it's media
@@ -2630,6 +2647,7 @@ class SabDownloader(commands.Cog):
                     files, info_dict = await _download_spotify(
                         url=url,
                         temp_dir=temp_dir,
+                        cookies_file=cookies_file,
                     )
                     if files:
                         return files, info_dict
@@ -2782,7 +2800,7 @@ class SabDownloader(commands.Cog):
                 else:
                     log.warning("HD AnonDrop upload failed for %s", fname)
 
-            # Post results — send as plain text so Discord auto-embeds
+            # Post results : send as plain text so Discord auto-embeds
             # the video player from AnonDrop's og:video meta tags
             if anondrop_links:
                 links_text = "\n".join(anondrop_links)
@@ -3782,7 +3800,7 @@ class SabDownloader(commands.Cog):
                     return
 
                 # Handle upload (compression/anondrop as needed)
-                # NOTE: We do NOT set done_event here — the progress loop
+                # NOTE: We do NOT set done_event here : the progress loop
                 # keeps running through compression, re-encoding, and upload
                 # phases so the user sees live progress for those stages too.
                 await self._handle_file_upload(
@@ -3813,6 +3831,13 @@ class SabDownloader(commands.Cog):
             done_event.set()
             await progress_task
             error_msg = "Failed to download media from that URL."
+            e_str = str(e).strip()
+            if "looks truncated" in e_str or "Incomplete YouTube ID" in e_str:
+                error_msg = "The YouTube URL looks truncated or incomplete. Please check the video link."
+            elif "Sign in to confirm" in e_str:
+                error_msg = "YouTube requires login cookies or bot verification to download this media."
+            elif "Private video" in e_str or "Video unavailable" in e_str:
+                error_msg = "This video is private or unavailable."
             log.error("Download failed for %s: %s", url, e, exc_info=True)
             try:
                 await status_msg.edit(content=error_msg)
