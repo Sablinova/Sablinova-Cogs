@@ -10,7 +10,6 @@ import json
 import aiohttp
 import time
 from bs4 import BeautifulSoup
-from dateutil import parser as date_parser
 from discord.ext import tasks
 from redbot.core import Config, commands
 from redbot.core.bot import Red
@@ -66,36 +65,50 @@ def format_size(size_bytes: int) -> str:
         return f"{size_bytes} B"
 
 
-def parse_release_date(date_str: str):
-    """Best-effort parse of Steam's free-text release date. None if unparseable."""
-    if not date_str:
-        return None
-    try:
-        return date_parser.parse(date_str, fuzzy=True, default=datetime(1900, 1, 1))
-    except (ValueError, OverflowError):
-        return None
-
 EXACT_RELEASE_PRECISIONS = {"date_full"}
+REMINDER_WINDOW = 24 * 60 * 60  # seconds before release_ts to send the reminder
 
-def release_display(snapshot: dict) -> Optional[str]:
-    """Build the release-date embed value for a snapshot.
 
-    Prefers Steam's exact release timestamp when a full date is set; otherwise
-    falls back to the free-text label (with a best-effort relative time).
-    Returns None when there's nothing to show.
-    """
-    ts = snapshot.get("release_ts")
-    if ts and snapshot.get("release_precision") in EXACT_RELEASE_PRECISIONS:
-        return f"<t:{ts}:F> (<t:{ts}:R>)"
-    label = snapshot.get("release_date")
+def exact_release_ts(info: dict) -> Optional[int]:
+    """Steam's release timestamp, only when it's a full (exact) date."""
+    ts = info.get("release_ts")
+    if ts and info.get("release_precision") in EXACT_RELEASE_PRECISIONS:
+        return int(ts)
+    return None
+
+
+# Steam's placeholder texts when no real date is known; not worth storing.
+_NO_DATE_LABELS = {"coming soon", "to be announced", "tba", "tbd"}
+_MONTHS = {m: i for i, m in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
+
+
+def label_sort_ts(label: Optional[str]) -> Optional[float]:
+    """Rough sort key for a label like "2027", "Q4 2026" or "March 2027"
+    (start of that period, UTC). None if no year can be found."""
     if not label:
         return None
-    parsed = parse_release_date(label)
-    if parsed:
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return f"{label} (~<t:{int(parsed.timestamp())}:R>)"
-    return label
+    y = re.search(r"\b(19|20)\d{2}\b", label)
+    if not y:
+        return None
+    month = 1
+    q = re.search(r"\bq([1-4])\b", label, re.I)
+    if q:
+        month = (int(q.group(1)) - 1) * 3 + 1
+    else:
+        m = re.search(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)", label, re.I)
+        if m:
+            month = _MONTHS[m.group(1).lower()]
+    return datetime(int(y.group(0)), month, 1, tzinfo=timezone.utc).timestamp()
+
+
+def release_display(snapshot: dict) -> Optional[str]:
+    """Exact date from release_ts when known; otherwise the rough label
+    (e.g. "2027", "Q4 2026"); None if neither is available."""
+    ts = exact_release_ts(snapshot)
+    if ts:
+        return f"<t:{ts}:F> (<t:{ts}:R>)"
+    return snapshot.get("release_label") or None
 
 
 def fetch_app_details(appid: int) -> dict:
@@ -401,7 +414,9 @@ def get_game_snapshot(appid: int) -> Optional[dict]:
     release = data.get("release_date", {})
     coming_soon = release.get("coming_soon", False)
     coming_soon = bool(coming_soon) if isinstance(coming_soon, bool) else coming_soon == "true"
-    release_date_str = release.get("date", "").strip()
+    release_label = release.get("date", "").strip() if coming_soon else ""
+    if release_label.lower() in _NO_DATE_LABELS:
+        release_label = ""
     rel = fetch_release_info(appid) if coming_soon else {}
     return {
         "name": data.get("name", f"AppID {appid}"),
@@ -410,7 +425,7 @@ def get_game_snapshot(appid: int) -> Optional[dict]:
         "build_id": build_id,
         "build_time": build_time,
         "coming_soon": coming_soon,
-        "release_date": release_date_str if (coming_soon and release_date_str) else None,
+        "release_label": release_label or None,
         "release_ts": rel.get("release_ts"),
         "release_precision": rel.get("precision"),
     }
@@ -592,6 +607,27 @@ def build_advance_access_embed(appid: int, info: dict) -> discord.Embed:
     full_release = release_display(info)
     if full_release:
         embed.add_field(name="Full Release", value=full_release, inline=True)
+    embed.add_field(name="Denuvo", value="⚠️ Yes" if info.get("denuvo") else "✅ No", inline=True)
+    if info.get("header"):
+        embed.set_thumbnail(url=info["header"])
+    embed.set_footer(text=f"AppID {appid} • DenuvoWatch")
+    embed.timestamp = datetime.now(timezone.utc)
+    return embed
+
+
+def build_release_reminder_embed(appid: int, info: dict) -> discord.Embed:
+    name = info.get("name", f"AppID {appid}")
+    url = f"https://store.steampowered.com/app/{appid}/"
+    ts = info["release_ts"]
+    embed = discord.Embed(
+        title="⏰ Releasing Soon",
+        description=f"**[{name}]({url})** releases <t:{ts}:R>.",
+        color=discord.Color.teal()
+    )
+    embed.add_field(name="Release", value=f"<t:{ts}:F>", inline=True)
+    aa = info.get("advance_access_ts")
+    if aa:
+        embed.add_field(name="Advanced Access", value=f"<t:{aa}:F>", inline=True)
     embed.add_field(name="Denuvo", value="⚠️ Yes" if info.get("denuvo") else "✅ No", inline=True)
     if info.get("header"):
         embed.set_thumbnail(url=info["header"])
@@ -801,6 +837,22 @@ class DenuvoWatch(commands.Cog):
     async def _startup_sequence(self):
         await self.bot.wait_until_red_ready()
         games = await self.config.games()
+        # One-time migration: legacy free-text release_date -> release_label,
+        # kept only for upcoming games that don't have an exact date.
+        migrated = False
+        for g in games.values():
+            if "release_date" in g:
+                label = g.pop("release_date")
+                if (
+                    label
+                    and g.get("coming_soon")
+                    and not exact_release_ts(g)
+                    and str(label).strip().lower() not in _NO_DATE_LABELS
+                ):
+                    g["release_label"] = str(label).strip()
+                migrated = True
+        if migrated:
+            await self._save_games(games)
         self._refresh_name_cache_from(games)
         if games:
             print("[DenuvoWatch] Running startup forcecheck…")
@@ -989,7 +1041,7 @@ class DenuvoWatch(commands.Cog):
                 if not current or not current.get("coming_soon"):
                     return  # removed, or already handled
 
-                old_snapshot = dict(current)   # still holds release_ts/release_date for "Expected Date"
+                old_snapshot = dict(current)   # still holds release_ts for "Expected Date"
                 new_snapshot = dict(current)
                 new_snapshot.update(
                     name=recheck["name"],
@@ -1001,8 +1053,8 @@ class DenuvoWatch(commands.Cog):
                     appid_str, build_release_embed(appid, old_snapshot, new_snapshot)
                 )
 
-                for key in ("coming_soon", "release_date", "release_ts",
-                            "release_precision", "advance_access_ts"):
+                for key in ("coming_soon", "release_ts", "release_precision", "release_label",
+                            "advance_access_ts", "reminded_for"):
                     current.pop(key, None)
                 current["released"] = True
                 await self._save_games(games)
@@ -1071,7 +1123,6 @@ class DenuvoWatch(commands.Cog):
                 if new.get("coming_soon") and old.get("released"):
                     print(f"[INFO] {new['name']}: ignoring stale coming_soon=True (already released).")
                     new["coming_soon"] = False
-                    new["release_date"] = None
                     new["release_ts"] = None
                     new["release_precision"] = None
 
@@ -1155,23 +1206,26 @@ class DenuvoWatch(commands.Cog):
 
                 if new.get("coming_soon"):
                     games[appid_str]["coming_soon"] = True
-                    if new.get("release_date"):
-                        games[appid_str]["release_date"] = new["release_date"]
                     if new.get("release_ts"):
                         games[appid_str]["release_ts"] = new["release_ts"]
                     if new.get("release_precision"):
                         games[appid_str]["release_precision"] = new["release_precision"]
+                    # Rough label only while there's no exact date
+                    if exact_release_ts(games[appid_str]):
+                        games[appid_str].pop("release_label", None)
+                    elif new.get("release_label"):
+                        games[appid_str]["release_label"] = new["release_label"]
                 elif appid_str in self._pending_release_confirms:
                     pass  # keep coming_soon/release data until the confirm task decides
                 else:
                     games[appid_str]["released"] = True
                     dropped = False
-                    for key in ("coming_soon", "release_date", "release_ts", "release_precision", "advance_access_ts"):
+                    for key in ("coming_soon", "release_ts", "release_precision", "release_label", "advance_access_ts", "reminded_for"):
                         if key in games[appid_str]:
                             games[appid_str].pop(key)
                             dropped = True
                     if dropped:
-                        print(f"[INFO] {new['name']} has released, cleared coming_soon + release_date.")
+                        print(f"[INFO] {new['name']} has released, cleared coming_soon + release data.")
 
             # Advanced access start: notify once, then drop the value
             now_ts = int(time.time())
@@ -1187,6 +1241,31 @@ class DenuvoWatch(commands.Cog):
                     info.pop("advance_access_ts", None)
                     changes = True
                     print(f"[INFO] {info.get('name', appid_str)} advanced access has started.")
+
+            # Release reminder: once per release_ts, within 24h of an exact release time.
+            # (Re-arms automatically if Steam moves the date.)
+            for appid_str in target_ids:
+                info = games.get(appid_str)
+                if (
+                    not info
+                    or not info.get("coming_soon")
+                    or appid_str in self._pending_release_confirms
+                ):
+                    continue
+                rts = exact_release_ts(info)
+                if (
+                    rts
+                    and rts - REMINDER_WINDOW <= now_ts < rts
+                    and info.get("reminded_for") != rts
+                ):
+                    await self._dispatch_change(
+                        appid_str,
+                        build_release_reminder_embed(int(appid_str), info),
+                        mention=False,
+                    )
+                    info["reminded_for"] = rts
+                    changes = True
+                    print(f"[INFO] {info.get('name', appid_str)}: sent 24h release reminder.")
 
             # Full refresh for unchanged games (within scope)
             if full_refresh:
@@ -1268,12 +1347,12 @@ class DenuvoWatch(commands.Cog):
             }
             if snapshot.get("coming_soon"):
                 entry["coming_soon"] = True
-                if snapshot.get("release_date"):
-                    entry["release_date"] = snapshot["release_date"]
                 if snapshot.get("release_ts"):
                     entry["release_ts"] = snapshot["release_ts"]
                 if snapshot.get("release_precision"):
                     entry["release_precision"] = snapshot["release_precision"]
+                if snapshot.get("release_label") and not exact_release_ts(entry):
+                    entry["release_label"] = snapshot["release_label"]
                 aa_ts = await asyncio.to_thread(fetch_advance_access, appid)
                 if aa_ts:
                     entry["advance_access_ts"] = aa_ts
@@ -1630,9 +1709,9 @@ class DenuvoWatch(commands.Cog):
                     "build_id": stored.get("build_id"),
                     "build_time": stored.get("build_time"),
                     "coming_soon": stored.get("coming_soon", False),
-                    "release_date": stored.get("release_date"),
                     "release_ts": stored.get("release_ts"),
                     "release_precision": stored.get("release_precision"),
+                    "release_label": stored.get("release_label"),
                     "advance_access_ts": stored.get("advance_access_ts"),
                 }
             else:
@@ -1712,16 +1791,8 @@ class DenuvoWatch(commands.Cog):
 
         def sort_key(item):
             _, info = item
-            base = None
-            ts = info.get("release_ts")
-            if ts and info.get("release_precision") in EXACT_RELEASE_PRECISIONS:
-                base = float(ts)
-            else:
-                parsed = parse_release_date(info.get("release_date"))
-                if parsed:
-                    if parsed.tzinfo is None:
-                        parsed = parsed.replace(tzinfo=timezone.utc)
-                    base = parsed.timestamp()
+            ts = exact_release_ts(info)
+            base = float(ts) if ts else label_sort_ts(info.get("release_label"))
             aa = info.get("advance_access_ts")
             if aa:
                 base = min(base, float(aa)) if base is not None else float(aa)
@@ -1735,11 +1806,8 @@ class DenuvoWatch(commands.Cog):
         )
         lines = []
         for appid_str, info in upcoming:
-            ts = info.get("release_ts")
-            if ts and info.get("release_precision") in EXACT_RELEASE_PRECISIONS:
-                date = f"<t:{ts}:f>"
-            else:
-                date = info.get("release_date") or "Date TBA"
+            ts = exact_release_ts(info)
+            date = f"<t:{ts}:f>" if ts else (info.get("release_label") or "Date TBA")
             line = f"**{info['name']}** `{appid_str}` — {date}"
             aa = info.get("advance_access_ts")
             if aa:
@@ -1934,12 +2002,12 @@ class DenuvoWatch(commands.Cog):
                 # Only add release data if it exists in the import
                 if info.get("coming_soon"):
                     games[appid_str]["coming_soon"] = True
-                    if info.get("release_date"):
-                        games[appid_str]["release_date"] = info["release_date"]
                     if info.get("release_ts"):
                         games[appid_str]["release_ts"] = info["release_ts"]
                     if info.get("release_precision"):
                         games[appid_str]["release_precision"] = info["release_precision"]
+                    if info.get("release_label") and not exact_release_ts(games[appid_str]):
+                        games[appid_str]["release_label"] = info["release_label"]
                     if info.get("advance_access_ts") and int(info["advance_access_ts"]) > time.time():
                         games[appid_str]["advance_access_ts"] = int(info["advance_access_ts"])
                 master_changed = True
