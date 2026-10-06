@@ -22,6 +22,14 @@ HEADERS = {
 }
 
 # Hardcoded depot allowlists for games with region-specific depots or unknown depot
+GLOBAL_DEPOTS : set[str] = {
+    "3340991",
+    "3340992",
+    "3340993"
+    "3893181",
+    "1716751",
+}
+
 DEPOT_ALLOWLIST = {
     "491540": ["491541", "491542", "897493", "897498", "898611", "898624", "898626"],
 }
@@ -271,6 +279,8 @@ def fetch_build_id(appid: int) -> tuple:
         for depot_id, depot_info in depots.items():
             if not depot_id.isdigit():
                 continue
+            if depot_id in GLOBAL_DEPOTS:
+                continue
             if allowlist and depot_id not in allowlist:
                 continue
             if not allowlist and depot_id in blacklist:
@@ -313,6 +323,8 @@ def fetch_build_id(appid: int) -> tuple:
                 )
                 for depot_id, depot_info in dlc_depots.items():
                     if not depot_id.isdigit():
+                        continue
+                    if depot_id in GLOBAL_DEPOTS:
                         continue
 
                     depot_oslist = depot_info.get("config", {}).get("oslist")
@@ -799,12 +811,6 @@ class DenuvoWatch(commands.Cog):
         self.session = aiohttp.ClientSession() # Added session
         self._startup_task: Optional[asyncio.Task] = None
 
-        # In-memory cache of game names for autocomplete, so it never has to
-        # await a Config read (and risk Discord's ~3s autocomplete timeout).
-        self._name_cache: list[str] = []
-        self._name_cache_ts: float = 0.0
-        self._name_cache_ttl: float = 30.0
-
         # Short-lived cache for dadd Steam-search autocomplete, keyed on the
         # lowercased query. Dampens per-keystroke fetches to the Steam API.
         self._dadd_search_cache: dict[str, tuple[float, list]] = {}
@@ -853,7 +859,6 @@ class DenuvoWatch(commands.Cog):
                 migrated = True
         if migrated:
             await self._save_games(games)
-        self._refresh_name_cache_from(games)
         if games:
             print("[DenuvoWatch] Running startup forcecheck…")
             await self.check_games_internal(full_refresh=True)
@@ -875,15 +880,6 @@ class DenuvoWatch(commands.Cog):
     async def _save_games(self, games: dict):
         games = dict(sorted(games.items(), key=lambda x: x[1].get("name", "").lower()))
         await self.config.games.set(games)
-        self._refresh_name_cache_from(games)
-
-    def _refresh_name_cache_from(self, games: dict):
-        self._name_cache = [info.get("name", "") for info in games.values()]
-        self._name_cache_ts = asyncio.get_event_loop().time()
-
-    async def _refresh_name_cache(self):
-        games = await self._load_games()
-        self._refresh_name_cache_from(games)
 
     async def _load_history(self) -> dict:
         return await self.config.history()
@@ -1429,6 +1425,8 @@ class DenuvoWatch(commands.Cog):
 
             for depot_id, depot_info in dlc_depots.items():
                 if not depot_id.isdigit() or not isinstance(depot_info, dict):
+                    continue
+                if depot_id in GLOBAL_DEPOTS:
                     continue
 
                 depot_oslist = depot_info.get("config", {}).get("oslist")
