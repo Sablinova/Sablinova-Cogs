@@ -1041,6 +1041,12 @@ class DenuvoWatch(commands.Cog):
                 if not current or not current.get("coming_soon"):
                     return  # removed, or already handled
 
+                exact_ts = exact_release_ts(current)
+                if exact_ts and time.time() < exact_ts:
+                    print(f"[DenuvoWatch] {recheck['name']}: Steam says released but release_ts "
+                          f"is still ahead — not announcing yet.")
+                    return
+
                 old_snapshot = dict(current)   # still holds release_ts for "Expected Date"
                 new_snapshot = dict(current)
                 new_snapshot.update(
@@ -1136,13 +1142,14 @@ class DenuvoWatch(commands.Cog):
                     print(f"[DenuvoWatch] {new['name']}: possible denuvo change "
                           f"({old.get('denuvo')} -> {new['denuvo']}), confirming in 2 min…")
 
-                # Release: confirm with a recheck in 2 min instead of announcing
-                # on first sighting (same idea as the Denuvo confirm).
-                if (
-                    old.get("coming_soon")
-                    and not new.get("coming_soon")
-                    and appid_str not in self._pending_release_confirms
-                ):
+                 # Release needs BOTH: Steam says it's out (coming_soon went false) AND,
+                # when an exact release_ts is known, the clock is at/after it. Then a
+                # 2-min recheck confirms before the embed goes out.
+                flipped = bool(old.get("coming_soon")) and not new.get("coming_soon")
+                rts = exact_release_ts(old) if flipped else None
+                awaiting_clock = bool(rts) and time.time() < rts  # flipped before release_ts: hold
+
+                if flipped and not awaiting_clock and appid_str not in self._pending_release_confirms:
                     self._pending_release_confirms[appid_str] = asyncio.create_task(
                         self._confirm_release(appid_str)
                     )
@@ -1215,8 +1222,8 @@ class DenuvoWatch(commands.Cog):
                         games[appid_str].pop("release_label", None)
                     elif new.get("release_label"):
                         games[appid_str]["release_label"] = new["release_label"]
-                elif appid_str in self._pending_release_confirms:
-                    pass  # keep coming_soon/release data until the confirm task decides
+                elif appid_str in self._pending_release_confirms or awaiting_clock:
+                    pass  # keep coming_soon/release data until the confirm task / release time decides
                 else:
                     games[appid_str]["released"] = True
                     dropped = False
