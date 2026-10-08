@@ -443,7 +443,7 @@ def get_game_snapshot(appid: int) -> Optional[dict]:
     }
 
 _TRADEMARK_CHARS = "™®©"
-_PUNCT_RE = re.compile(r"[:\-–—_'’,.!?]")
+_PUNCT_RE = re.compile(r"[:\-\u2013\u2014_'’,.!?\"“”«»]")
 _WS_RE = re.compile(r"\s+")
 
 _ROMAN_NUMERAL_RE = re.compile(
@@ -477,6 +477,7 @@ def convert_roman_numerals(text: str) -> str:
 def normalize_game_name(name: str) -> str:
     if not name:
         return ""
+    name = name.strip("\"' \t\r\n")
     for ch in _TRADEMARK_CHARS:
         name = name.replace(ch, "")
     name = _PUNCT_RE.sub(" ", name)
@@ -1484,6 +1485,7 @@ class DenuvoWatch(commands.Cog):
             return
         if await self._block_if_mirrored(ctx):
             return
+        query = query.strip("\"' \t\r\n")
         async with ctx.typing():
             if query.isdigit():
                 appid = int(query)
@@ -1584,6 +1586,7 @@ class DenuvoWatch(commands.Cog):
             await ctx.send("📭 This server's watchlist is empty.", ephemeral=True)
             return
 
+        query = query.strip("\"' \t\r\n")
         query_norm = normalize_game_name(query)
 
         # Exact normalized-name match first (covers autocomplete selections,
@@ -1679,6 +1682,7 @@ class DenuvoWatch(commands.Cog):
         item_type: Literal["game", "dlc", "demo"] = "game"
     ):
         """Instantly check a game's (or other Steam item type's) current status."""
+        query = query.strip("\"' \t\r\n")
         async with ctx.typing():
             games = await self._load_games()
 
@@ -1831,6 +1835,7 @@ class DenuvoWatch(commands.Cog):
         """Show depot info for a game on this server's watchlist."""
         if not await self._require_guild(ctx):
             return
+        query = query.strip("\"' \t\r\n")
         games = await self._guild_games(ctx.guild)
 
         appid = None
