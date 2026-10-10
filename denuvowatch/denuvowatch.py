@@ -25,7 +25,7 @@ HEADERS = {
 GLOBAL_DEPOTS : set[str] = {
     "3340991",
     "3340992",
-    "3340993"
+    "3340993",
     "3893181",
     "1716751",
 }
@@ -983,33 +983,34 @@ class DenuvoWatch(commands.Cog):
             if recheck is None:
                 return
 
-            games = await self._load_games()
-            current = games.get(appid_str)
-            if current is None:
-                return
-
             if recheck["denuvo"] != expected_new_value:
-                print(f"[DenuvoWatch] {current.get('name', appid_str)}: denuvo change did not persist, ignoring.")
+                print(f"[DenuvoWatch] {recheck['name']}: denuvo change did not persist, ignoring.")
                 return
 
-            old_denuvo = current.get("denuvo")
-            if old_denuvo == expected_new_value:
-                return
+            async with self._check_lock:
+                games = await self._load_games()
+                current = games.get(appid_str)
+                if current is None:
+                    return
 
-            old_snapshot = dict(current)
-            new_snapshot = dict(current)
-            new_snapshot["denuvo"] = expected_new_value
-            new_snapshot["name"] = recheck["name"]
-            new_snapshot["header"] = recheck.get("header")
+                old_denuvo = current.get("denuvo")
+                if old_denuvo == expected_new_value:
+                    return
 
-            change_type = "denuvo_removed" if (old_denuvo and not expected_new_value) else "denuvo_added"
-            await self._dispatch_change(
-                appid_str, build_denuvo_embed(appid, change_type, old_snapshot, new_snapshot)
-            )
+                old_snapshot = dict(current)
+                new_snapshot = dict(current)
+                new_snapshot["denuvo"] = expected_new_value
+                new_snapshot["name"] = recheck["name"]
+                new_snapshot["header"] = recheck.get("header")
 
-            games[appid_str]["denuvo"] = expected_new_value
-            await self._save_games(games)
-            print(f"[DenuvoWatch] {recheck['name']}: denuvo change confirmed -> {expected_new_value}")
+                change_type = "denuvo_removed" if (old_denuvo and not expected_new_value) else "denuvo_added"
+                await self._dispatch_change(
+                    appid_str, build_denuvo_embed(appid, change_type, old_snapshot, new_snapshot)
+                )
+
+                games[appid_str]["denuvo"] = expected_new_value
+                await self._save_games(games)
+                print(f"[DenuvoWatch] {recheck['name']}: denuvo change confirmed -> {expected_new_value}")
         except asyncio.CancelledError:
             pass
         except Exception as e:
