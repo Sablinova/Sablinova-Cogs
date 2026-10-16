@@ -834,6 +834,8 @@ class DenuvoWatch(commands.Cog):
             self._startup_task.cancel()
         if self.check_games_loop.is_running():
             self.check_games_loop.cancel()
+        if self.release_clock_loop.is_running():
+            self.release_clock_loop.cancel()
         for task in (
             *self._pending_denuvo_confirms.values(),
             *self._pending_release_confirms.values(),
@@ -867,6 +869,9 @@ class DenuvoWatch(commands.Cog):
         if not self.check_games_loop.is_running():
             self.check_games_loop.start()
             print("[DenuvoWatch] Background check started (every 10 mins)")
+        if not self.release_clock_loop.is_running():
+            self.release_clock_loop.start()
+            print("[DenuvoWatch] Release clock started (every 1 min)")
 
     # ── owner-only check ──────────────────────────────────────────────────
     def owner_only():
@@ -1058,7 +1063,7 @@ class DenuvoWatch(commands.Cog):
                 )
 
                 for key in ("coming_soon", "release_ts", "release_precision", "release_label",
-                            "advance_access_ts", "reminded_for"):
+                            "advance_access_ts", "reminded_for", "release_notify_at"):
                     current.pop(key, None)
                 current["released"] = True
                 await self._save_games(games)
@@ -1069,6 +1074,47 @@ class DenuvoWatch(commands.Cog):
             print(f"[DenuvoWatch][ERROR] release confirm for {appid_str} crashed: {e}")
         finally:
             self._pending_release_confirms.pop(appid_str, None)
+
+    async def _fire_due_releases(self) -> bool:
+        """No-API check: announce games whose armed release time has arrived."""
+        async with self._check_lock:
+            games = await self._load_games()
+            now_ts = int(time.time())
+            fired = False
+            for appid_str, info in games.items():
+                notify_at = info.get("release_notify_at")
+                if not notify_at:
+                    continue
+                rts = exact_release_ts(info)
+                if not rts:
+                    info.pop("release_notify_at", None)
+                    fired = True
+                    continue
+                if now_ts < notify_at or now_ts < rts:
+                    continue
+                if appid_str in self._pending_release_confirms:
+                    continue
+
+                await self._dispatch_change(
+                    appid_str,
+                    build_release_embed(int(appid_str), dict(info), dict(info)),
+                )
+                for key in ("coming_soon", "release_ts", "release_precision", "release_label",
+                            "advance_access_ts", "reminded_for", "release_notify_at"):
+                    info.pop(key, None)
+                info["released"] = True
+                fired = True
+                print(f"[INFO] {info.get('name', appid_str)}: release announced on schedule.")
+            if fired:
+                await self._save_games(games)
+            return fired
+
+    @tasks.loop(minutes=1)
+    async def release_clock_loop(self):
+        try:
+            await self._fire_due_releases()
+        except Exception as e:
+            print(f"[DenuvoWatch][ERROR] release clock crashed: {e}")
 
     # ── background check ─────────────────────────────────────────────────
     async def check_games_internal(self, full_refresh: bool = False, scope=None) -> bool:
@@ -1140,14 +1186,12 @@ class DenuvoWatch(commands.Cog):
                     print(f"[DenuvoWatch] {new['name']}: possible denuvo change "
                           f"({old.get('denuvo')} -> {new['denuvo']}), confirming in 2 min…")
 
-                 # Release needs BOTH: Steam says it's out (coming_soon went false) AND,
-                # when an exact release_ts is known, the clock is at/after it. Then a
-                # 2-min recheck confirms before the embed goes out.
                 flipped = bool(old.get("coming_soon")) and not new.get("coming_soon")
                 rts = exact_release_ts(old) if flipped else None
-                awaiting_clock = bool(rts) and time.time() < rts  # flipped before release_ts: hold
+                awaiting_clock = bool(rts) and time.time() < rts
+                armed = bool(old.get("release_notify_at"))  # 24h countdown running
 
-                if flipped and not awaiting_clock and appid_str not in self._pending_release_confirms:
+                if flipped and not armed and not awaiting_clock and appid_str not in self._pending_release_confirms:
                     self._pending_release_confirms[appid_str] = asyncio.create_task(
                         self._confirm_release(appid_str)
                     )
@@ -1220,12 +1264,12 @@ class DenuvoWatch(commands.Cog):
                         games[appid_str].pop("release_label", None)
                     elif new.get("release_label"):
                         games[appid_str]["release_label"] = new["release_label"]
-                elif appid_str in self._pending_release_confirms or awaiting_clock:
+                elif appid_str in self._pending_release_confirms or awaiting_clock or armed:
                     pass  # keep coming_soon/release data until the confirm task / release time decides
                 else:
                     games[appid_str]["released"] = True
                     dropped = False
-                    for key in ("coming_soon", "release_ts", "release_precision", "release_label", "advance_access_ts", "reminded_for"):
+                    for key in ("coming_soon", "release_ts", "release_precision", "release_label", "advance_access_ts", "reminded_for", "release_notify_at"):
                         if key in games[appid_str]:
                             games[appid_str].pop(key)
                             dropped = True
@@ -1269,6 +1313,7 @@ class DenuvoWatch(commands.Cog):
                         mention=False,
                     )
                     info["reminded_for"] = rts
+                    info["release_notify_at"] = min(now_ts + REMINDER_WINDOW, rts)
                     changes = True
                     print(f"[INFO] {info.get('name', appid_str)}: sent 24h release reminder.")
 
