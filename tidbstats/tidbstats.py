@@ -140,7 +140,9 @@ class TidbStats(commands.Cog):
             logo="https://cdn.discordapp.com/icons/1457550295742812307/a0259221faeb0133e43760697573577a.webp?format=webp&width=60&height=60",
             tmdb_api_key="a416278866ffc1357efc0369047cc736",
             interval_hours=1,
-            last_snapshot={},
+            snap_subs=0,
+            snap_hours=0,
+            snap_ts=0,
         )
         self.session: Optional[aiohttp.ClientSession] = None
         self._media_cache: Dict[str, Dict[str, Any]] = {}
@@ -157,7 +159,7 @@ class TidbStats(commands.Cog):
             self.bot.loop.create_task(self.session.close())
 
     async def get_guild_settings(self, guild: Optional[discord.Guild]) -> Dict[str, Any]:
-        """Fetch guild settings with fallback to defaults, avoiding nested_update issues."""
+        """Fetch guild settings with fallback to defaults."""
         defaults = {
             "channel_id": None,
             "message_id": None,
@@ -166,7 +168,9 @@ class TidbStats(commands.Cog):
             "logo": "https://cdn.discordapp.com/icons/1457550295742812307/a0259221faeb0133e43760697573577a.webp?format=webp&width=60&height=60",
             "tmdb_api_key": "a416278866ffc1357efc0369047cc736",
             "interval_hours": 1,
-            "last_snapshot": {},
+            "snap_subs": 0,
+            "snap_hours": 0,
+            "snap_ts": 0,
         }
         if not guild:
             return defaults
@@ -180,7 +184,9 @@ class TidbStats(commands.Cog):
             "logo": await g.logo(),
             "tmdb_api_key": await g.tmdb_api_key(),
             "interval_hours": await g.interval_hours(),
-            "last_snapshot": (await g.last_snapshot()) or {},
+            "snap_subs": await g.snap_subs(),
+            "snap_hours": await g.snap_hours(),
+            "snap_ts": await g.snap_ts(),
         }
 
     async def fetch_json(self, url: str) -> Tuple[Optional[Dict[str, Any]], int]:
@@ -196,7 +202,7 @@ class TidbStats(commands.Cog):
             return None, 0
 
     async def resolve_tvdb_media(self, tvdb_id: int, media_type: str, api_key: str) -> Dict[str, Any]:
-        """Resolve TVDB ID to human-readable title and poster art using TMDB external find."""
+        """Resolve TVDB ID to title and poster art via TMDB external find."""
         cache_key = f"tvdb:{tvdb_id}"
         if cache_key in self._media_cache:
             return self._media_cache[cache_key]
@@ -448,26 +454,26 @@ class TidbStats(commands.Cog):
         )
         embed.add_field(name="Database Integrity", value=stats_text, inline=False)
 
-        now_ts = datetime.datetime.now(datetime.timezone.utc).timestamp()
+        now_ts = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
         settings = await self.get_guild_settings(guild)
-        last_snap = settings.get("last_snapshot") or {}
+        prev_ts = settings.get("snap_ts", 0)
+        prev_subs = settings.get("snap_subs", 0)
+        prev_hours = settings.get("snap_hours", 0)
+
         delta_line = ""
-        if last_snap:
-            prev_ts = last_snap.get("timestamp", 0)
-            prev_subs = last_snap.get("submissions", 0)
-            prev_hours = last_snap.get("hours_saved", 0)
+        if prev_ts > 0:
             if now_ts - prev_ts >= 21600:
                 diff_subs = total_submissions - prev_subs
                 diff_hours = hours_saved - prev_hours
                 if diff_subs > 0 or diff_hours > 0:
                     delta_line = f"\n📈 **Recent Growth:** +{diff_subs:,} submissions (+{diff_hours:,} hrs)"
-                await self.config.guild(guild).last_snapshot.set(
-                    {"timestamp": now_ts, "submissions": total_submissions, "hours_saved": hours_saved}
-                )
+                await self.config.guild(guild).snap_subs.set(total_submissions)
+                await self.config.guild(guild).snap_hours.set(hours_saved)
+                await self.config.guild(guild).snap_ts.set(now_ts)
         else:
-            await self.config.guild(guild).last_snapshot.set(
-                {"timestamp": now_ts, "submissions": total_submissions, "hours_saved": hours_saved}
-            )
+            await self.config.guild(guild).snap_subs.set(total_submissions)
+            await self.config.guild(guild).snap_hours.set(hours_saved)
+            await self.config.guild(guild).snap_ts.set(now_ts)
 
         growth_text = (
             f"👥 **Contributors:** {contributors:,}\n"
