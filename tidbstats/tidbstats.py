@@ -34,6 +34,89 @@ def make_progress_bar(ratio: float, length: int = 10) -> str:
     return f"[`{bar}`] {clamped * 100:.1f}%"
 
 
+RANDOM_SHOWS_POOL = (
+    "Breaking Bad",
+    "Game of Thrones",
+    "The Office",
+    "Cowboy Bebop",
+    "Futurama",
+    "The Simpsons",
+    "Family Guy",
+    "South Park",
+    "Rick and Morty",
+    "Arcane",
+    "Attack on Titan",
+    "Better Call Saul",
+    "Succession",
+    "Dexter",
+    "House",
+    "The Sopranos",
+    "The Wire",
+    "Peaky Blinders",
+    "Daredevil",
+    "The Boys",
+    "Invincible",
+    "Doctor Who",
+    "Black Mirror",
+    "Twin Peaks",
+    "Fargo",
+    "True Detective",
+    "Death Note",
+    "Steins;Gate",
+    "Jujutsu Kaisen",
+    "Spy x Family",
+    "Chainsaw Man",
+    "Demon Slayer",
+    "Cyberpunk: Edgerunners",
+    "One Punch Man",
+    "Avatar: The Last Airbender",
+    "BoJack Horseman",
+    "Community",
+    "Brooklyn Nine-Nine",
+    "Parks and Recreation",
+    "It's Always Sunny in Philadelphia",
+    "Arrested Development",
+    "Lost",
+    "Mad Men",
+    "Hannibal",
+    "Mr. Robot",
+    "Westworld",
+    "Chernobyl",
+    "The Last of Us",
+    "House of the Dragon",
+    "Fallout",
+    "Shogun",
+    "Silo",
+    "The Expanse",
+    "Firefly",
+    "Buffy the Vampire Slayer",
+    "Supernatural",
+    "The X-Files",
+    "Bob's Burgers",
+    "Archer",
+    "Seinfeld",
+    "Friends",
+    "How I Met Your Mother",
+    "Modern Family",
+    "The Big Bang Theory",
+    "Silicon Valley",
+    "Ted Lasso",
+    "Barry",
+    "Severance",
+    "Narcos",
+    "Vikings",
+    "Sherlock",
+    "Fleabag",
+    "Mindhunter",
+    "Boardwalk Empire",
+    "Sons of Anarchy",
+    "Spartacus",
+    "Deadwood",
+    "Justified",
+    "Rome",
+)
+
+
 class SearchMediaModal(discord.ui.Modal, title="Search TheIntroDB"):
     title_input = discord.ui.TextInput(
         label="Show or Movie Title",
@@ -343,53 +426,35 @@ class TidbStats(commands.Cog):
         return embed
 
     async def get_random_intro_embed(self, guild: Optional[discord.Guild]) -> discord.Embed:
-        """Fetch a random top show from TheIntroDB and display its intro timestamps."""
-        top_media = self._last_stats_cache.get("top_media")
-        settings = await self.get_guild_settings(guild)
+        """Fetch a truly random show with intro skip timestamps from a diverse pool."""
+        candidates = list(RANDOM_SHOWS_POOL)
+        random.shuffle(candidates)
 
-        if not top_media:
-            data, status = await self.fetch_json(settings["url"])
-            if status == 200 and data:
-                top_media = data.get("top_media", [])
+        for show in candidates[:5]:
+            season = random.choice([1, 1, 1, 2])
+            episode = random.choice([1, 1, 2, 3])
+            embed = await self.lookup_media(guild, show, season, episode)
+            if embed.color and embed.color.value == 0x5865F2:
+                embed.title = f"🎲 {embed.title}"
+                embed.color = 0x2ECC71
+                return embed
 
-        if not top_media:
-            return discord.Embed(
-                title="No Media Available",
-                description="TheIntroDB statistics are currently unavailable.",
-                color=discord.Color.red(),
-            )
+        top_media = self._last_stats_cache.get("top_media") or []
+        if top_media:
+            item = random.choice(top_media)
+            tvdb_id = item.get("tvdb_id")
+            settings = await self.get_guild_settings(guild)
+            resolved = await self.resolve_tvdb_media(tvdb_id, item.get("type", "tv"), settings["tmdb_api_key"])
+            fallback_embed = await self.lookup_media(guild, resolved["title"], 1, 1)
+            fallback_embed.title = f"🎲 {fallback_embed.title}"
+            fallback_embed.color = 0x2ECC71
+            return fallback_embed
 
-        item = random.choice(top_media)
-        tvdb_id = item.get("tvdb_id")
-        details = await self.resolve_tvdb_media(tvdb_id, item.get("type", "tv"), settings["tmdb_api_key"])
-
-        title = details["title"]
-        tidb_url = f"https://api.theintrodb.org/v4/media?tvdb_id={tvdb_id}&season=1&episode=1"
-        tidb_res, tidb_status = await self.fetch_json(tidb_url)
-
-        embed = discord.Embed(title=f"🎲 {title} — S01E01", color=0x2ECC71)
-        if details["poster_url"]:
-            embed.set_thumbnail(url=details["poster_url"])
-
-        if tidb_status == 200 and tidb_res and tidb_res.get("intro"):
-            seg = tidb_res["intro"][0]
-            start = format_ms(seg.get("start_ms"))
-            end = format_ms(seg.get("end_ms"))
-            embed.add_field(name="Intro Timestamps", value=f"`{start} — {end}`", inline=False)
-        else:
-            embed.add_field(
-                name="Intro Timestamps",
-                value="Episode 1 markers pending verification.",
-                inline=False,
-            )
-
-        embed.add_field(
-            name="Community Activity",
-            value=f"{item.get('submissions', 0):,} verified submissions",
-            inline=False,
+        return discord.Embed(
+            title="Random Intro",
+            description="Could not load a random intro. Please try again in a moment.",
+            color=discord.Color.orange(),
         )
-        embed.set_footer(text=f"TheIntroDB v4 • TVDB ID: {tvdb_id}")
-        return embed
 
     def get_setup_guide_embed(self) -> discord.Embed:
         """Generate media server integration guide."""
