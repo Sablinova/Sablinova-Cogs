@@ -125,32 +125,6 @@ class TidbStatsView(discord.ui.View):
         embed = self.cog.get_setup_guide_embed()
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @discord.ui.button(
-        label="Refresh",
-        style=discord.ButtonStyle.secondary,
-        emoji="🔄",
-        custom_id="tidbstats:refresh",
-    )
-    async def refresh_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        now = datetime.datetime.now(datetime.timezone.utc).timestamp()
-        last_refresh = self.cog._last_manual_refresh.get(interaction.guild_id, 0)
-        is_admin = interaction.user.guild_permissions.administrator
-        if not is_admin and (now - last_refresh < 45):
-            remaining = int(45 - (now - last_refresh))
-            await interaction.response.send_message(
-                f"Stats were refreshed recently. Please wait {remaining}s.",
-                ephemeral=True,
-            )
-            return
-
-        self.cog._last_manual_refresh[interaction.guild_id] = now
-        await interaction.response.defer(ephemeral=True)
-        success = await self.cog.update_guild_stats(interaction.guild)
-        if success:
-            await interaction.followup.send("Live statistics refreshed.", ephemeral=True)
-        else:
-            await interaction.followup.send("Failed to refresh stats. Check bot logs.", ephemeral=True)
-
 
 class TidbStats(commands.Cog):
     """Live statistics and timestamp lookups from TheIntroDB v4 API."""
@@ -166,11 +140,10 @@ class TidbStats(commands.Cog):
             logo="https://cdn.discordapp.com/icons/1457550295742812307/a0259221faeb0133e43760697573577a.webp?format=webp&width=60&height=60",
             tmdb_api_key="a416278866ffc1357efc0369047cc736",
             interval_hours=1,
-            last_snapshot=None,
+            last_snapshot={},
         )
         self.session: Optional[aiohttp.ClientSession] = None
         self._media_cache: Dict[str, Dict[str, Any]] = {}
-        self._last_manual_refresh: Dict[int, float] = {}
         self._last_stats_cache: Dict[str, Any] = {}
 
     async def cog_load(self):
@@ -182,6 +155,33 @@ class TidbStats(commands.Cog):
         self.update_stats.cancel()
         if self.session and not self.session.closed:
             self.bot.loop.create_task(self.session.close())
+
+    async def get_guild_settings(self, guild: Optional[discord.Guild]) -> Dict[str, Any]:
+        """Fetch guild settings with fallback to defaults, avoiding nested_update issues."""
+        defaults = {
+            "channel_id": None,
+            "message_id": None,
+            "enabled": False,
+            "url": "https://api.theintrodb.org/v4/stats",
+            "logo": "https://cdn.discordapp.com/icons/1457550295742812307/a0259221faeb0133e43760697573577a.webp?format=webp&width=60&height=60",
+            "tmdb_api_key": "a416278866ffc1357efc0369047cc736",
+            "interval_hours": 1,
+            "last_snapshot": {},
+        }
+        if not guild:
+            return defaults
+
+        g = self.config.guild(guild)
+        return {
+            "channel_id": await g.channel_id(),
+            "message_id": await g.message_id(),
+            "enabled": await g.enabled(),
+            "url": await g.url(),
+            "logo": await g.logo(),
+            "tmdb_api_key": await g.tmdb_api_key(),
+            "interval_hours": await g.interval_hours(),
+            "last_snapshot": (await g.last_snapshot()) or {},
+        }
 
     async def fetch_json(self, url: str) -> Tuple[Optional[Dict[str, Any]], int]:
         if not self.session or self.session.closed:
@@ -221,9 +221,9 @@ class TidbStats(commands.Cog):
         self._media_cache[cache_key] = data
         return data
 
-    async def lookup_media(self, guild: discord.Guild, query: str, season: int = 1, episode: int = 1) -> discord.Embed:
+    async def lookup_media(self, guild: Optional[discord.Guild], query: str, season: int = 1, episode: int = 1) -> discord.Embed:
         """Search media on TMDB and fetch intro timestamps from TheIntroDB v4."""
-        settings = await self.config.guild(guild).all()
+        settings = await self.get_guild_settings(guild)
         api_key = settings["tmdb_api_key"]
         if not api_key:
             return discord.Embed(
@@ -336,11 +336,12 @@ class TidbStats(commands.Cog):
         embed.set_footer(text=f"TheIntroDB v4 • TVDB: {tvdb_id or 'N/A'}")
         return embed
 
-    async def get_random_intro_embed(self, guild: discord.Guild) -> discord.Embed:
+    async def get_random_intro_embed(self, guild: Optional[discord.Guild]) -> discord.Embed:
         """Fetch a random top show from TheIntroDB and display its intro timestamps."""
         top_media = self._last_stats_cache.get("top_media")
+        settings = await self.get_guild_settings(guild)
+
         if not top_media:
-            settings = await self.config.guild(guild).all()
             data, status = await self.fetch_json(settings["url"])
             if status == 200 and data:
                 top_media = data.get("top_media", [])
@@ -354,7 +355,6 @@ class TidbStats(commands.Cog):
 
         item = random.choice(top_media)
         tvdb_id = item.get("tvdb_id")
-        settings = await self.config.guild(guild).all()
         details = await self.resolve_tvdb_media(tvdb_id, item.get("type", "tv"), settings["tmdb_api_key"])
 
         title = details["title"]
@@ -449,13 +449,13 @@ class TidbStats(commands.Cog):
         embed.add_field(name="Database Integrity", value=stats_text, inline=False)
 
         now_ts = datetime.datetime.now(datetime.timezone.utc).timestamp()
-        last_snap = await self.config.guild(guild).last_snapshot()
+        settings = await self.get_guild_settings(guild)
+        last_snap = settings.get("last_snapshot") or {}
         delta_line = ""
         if last_snap:
             prev_ts = last_snap.get("timestamp", 0)
             prev_subs = last_snap.get("submissions", 0)
             prev_hours = last_snap.get("hours_saved", 0)
-            # Compare if snapshot is older than 6 hours
             if now_ts - prev_ts >= 21600:
                 diff_subs = total_submissions - prev_subs
                 diff_hours = hours_saved - prev_hours
@@ -497,7 +497,7 @@ class TidbStats(commands.Cog):
 
     async def update_guild_stats(self, guild: discord.Guild) -> bool:
         """Fetch and update stats embed for a specific guild."""
-        settings = await self.config.guild(guild).all()
+        settings = await self.get_guild_settings(guild)
         if not settings["enabled"] or not settings["channel_id"]:
             return False
 
@@ -564,7 +564,7 @@ class TidbStats(commands.Cog):
     async def tidb_stats(self, ctx):
         """View current TheIntroDB database statistics."""
         async with ctx.typing():
-            settings = await self.config.guild(ctx.guild).all()
+            settings = await self.get_guild_settings(ctx.guild)
             data, status = await self.fetch_json(settings["url"])
             if status != 200 or not data:
                 await ctx.send("Failed to retrieve statistics from TheIntroDB API.")
