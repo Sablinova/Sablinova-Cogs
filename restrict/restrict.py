@@ -337,6 +337,7 @@ class Restrict(commands.Cog):
         if not g_cache:
             return
 
+        author = message.author
         now = time.time()
         active_violations: List[Tuple[str, Dict[str, Any], str]] = []  # (scope, info, type)
 
