@@ -1,0 +1,25 @@
+{
+    "name": "Restrict",
+    "short": "Restrict users, channels, or roles from sending GIFs, media, links, stickers, and more.",
+    "description": "Comprehensive moderation restriction system for Red-DiscordBot. Restrict specific users from posting GIFs (Tenor, Giphy, direct URLs, attachments, embeds) or other media types with instant, silent auto-deletion, customizable notifications, temporary durations, mod-logging, and spam escalation safeguards.",
+    "end_user_data_statement": "This cog stores Discord user, channel, and role IDs solely for enforcing active moderation restrictions configured by server administrators.",
+    "install_msg": "Thanks for installing Restrict!\n\nTo restrict a user from sending GIFs silently: `[p]restrict gif user @user` (or simply `[p]restrict gif @user`).\nTo view active restrictions: `[p]restrict list`.\nTo view configuration options: `[p]restrict set show`.\n\nDefault notification mode is **silent** (instant stealth deletion).",
+    "author": [
+        "Sablinova (https://github.com/Sablinova)"
+    ],
+    "required_cogs": {},
+    "requirements": [],
+    "tags": [
+        "restrict",
+        "moderation",
+        "antigif",
+        "gifs",
+        "media",
+        "safety",
+        "automod"
+    ],
+    "min_bot_version": "3.5.0",
+    "hidden": false,
+    "disabled": false,
+    "type": "COG"
+}
