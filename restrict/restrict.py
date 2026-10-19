@@ -337,17 +337,10 @@ class Restrict(commands.Cog):
         if not g_cache:
             return
 
-        # Check moderator / admin exemption
-        author = message.author
-        if hasattr(author, "guild_permissions"):
-            perms = author.guild_permissions
-            if perms.administrator or perms.manage_messages or perms.manage_guild:
-                return
-
         now = time.time()
         active_violations: List[Tuple[str, Dict[str, Any], str]] = []  # (scope, info, type)
 
-        # 1. Check User-level restrictions
+        # 1. Check User-level restrictions (direct user restrictions apply even to admins/mods if explicitly targeted)
         user_restrictions = g_cache.get("users", {}).get(author.id, {})
         for r_type, info in list(user_restrictions.items()):
             if info.get("expires") and info["expires"] <= now:
@@ -356,8 +349,14 @@ class Restrict(commands.Cog):
                 active_violations.append(("User", info, r_type))
                 break
 
-        # 2. Check Channel-level restrictions
+        # If not directly restricted as a user, check moderator/admin exemption for Channel & Role restrictions
         if not active_violations:
+            if hasattr(author, "guild_permissions"):
+                perms = author.guild_permissions
+                if perms.administrator or perms.manage_messages or perms.manage_guild:
+                    return
+
+            # 2. Check Channel-level restrictions
             channel_restrictions = g_cache.get("channels", {}).get(message.channel.id, {})
             for r_type, info in list(channel_restrictions.items()):
                 if info.get("expires") and info["expires"] <= now:
@@ -507,15 +506,10 @@ class Restrict(commands.Cog):
         if not member or member.bot:
             return
 
-        if hasattr(member, "guild_permissions"):
-            perms = member.guild_permissions
-            if perms.administrator or perms.manage_messages:
-                return
-
         now = time.time()
         is_restricted = False
 
-        # User check
+        # User check (direct user restriction applies even to admins)
         u_res = g_cache.get("users", {}).get(member.id, {})
         for r_type in ("reaction", "all"):
             if r_type in u_res:
@@ -524,8 +518,13 @@ class Restrict(commands.Cog):
                     is_restricted = True
                     break
 
-        # Channel check
         if not is_restricted:
+            if hasattr(member, "guild_permissions"):
+                perms = member.guild_permissions
+                if perms.administrator or perms.manage_messages or perms.manage_guild:
+                    return
+
+            # Channel check
             c_res = g_cache.get("channels", {}).get(payload.channel_id, {})
             for r_type in ("reaction", "all"):
                 if r_type in c_res:
