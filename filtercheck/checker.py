@@ -267,7 +267,7 @@ class FilterCheckerEngine:
         try:
             session = await self.get_session()
             ws_url = "wss://production-gc.lsfilter.com?a=0ef9b862-b74f-4e8d-8aad-be549c5f452a&customer_id=74-1082-F000&agentType=chrome_extension&agentVersion=3.777.0&userGuid=00000000-0000-0000-0000-000000000000"
-            ws_timeout = aiohttp.ClientWSTimeout(ws_close=DEFAULT_TIMEOUT)
+            ws_timeout = getattr(aiohttp, "ClientWSTimeout", lambda **kw: DEFAULT_TIMEOUT)(ws_close=DEFAULT_TIMEOUT) if hasattr(aiohttp, "ClientWSTimeout") else DEFAULT_TIMEOUT
             async with session.ws_connect(ws_url, timeout=ws_timeout) as ws:
                 req = {
                     "action": "dy_lookup",
