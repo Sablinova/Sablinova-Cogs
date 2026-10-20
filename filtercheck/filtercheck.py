@@ -52,6 +52,11 @@ class FilterCheck(commands.Cog):
 
     async def _rpc_sync_slash(self, guild_id: int | None = None) -> dict:
         """RPC method to sync slash command tree to Discord."""
+        try:
+            await self.bot.enable_app_command("check", discord.AppCommandType.chat_input)
+            await self.bot.tree.red_check_enabled()
+        except Exception:
+            pass
         guild = self.bot.get_guild(guild_id) if guild_id else None
         synced = await self.bot.tree.sync(guild=guild)
         return {
@@ -80,22 +85,46 @@ class FilterCheck(commands.Cog):
                 "blocked": report.country_blocked_count,
                 "allowed": report.country_allowed_count,
             },
-            "results": {
-                name: {
-                    "status": res.status.name,
-                    "category": res.category,
-                    "details": res.details,
-                    "latency": round(res.latency, 3),
+            "school_filters": [
+                {
+                    "provider": f.provider,
+                    "category": f.category,
+                    "blocked": f.blocked,
+                    "detail": f.detail,
                 }
-                for name, res in report.results.items()
-            },
+                for f in report.school_filters
+            ],
+            "dns_resolvers": [
+                {
+                    "provider": d.provider,
+                    "category": d.category,
+                    "blocked": d.blocked,
+                    "detail": d.detail,
+                }
+                for d in report.dns_resolvers
+            ],
+            "country_blocks": [
+                {
+                    "country_code": c.country_code,
+                    "country_name": c.country_name,
+                    "flag": c.flag,
+                    "blocked": c.blocked,
+                    "status_text": c.status_text,
+                    "probe_source": c.probe_source,
+                }
+                for c in report.country_blocks
+            ],
         }
 
     def format_help_for_context(self, ctx: commands.Context) -> str:
         pre_processed = super().format_help_for_context(ctx)
         return f"{pre_processed}\n\nCog Version: {self.__version__}\nAuthor: {self.__author__}"
 
-    @app_commands.command(name="check", description="Check a domain against school filters, DNS resolvers, and ISP blocks")
+    @app_commands.command(
+        name="check",
+        description="Check a domain against school filters, DNS resolvers, and ISP blocks",
+        extras={"red_force_enable": True},
+    )
     @app_commands.describe(
         domain="Domain or URL to check (e.g. pubslounge.xyz or google.com)",
         ephemeral="Set to True if you want the results visible only to you (default: False)",
