@@ -39,7 +39,9 @@ def build_school_embed(report: DomainCheckReport) -> discord.Embed:
     embed.add_field(name="\u200b", value=format_col(col2), inline=True)
     embed.add_field(name="\u200b", value=format_col(col3), inline=True)
 
-    embed.set_footer(text="credit to @regentstew")
+    embed.set_footer(
+        text=f"Checked {len(report.school_filters)} school filters in {report.elapsed_seconds:.2f}s"
+    )
     return embed
 
 

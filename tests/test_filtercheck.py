@@ -76,7 +76,8 @@ def test_build_school_embed():
     assert "**Blocked by:** 2" in embed.description
     assert "**Allowed by:** 3" in embed.description
     assert len(embed.fields) == 3
-    assert "@regentstew" in embed.footer.text
+    assert "school filters in" in embed.footer.text
+    assert "regentstew" not in embed.footer.text
 
 
 def test_build_dns_embed():
