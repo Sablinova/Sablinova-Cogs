@@ -1,0 +1,10 @@
+{
+    "name": "FilterCheck",
+    "short": "Multi-provider school, web filter, DNS security, and country ISP block checker",
+    "description": "Inspect domains against 20 school and enterprise web filters, 10+ secure DNS resolvers, and national ISP censorship blocks (OONI, China GFW, Russia, India, UK, etc.).",
+    "author": ["Sablinova"],
+    "hidden": false,
+    "disabled": false,
+    "min_bot_permissions": ["send_messages", "embed_links"],
+    "tags": ["filter", "school", "firewall", "dns", "isp", "ooni", "security", "check"]
+}
