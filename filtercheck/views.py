@@ -12,7 +12,7 @@ def build_school_embed(report: DomainCheckReport) -> discord.Embed:
     """Build the exact 3-column school filter embed matching the reference design."""
     embed = discord.Embed(
         title="🔍 Web Filter Results",
-        color=0x2B2D42 if report.school_blocked_count > 0 else 0x2ECC71,
+        color=0xE67E22,
     )
 
     # Header description with counts
@@ -23,11 +23,11 @@ def build_school_embed(report: DomainCheckReport) -> discord.Embed:
     )
     embed.description = header
 
-    # Split 20 filters across 3 inline columns (7, 7, 6)
+    # Split 20 filters across 3 inline columns matching ballerjab row order (7, 7, 6)
     filters = report.school_filters
-    col1 = filters[:7]
-    col2 = filters[7:14]
-    col3 = filters[14:]
+    col1 = [filters[i] for i in range(0, len(filters), 3)]
+    col2 = [filters[i] for i in range(1, len(filters), 3)]
+    col3 = [filters[i] for i in range(2, len(filters), 3)]
 
     def format_col(items: list[FilterResult]) -> str:
         lines = []
@@ -39,9 +39,7 @@ def build_school_embed(report: DomainCheckReport) -> discord.Embed:
     embed.add_field(name="\u200b", value=format_col(col2), inline=True)
     embed.add_field(name="\u200b", value=format_col(col3), inline=True)
 
-    embed.set_footer(
-        text=f"credit to @regentstew • Checked 20 school filters in {report.elapsed_seconds:.2f}s"
-    )
+    embed.set_footer(text="credit to @regentstew")
     return embed
 
 
