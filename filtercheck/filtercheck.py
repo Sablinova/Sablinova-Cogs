@@ -35,8 +35,61 @@ class FilterCheck(commands.Cog):
         self.config.register_global(**default_global)
         self.engine = FilterCheckerEngine()
 
+    async def cog_load(self) -> None:
+        try:
+            self.bot.register_rpc_handler(self._rpc_sync_slash)
+            self.bot.register_rpc_handler(self._rpc_check_domain)
+        except Exception as exc:
+            log.debug("Could not register filtercheck RPC handlers: %s", exc)
+
     async def cog_unload(self) -> None:
+        try:
+            self.bot.unregister_rpc_handler(self._rpc_sync_slash)
+            self.bot.unregister_rpc_handler(self._rpc_check_domain)
+        except Exception:
+            pass
         await self.engine.close()
+
+    async def _rpc_sync_slash(self, guild_id: int | None = None) -> dict:
+        """RPC method to sync slash command tree to Discord."""
+        guild = self.bot.get_guild(guild_id) if guild_id else None
+        synced = await self.bot.tree.sync(guild=guild)
+        return {
+            "status": "success",
+            "synced_count": len(synced),
+            "command_names": [cmd.name for cmd in synced],
+            "guild_id": guild_id,
+        }
+
+    async def _rpc_check_domain(self, domain: str) -> dict:
+        """RPC method to run a check on a domain directly."""
+        clean = sanitize_domain(domain)
+        report = await self.engine.check_all(clean)
+        return {
+            "domain": report.domain,
+            "elapsed_seconds": round(report.elapsed_seconds, 3),
+            "school_summary": {
+                "blocked": report.school_blocked_count,
+                "allowed": report.school_allowed_count,
+            },
+            "dns_summary": {
+                "blocked": report.dns_blocked_count,
+                "allowed": report.dns_allowed_count,
+            },
+            "country_summary": {
+                "blocked": report.country_blocked_count,
+                "allowed": report.country_allowed_count,
+            },
+            "results": {
+                name: {
+                    "status": res.status.name,
+                    "category": res.category,
+                    "details": res.details,
+                    "latency": round(res.latency, 3),
+                }
+                for name, res in report.results.items()
+            },
+        }
 
     def format_help_for_context(self, ctx: commands.Context) -> str:
         pre_processed = super().format_help_for_context(ctx)
