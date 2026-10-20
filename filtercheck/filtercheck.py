@@ -148,8 +148,8 @@ class FilterCheck(commands.Cog):
 
         try:
             report = await self.engine.check_all(clean)
-            embed = build_school_embed(report)
-            view = FilterCheckView(report=report, author_id=interaction.user.id)
+            embed = build_overview_embed(report)
+            view = FilterCheckView(report=report, author_id=interaction.user.id, current_page="overview")
             await interaction.followup.send(embed=embed, view=view, ephemeral=ephemeral)
         except Exception as exc:
             log.exception("Error executing /check domain: %s", exc)
@@ -174,8 +174,8 @@ class FilterCheck(commands.Cog):
         async with ctx.typing():
             try:
                 report = await self.engine.check_all(clean)
-                embed = build_school_embed(report)
-                view = FilterCheckView(report=report, author_id=ctx.author.id)
+                embed = build_overview_embed(report)
+                view = FilterCheckView(report=report, author_id=ctx.author.id, current_page="overview")
                 await ctx.send(embed=embed, view=view)
             except Exception as exc:
                 log.exception("Error executing prefix check domain: %s", exc)

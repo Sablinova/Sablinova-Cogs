@@ -184,12 +184,34 @@ def build_overview_embed(report: DomainCheckReport) -> discord.Embed:
 
 
 class FilterCheckView(discord.ui.View):
-    """Interactive navigation view toggling between School, DNS, Country, and Overview embeds."""
+    """Interactive navigation view toggling between Overview, School, DNS, and Country embeds."""
 
-    def __init__(self, report: DomainCheckReport, author_id: int, timeout: float = 180.0) -> None:
+    def __init__(
+        self,
+        report: DomainCheckReport,
+        author_id: int,
+        current_page: str = "overview",
+        timeout: float = 180.0,
+    ) -> None:
         super().__init__(timeout=timeout)
         self.report = report
         self.author_id = author_id
+        self.current_page = current_page
+        self._update_button_styles()
+
+    def _update_button_styles(self) -> None:
+        self.btn_overview.style = (
+            discord.ButtonStyle.primary if self.current_page == "overview" else discord.ButtonStyle.secondary
+        )
+        self.btn_school.style = (
+            discord.ButtonStyle.primary if self.current_page == "school" else discord.ButtonStyle.secondary
+        )
+        self.btn_dns.style = (
+            discord.ButtonStyle.primary if self.current_page == "dns" else discord.ButtonStyle.secondary
+        )
+        self.btn_country.style = (
+            discord.ButtonStyle.primary if self.current_page == "country" else discord.ButtonStyle.secondary
+        )
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author_id:
@@ -199,22 +221,30 @@ class FilterCheckView(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(label="School Filters", style=discord.ButtonStyle.primary, emoji="🏫", row=0)
+    @discord.ui.button(label="Overview", style=discord.ButtonStyle.primary, emoji="📊", row=0)
+    async def btn_overview(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        self.current_page = "overview"
+        self._update_button_styles()
+        embed = build_overview_embed(self.report)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="School Filters", style=discord.ButtonStyle.secondary, emoji="🏫", row=0)
     async def btn_school(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        self.current_page = "school"
+        self._update_button_styles()
         embed = build_school_embed(self.report)
         await interaction.response.edit_message(embed=embed, view=self)
 
     @discord.ui.button(label="DNS Resolvers", style=discord.ButtonStyle.secondary, emoji="🛡️", row=0)
     async def btn_dns(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        self.current_page = "dns"
+        self._update_button_styles()
         embed = build_dns_embed(self.report)
         await interaction.response.edit_message(embed=embed, view=self)
 
     @discord.ui.button(label="Country & ISP", style=discord.ButtonStyle.secondary, emoji="🌍", row=0)
     async def btn_country(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        self.current_page = "country"
+        self._update_button_styles()
         embed = build_country_embed(self.report)
-        await interaction.response.edit_message(embed=embed, view=self)
-
-    @discord.ui.button(label="Overview", style=discord.ButtonStyle.success, emoji="📊", row=0)
-    async def btn_overview(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        embed = build_overview_embed(self.report)
         await interaction.response.edit_message(embed=embed, view=self)

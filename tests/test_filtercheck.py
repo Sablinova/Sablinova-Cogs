@@ -132,6 +132,13 @@ async def test_view_interaction_check():
     report = DomainCheckReport(domain="test.com")
     view = FilterCheckView(report=report, author_id=12345)
 
+    assert view.current_page == "overview"
+    import discord
+    assert view.btn_overview.style == discord.ButtonStyle.primary
+    assert view.btn_school.style == discord.ButtonStyle.secondary
+    assert view.btn_dns.style == discord.ButtonStyle.secondary
+    assert view.btn_country.style == discord.ButtonStyle.secondary
+
     interaction_author = MagicMock()
     interaction_author.user.id = 12345
     assert await view.interaction_check(interaction_author) is True
