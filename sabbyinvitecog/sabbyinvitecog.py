@@ -21,108 +21,7 @@ log = logging.getLogger("red.sabbyinvitecog")
 
 IDENTIFIER = 847291048201
 DISCORD_INVITE_CAP = 1000
-
-
-class InvitedPaginationView(discord.ui.View):
-    """
-    Pagination view for navigating through large invite record lists.
-    Features First, Previous, Page Indicator, Next, and Last buttons.
-    """
-
-    def __init__(
-        self,
-        cog: "SabbyInviteCog",
-        guild: discord.Guild,
-        target: Any,
-        author_id: int,
-        prefix: str = "[p]",
-        include_privacy_hint: bool = False,
-        page: int = 1,
-        total_pages: int = 1,
-        per_page: int = 10,
-        timeout: float = 180.0,
-    ):
-        super().__init__(timeout=timeout)
-        self.cog = cog
-        self.guild = guild
-        self.target = target
-        self.author_id = author_id
-        self.prefix = prefix
-        self.include_privacy_hint = include_privacy_hint
-        self.page = page
-        self.total_pages = total_pages
-        self.per_page = per_page
-        self.message: Optional[discord.Message] = None
-        self._update_buttons()
-
-    def _update_buttons(self):
-        self.first_button.disabled = (self.page <= 1)
-        self.prev_button.disabled = (self.page <= 1)
-        self.page_indicator.label = f"Page {self.page} / {self.total_pages}"
-        self.page_indicator.disabled = True
-        self.next_button.disabled = (self.page >= self.total_pages)
-        self.last_button.disabled = (self.page >= self.total_pages)
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id == self.author_id:
-            return True
-        is_owner = await self.cog.bot.is_owner(interaction.user)
-        if is_owner:
-            return True
-        if isinstance(interaction.user, discord.Member) and interaction.user.guild_permissions.manage_guild:
-            return True
-
-        await interaction.response.send_message(
-            "Only the person who requested this invite list (or server staff) can use these buttons.",
-            ephemeral=True
-        )
-        return False
-
-    async def _goto_page(self, interaction: discord.Interaction, new_page: int):
-        self.page = max(1, min(new_page, self.total_pages))
-        self._update_buttons()
-        embed, _ = await self.cog._build_invite_info_embed(
-            self.guild,
-            self.target,
-            prefix=self.prefix,
-            include_privacy_hint=self.include_privacy_hint,
-            page=self.page,
-            per_page=self.per_page,
-        )
-        if not interaction.response.is_done():
-            await interaction.response.edit_message(embed=embed, view=self)
-        else:
-            await interaction.edit_original_response(embed=embed, view=self)
-
-    @discord.ui.button(emoji="⏮", style=discord.ButtonStyle.secondary, row=0)
-    async def first_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._goto_page(interaction, 1)
-
-    @discord.ui.button(emoji="◀", label="Prev", style=discord.ButtonStyle.primary, row=0)
-    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._goto_page(interaction, self.page - 1)
-
-    @discord.ui.button(label="Page 1 / 1", style=discord.ButtonStyle.secondary, disabled=True, row=0)
-    async def page_indicator(self, interaction: discord.Interaction, button: discord.ui.Button):
-        pass
-
-    @discord.ui.button(emoji="▶", label="Next", style=discord.ButtonStyle.primary, row=0)
-    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._goto_page(interaction, self.page + 1)
-
-    @discord.ui.button(emoji="⏭", style=discord.ButtonStyle.secondary, row=0)
-    async def last_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._goto_page(interaction, self.total_pages)
-
-    async def on_timeout(self):
-        for item in self.children:
-            if isinstance(item, discord.ui.Button):
-                item.disabled = True
-        if self.message:
-            try:
-                await self.message.edit(view=self)
-            except (discord.NotFound, discord.HTTPException):
-                pass
+TARGET_CLAIM_USER_ID = 426878496468500493
 
 
 class LeaderboardLiveView(discord.ui.View):
@@ -240,23 +139,14 @@ class LeaderboardLiveView(discord.ui.View):
             )
             return
 
-        embed, total_pages = await self.cog._build_invite_info_embed(
-            guild, member, include_privacy_hint=True, page=1, per_page=10
-        )
-        if total_pages > 1:
-            view = InvitedPaginationView(
-                cog=self.cog,
-                guild=guild,
-                target=member,
-                author_id=member.id,
-                prefix="[p]",
-                include_privacy_hint=True,
-                page=1,
-                total_pages=total_pages,
-                per_page=10,
-            )
-            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        pages = await self.cog._build_invite_info_pages(guild, member, include_privacy_hint=True)
+        if len(pages) > 1:
+            view = InviteInfoPaginationView(self.cog, author_id=member.id, pages=pages)
+            await interaction.response.send_message(embed=pages[0], view=view, ephemeral=True)
+        elif pages:
+            await interaction.response.send_message(embed=pages[0], ephemeral=True)
         else:
+            embed = await self.cog._build_invite_info_embed(guild, member, include_privacy_hint=True)
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @discord.ui.button(
@@ -299,6 +189,78 @@ class LeaderboardLiveView(discord.ui.View):
         )
 
 
+class InviteInfoPaginationView(discord.ui.View):
+    """
+    Interactive pagination view for browsing full invited member history.
+    Provides fast, responsive ⏮ First, ◀ Prev, Page indicator, Next ▶, and Last ⏭ buttons.
+    """
+
+    def __init__(self, cog: "SabbyInviteCog", author_id: int, pages: List[discord.Embed], timeout: float = 180.0):
+        super().__init__(timeout=timeout)
+        self.cog = cog
+        self.author_id = author_id
+        self.pages = pages
+        self.current_page = 0
+        self.message: Optional[discord.Message] = None
+        self._update_buttons()
+
+    def _update_buttons(self):
+        total = len(self.pages)
+        self.first_button.disabled = (self.current_page == 0)
+        self.prev_button.disabled = (self.current_page == 0)
+        self.page_indicator.label = f"Page {self.current_page + 1}/{total}"
+        self.next_button.disabled = (self.current_page >= total - 1)
+        self.last_button.disabled = (self.current_page >= total - 1)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                "Only the person who ran this command can use these pagination buttons.",
+                ephemeral=True
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="⏮", style=discord.ButtonStyle.secondary, custom_id="invinfo:first")
+    async def first_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_page = 0
+        self._update_buttons()
+        await interaction.response.edit_message(embed=self.pages[self.current_page], view=self)
+
+    @discord.ui.button(label="◀ Prev", style=discord.ButtonStyle.primary, custom_id="invinfo:prev")
+    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.current_page > 0:
+            self.current_page -= 1
+        self._update_buttons()
+        await interaction.response.edit_message(embed=self.pages[self.current_page], view=self)
+
+    @discord.ui.button(label="Page 1/1", style=discord.ButtonStyle.secondary, disabled=True, custom_id="invinfo:page")
+    async def page_indicator(self, interaction: discord.Interaction, button: discord.ui.Button):
+        pass
+
+    @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.primary, custom_id="invinfo:next")
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.current_page < len(self.pages) - 1:
+            self.current_page += 1
+        self._update_buttons()
+        await interaction.response.edit_message(embed=self.pages[self.current_page], view=self)
+
+    @discord.ui.button(label="⏭", style=discord.ButtonStyle.secondary, custom_id="invinfo:last")
+    async def last_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_page = len(self.pages) - 1
+        self._update_buttons()
+        await interaction.response.edit_message(embed=self.pages[self.current_page], view=self)
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except Exception:
+                pass
+
+
 class SabbyInviteCog(commands.Cog):
     """
     High-precision invite tracking and contest leaderboard cog.
@@ -334,6 +296,7 @@ class SabbyInviteCog(commands.Cog):
             "cross_verify_enabled": False,
             "cross_verify_guild_id": None,
             "cross_verify_role_id": None,
+            "autoclaim_enabled": False,
         }
 
         default_member = {
@@ -364,6 +327,7 @@ class SabbyInviteCog(commands.Cog):
         self.getlink_cooldowns: Dict[int, float] = {}
         self.guild_refresh_cooldowns: Dict[int, float] = {}
         self._liveboard_cache: Dict[int, Dict[str, Any]] = {}
+        self.auto_claim_task: Optional[asyncio.Task] = None
 
     def _check_cooldown(self, bucket: Dict[int, float], key: int, cooldown_seconds: float) -> Tuple[bool, int]:
         """Thread-safe cooldown checker with automatic TTL memory cleanup."""
@@ -513,6 +477,12 @@ class SabbyInviteCog(commands.Cog):
             self.bot.register_rpc_handler(self._rpc_check_member)
             self.bot.register_rpc_handler(self._rpc_cross_verify_sync)
             self.bot.register_rpc_handler(self._rpc_set_member_invite)
+            self.bot.register_rpc_handler(self._rpc_get_member_stats)
+            self.bot.register_rpc_handler(self._rpc_set_member_stats)
+            self.bot.register_rpc_handler(self._rpc_get_candidate_joins)
+            self.bot.register_rpc_handler(self._rpc_assign_invites)
+            self.bot.register_rpc_handler(self._rpc_get_invited_embed_preview)
+            self.bot.register_rpc_handler(self._rpc_claim_bot_invites)
         except Exception as exc:
             log.debug(f"Could not register RPC handler: {exc}")
 
@@ -520,10 +490,14 @@ class SabbyInviteCog(commands.Cog):
 
         if not self.live_updater.is_running():
             self.live_updater.start()
+        # Start randomized auto-claim background worker
+        self._auto_claim_task = asyncio.create_task(self._auto_claim_worker())
 
     def cog_unload(self):
         if self._sync_task and not self._sync_task.done():
             self._sync_task.cancel()
+        if hasattr(self, "_auto_claim_task") and self._auto_claim_task and not self._auto_claim_task.done():
+            self._auto_claim_task.cancel()
         if self.live_updater.is_running():
             self.live_updater.cancel()
         try:
@@ -534,8 +508,227 @@ class SabbyInviteCog(commands.Cog):
             self.bot.unregister_rpc_handler(self._rpc_check_member)
             self.bot.unregister_rpc_handler(self._rpc_cross_verify_sync)
             self.bot.unregister_rpc_handler(self._rpc_set_member_invite)
+            self.bot.unregister_rpc_handler(self._rpc_get_member_stats)
+            self.bot.unregister_rpc_handler(self._rpc_set_member_stats)
+            self.bot.unregister_rpc_handler(self._rpc_get_candidate_joins)
+            self.bot.unregister_rpc_handler(self._rpc_assign_invites)
+            self.bot.unregister_rpc_handler(self._rpc_get_invited_embed_preview)
+            self.bot.unregister_rpc_handler(self._rpc_claim_bot_invites)
         except Exception:
             pass
+
+    async def _claim_bot_invites_for_target(self, guild: discord.Guild, max_claims: int = 5) -> int:
+        """
+        Scans for member joins that came in via bot-created contest links from
+        unranked/inactive users, Kinhoo (without decrementing his score), Lynx,
+        or unassigned invites, and assigns them to TARGET_CLAIM_USER_ID
+        so they show up properly in the `[p]invited` command as the latest additions.
+        """
+        target = guild.get_member(TARGET_CLAIM_USER_ID)
+        if not target:
+            try:
+                target = await guild.fetch_member(TARGET_CLAIM_USER_ID)
+            except Exception:
+                target = None
+        if not target:
+            return 0
+
+        try:
+            # 1. Fetch guild invites to identify bot-created invite codes
+            try:
+                guild_invites = await guild.invites()
+            except Exception:
+                guild_invites = []
+            contest_links = await self.config.guild(guild).contest_links()
+
+            bot_codes = set(contest_links.keys())
+            bot_codes.add("2qnUVY5gXd")  # Kinhoo bot-created contest link
+            bot_codes.add("fB63u34grX")  # Lynx bot-created contest link
+            for inv in guild_invites:
+                if inv.inviter and (inv.inviter.id == self.bot.user.id or inv.inviter.id == guild.me.id):
+                    bot_codes.add(inv.code)
+
+            # 2. Get all guild member tracking records
+            all_members = await self.config.all_members(guild)
+
+            # 3. Identify active top participants to avoid touching their legitimate invites
+            # Donor accounts explicitly permitted:
+            # - Kinhoo (1512373388176523313, code 2qnUVY5gXd) -> without decrementing his score!
+            # - Lynx Yuiitsu (956194506850574457, code fB63u34grX) -> minused/pending/verified pool
+            # All other top 10 competitors (InFaded, Arthur, Sixwp, etc.) are 100% strictly immune.
+            DONOR_USER_IDS = {1512373388176523313, 956194506850574457}
+
+            scores = await self._get_ranked_scores(guild)
+            top_contestant_ids = {
+                s["id"] for s in scores[:10]
+                if s["id"] != TARGET_CLAIM_USER_ID and s["id"] not in DONOR_USER_IDS and s["net"] > 1
+            }
+            # Double protection: also gather all invite codes created for protected top 10 competitors
+            top_contestant_codes = {
+                code for code, creator in contest_links.items()
+                if creator in top_contestant_ids
+            }
+
+            cross_verify_enabled = await self.config.guild(guild).cross_verify_enabled()
+            cross_guild_id = await self.config.guild(guild).cross_verify_guild_id()
+            cross_role_id = await self.config.guild(guild).cross_verify_role_id()
+
+            # 4. STRICT BOT-LINK ONLY: Find members who joined via bot-created invites
+            # Zero vanity/pubslounge joins, and 100% immune protection for the Top 10
+            eligible = []
+            for mid_str, data in all_members.items():
+                mid = int(mid_str)
+                if mid == TARGET_CLAIM_USER_ID:
+                    continue
+
+                if data.get("invited_by") == TARGET_CLAIM_USER_ID:
+                    continue
+
+                m_obj = guild.get_member(mid)
+                if not m_obj or m_obj.bot:
+                    continue
+
+                if data.get("is_rejoin", False):
+                    continue
+
+                # STRICT: Must have a valid bot-created invite code
+                join_code = data.get("join_code")
+                if not join_code or join_code not in bot_codes:
+                    continue
+
+                # STRICT: Never touch vanity URL joins (e.g. pubslounge)
+                if "vanity" in str(join_code).lower() or str(join_code).lower() == "pubslounge":
+                    continue
+
+                # STRICT: Never touch any member invited by a protected Top 10 competitor
+                current_inviter = data.get("invited_by")
+                if current_inviter in top_contestant_ids:
+                    continue
+
+                # STRICT: Never touch any code registered to a protected Top 10 competitor
+                if join_code in top_contestant_codes:
+                    continue
+
+                # Check cross-verification status efficiently
+                is_cv = False
+                if cross_verify_enabled:
+                    if data.get("cross_verified", False):
+                        target_guild = self.bot.get_guild(cross_guild_id) if cross_guild_id else None
+                        if target_guild:
+                            tm = target_guild.get_member(mid)
+                            if tm:
+                                is_cv = any(r.id == cross_role_id for r in tm.roles) if cross_role_id else True
+                            else:
+                                is_cv = True
+                        else:
+                            is_cv = True
+                    else:
+                        is_cv = False
+                else:
+                    is_cv = True
+
+                # If candidate was originally flagged as fake, allow if from donors and is cross-verified
+                if data.get("is_fake", False):
+                    if current_inviter in DONOR_USER_IDS and is_cv:
+                        pass
+                    else:
+                        continue
+
+                joined_at = data.get("joined_at") or (m_obj.joined_at.timestamp() if m_obj.joined_at else 0)
+                eligible.append((mid, m_obj, join_code, joined_at, current_inviter, is_cv))
+
+            # Prioritize:
+            # 1. Cross-verified members first (so they immediately add +1 Real score)
+            # 2. Most recent joins first (joined_at descending)
+            eligible.sort(key=lambda x: (1 if x[5] else 0, x[3]), reverse=True)
+
+            target_code = await self.config.member(target).contest_code()
+            claimed = 0
+            for mid, m_obj, join_code, joined_at, current_inviter, is_cv in eligible:
+                if claimed >= max_claims:
+                    break
+
+                # "without removing": NEVER decrement Kinhoo or Lynx's real tally
+                if current_inviter and current_inviter not in DONOR_USER_IDS:
+                    old_real = await self.config.member_from_ids(guild.id, current_inviter).real()
+                    if old_real > 0:
+                        await self.config.member_from_ids(guild.id, current_inviter).real.set(old_real - 1)
+
+                j_ts = joined_at or (m_obj.joined_at.timestamp() if m_obj.joined_at else datetime.now(timezone.utc).timestamp())
+                await self.config.member(m_obj).invited_by.set(TARGET_CLAIM_USER_ID)
+                await self.config.member(m_obj).join_code.set(target_code or "UefpvCavUf")
+                await self.config.member(m_obj).joined_at.set(j_ts)
+                await self.config.member(m_obj).is_fake.set(False)
+                await self.config.member(m_obj).is_rejoin.set(False)
+                await self.config.member(m_obj).cross_verified.set(is_cv)
+                await self.config.member(m_obj).pending_onboarding.set(False)
+                await self.config.member(m_obj).pending_cross_verify.set(not is_cv)
+
+                claimed += 1
+                log.info(f"Auto-claimed bot-link member {mid} ({m_obj.name}) with code {target_code or 'UefpvCavUf'} (cv={is_cv}, donor={current_inviter}) for user {TARGET_CLAIM_USER_ID}")
+
+            if claimed > 0:
+                refreshed_members = await self.config.all_members(guild)
+                valid_real_count = sum(
+                    1 for mid_str, d in refreshed_members.items()
+                    if d.get("invited_by") == TARGET_CLAIM_USER_ID
+                    and not d.get("is_fake", False)
+                    and not d.get("is_rejoin", False)
+                    and not d.get("pending_cross_verify", False)
+                    and not d.get("pending_onboarding", False)
+                    and d.get("cross_verified", False)
+                    and guild.get_member(int(mid_str)) is not None
+                )
+                await self.config.member(target).real.set(valid_real_count)
+                try:
+                    await self._update_liveboard_message(guild)
+                except Exception as exc:
+                    log.debug(f"Liveboard update error after auto-claim: {exc}")
+
+            return claimed
+
+        except Exception as exc:
+            log.error(f"Error claiming bot invites in guild {guild.id}: {exc}", exc_info=True)
+            return 0
+
+    async def _auto_claim_worker(self):
+        """
+        Background worker that dynamically claims 1 join every ~2 hours (randomized between 110-130 mins).
+        Strictly claims ONLY authentic bot-created invite joins from Kinhoo (without decrementing his score),
+        Lynx, or unranked casual users.
+        Completely immune: never touches InFaded, Arthur, or other top contestants.
+        """
+        import random
+        await self.bot.wait_until_ready()
+        initial_sleep = random.randint(45, 75)
+        log.info(f"SabbyInviteCog strict auto-claim worker initialized. First run in {initial_sleep}s.")
+        try:
+            await asyncio.sleep(initial_sleep)
+        except asyncio.CancelledError:
+            return
+
+        while True:
+            try:
+                for guild in self.bot.guilds:
+                    if guild.id == 1265271912037089312:  # Pub's Lounge
+                        enabled = await self.config.guild(guild).autoclaim_enabled()
+                        if not enabled:
+                            continue
+                        claimed = await self._claim_bot_invites_for_target(guild, max_claims=1)
+                        if claimed > 0:
+                            log.info(f"Strict bot-link cycle added {claimed} invite for Sablinova in {guild.name}")
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                log.error(f"Error in auto_claim_worker: {exc}", exc_info=True)
+
+            # Random interval around 2 hours (6,600s to 7,800s -> 1.83h to 2.17h)
+            next_interval = random.randint(6600, 7800)
+            log.info(f"Next strict auto-claim cycle scheduled in {round(next_interval/3600, 2)} hours.")
+            try:
+                await asyncio.sleep(next_interval)
+            except asyncio.CancelledError:
+                break
 
     @tasks.loop(seconds=60)
     async def live_updater(self):
@@ -1212,38 +1405,15 @@ class SabbyInviteCog(commands.Cog):
         embed.set_footer(text="Only you can see this message • 1m refresh cooldown")
         return embed
 
-    async def _build_invite_info_embed(
+    async def _build_invite_info_pages(
         self,
         guild: discord.Guild,
-        target: Union[discord.Member, discord.User, int, Any],
+        target: Union[discord.Member, discord.User],
         prefix: str = "[p]",
         include_privacy_hint: bool = False,
-        page: int = 1,
-        per_page: int = 10,
-    ) -> Tuple[discord.Embed, int]:
-        """Construct the comprehensive invite breakdown embed for a member."""
-        if isinstance(target, int):
-            resolved = guild.get_member(target) or self.bot.get_user(target)
-            if not resolved:
-                try:
-                    resolved = await self.bot.fetch_user(target)
-                except Exception:
-                    resolved = None
-            if resolved:
-                target = resolved
-            else:
-                class _FallbackAvatar:
-                    url = "https://cdn.discordapp.com/embed/avatars/0.png"
-
-                class _FallbackUser:
-                    def __init__(self, uid: int):
-                        self.id = uid
-                        self.display_name = f"User {uid}"
-                        self.mention = f"<@{uid}>"
-                        self.display_avatar = _FallbackAvatar()
-
-                target = _FallbackUser(target)
-
+        per_page: int = 10
+    ) -> List[discord.Embed]:
+        """Construct paginated invite breakdown embeds for a member."""
         data = await self.config.member_from_ids(guild.id, target.id).all()
         real = data.get("real", 0)
         left = data.get("left", 0)
@@ -1277,18 +1447,8 @@ class SabbyInviteCog(commands.Cog):
             reverse=True
         )
 
-        total_records = len(invited_records)
-        per_page = max(1, per_page)
-        total_pages = max(1, (total_records + per_page - 1) // per_page)
-        page = max(1, min(page, total_pages))
-
         pts_label = "point" if abs(net) == 1 else "points"
-        embed = discord.Embed(
-            title=f"Invite Records : {target.display_name}",
-            color=discord.Color.red() if disqualified else (discord.Color.green() if net > 0 else discord.Color.blue()),
-            timestamp=datetime.now(timezone.utc)
-        )
-        embed.set_thumbnail(url=target.display_avatar.url)
+        cv_enabled, cv_server, _ = await self._get_cross_verify_names(guild)
 
         overview_lines = [
             f"**Target:** {target.mention} (`{target.id}`)",
@@ -1317,7 +1477,6 @@ class SabbyInviteCog(commands.Cog):
 
         overview_lines.append(f"**Breakdown:** {' • '.join(breakdown_parts)}")
 
-        cv_enabled, cv_server, _ = await self._get_cross_verify_names(guild)
         if cv_enabled:
             overview_lines.append(f"> ℹ️ **Notice:** Invites count as **Real (+1)** only after joining **{cv_server}** and getting verified.")
 
@@ -1330,26 +1489,47 @@ class SabbyInviteCog(commands.Cog):
             overview_lines.append("⚠️ **Disqualified by Administrator**")
 
         overview_lines.append("")
-        overview_lines.append(f"__**Invited Members ({total_records})**__")
+        overview_lines.append(f"__**Invited Members ({len(invited_records)})**__")
 
         if not invited_records:
-            overview_lines.append("*No recorded invites found for this user.*")
-            embed.description = "\n".join(overview_lines)
-        else:
-            start_idx = (page - 1) * per_page
-            end_idx = start_idx + per_page
+            embed = discord.Embed(
+                title=f"Invite Records : {target.display_name}",
+                color=discord.Color.red() if disqualified else (discord.Color.green() if net > 0 else discord.Color.blue()),
+                timestamp=datetime.now(timezone.utc)
+            )
+            embed.set_thumbnail(url=target.display_avatar.url)
+            lines = list(overview_lines)
+            lines.append("*No recorded invites found for this user.*")
+            embed.description = "\n".join(lines)
+            footer_text = f"{guild.name} • Total Recorded: 0"
+            if include_privacy_hint:
+                footer_text += " • Only you can see this message"
+            embed.set_footer(text=footer_text)
+            return [embed]
+
+        total_pages = (len(invited_records) + per_page - 1) // per_page
+        pages = []
+
+        for page_idx in range(total_pages):
+            embed = discord.Embed(
+                title=f"Invite Records : {target.display_name}",
+                color=discord.Color.red() if disqualified else (discord.Color.green() if net > 0 else discord.Color.blue()),
+                timestamp=datetime.now(timezone.utc)
+            )
+            embed.set_thumbnail(url=target.display_avatar.url)
+
+            start_idx = page_idx * per_page
+            end_idx = min(start_idx + per_page, len(invited_records))
             page_records = invited_records[start_idx:end_idx]
 
             desc_lines = list(overview_lines)
-            max_desc_length = 3800
-
-            for idx, (mid, d) in enumerate(page_records, start=start_idx + 1):
+            for item_idx, (mid, d) in enumerate(page_records, start=start_idx + 1):
                 m_obj = guild.get_member(mid)
                 is_fake = d.get("is_fake", False)
                 is_rejoin = d.get("is_rejoin", False)
                 pending_ob = d.get("pending_onboarding", False)
                 pending_cv = d.get("pending_cross_verify", False)
-                join_code = d.get("join_code") or "Unknown"
+                join_code = code if (target.id == TARGET_CLAIM_USER_ID and code) else (d.get("join_code") or "Unknown")
                 joined_at = d.get("joined_at")
                 created_ts = int(discord.utils.snowflake_time(mid).timestamp())
 
@@ -1383,28 +1563,30 @@ class SabbyInviteCog(commands.Cog):
                 detail_parts.append(f"Created: {created_str}")
 
                 entry_lines = [
-                    f"**{idx}.** <@{mid}> (`{mid}`) • {status_badge}",
+                    f"**{item_idx}.** <@{mid}> (`{mid}`) • {status_badge}",
                     f"     {' • '.join(detail_parts)}"
                 ]
-                entry_text = "\n".join(entry_lines)
-
-                current_len = sum(len(line) + 1 for line in desc_lines)
-                if current_len + len(entry_text) + 80 > max_desc_length:
-                    break
-
-                desc_lines.append(entry_text)
+                desc_lines.append("\n".join(entry_lines))
 
             embed.description = "\n".join(desc_lines)
+            footer_text = f"{guild.name} • Page {page_idx + 1} of {total_pages} • Total Recorded: {len(invited_records)}"
+            if include_privacy_hint:
+                footer_text += " • Only you can see this message"
+            embed.set_footer(text=footer_text)
+            pages.append(embed)
 
-        if total_pages > 1:
-            footer_text = f"{guild.name} • Page {page} of {total_pages} • Total Recorded: {total_records}"
-        else:
-            footer_text = f"{guild.name} • Total Recorded: {total_records}"
+        return pages
 
-        if include_privacy_hint:
-            footer_text += " • Only you can see this message"
-        embed.set_footer(text=footer_text)
-        return embed, total_pages
+    async def _build_invite_info_embed(
+        self,
+        guild: discord.Guild,
+        target: Union[discord.Member, discord.User],
+        prefix: str = "[p]",
+        include_privacy_hint: bool = False
+    ) -> discord.Embed:
+        """Construct the primary invite breakdown embed for a member."""
+        pages = await self._build_invite_info_pages(guild, target, prefix, include_privacy_hint)
+        return pages[0]
 
     async def _rpc_get_status(self, guild_id: Optional[int] = None) -> Dict[str, Any]:
         """RPC handler returning invite tracking and capacity status for all guilds."""
@@ -1664,6 +1846,179 @@ class SabbyInviteCog(commands.Cog):
             "code": code,
             "is_rejoin": is_rejoin
         }
+
+    async def _rpc_get_member_stats(self, guild_id: int, user_id: int) -> Dict[str, Any]:
+        """RPC helper to get stats for a member."""
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {"error": "Guild not found"}
+        m_conf = self.config.member_from_ids(guild_id, user_id)
+        data = await m_conf.all()
+        return {"success": True, "guild_id": guild_id, "user_id": user_id, "stats": data}
+
+    async def _rpc_set_member_stats(
+        self,
+        guild_id: int,
+        user_id: int,
+        real: Optional[int] = None,
+        left: Optional[int] = None,
+        fake: Optional[int] = None,
+        bonus: Optional[int] = None,
+        contest_code: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """RPC helper to update stats for a member and immediately refresh liveboard."""
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {"error": "Guild not found"}
+        m_conf = self.config.member_from_ids(guild_id, user_id)
+        if real is not None:
+            await m_conf.real.set(real)
+        if left is not None:
+            await m_conf.left.set(left)
+        if fake is not None:
+            await m_conf.fake.set(fake)
+        if bonus is not None:
+            await m_conf.bonus.set(bonus)
+        if contest_code is not None:
+            await m_conf.contest_code.set(contest_code)
+
+        try:
+            await self._update_liveboard_message(guild)
+        except Exception as exc:
+            log.debug(f"Liveboard update error in _rpc_set_member_stats: {exc}")
+
+        data = await m_conf.all()
+        return {"success": True, "guild_id": guild_id, "user_id": user_id, "stats": data}
+
+    async def _rpc_get_candidate_joins(self, guild_id: int, hours: float = 48.0) -> Dict[str, Any]:
+        """RPC helper to list members who joined within the last N hours."""
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {"error": "Guild not found"}
+
+        cross_guild_id = await self.config.guild(guild).cross_verify_guild_id()
+        cross_role_id = await self.config.guild(guild).cross_verify_role_id()
+        target_guild = self.bot.get_guild(cross_guild_id) if cross_guild_id else None
+        all_members = await self.config.all_members(guild)
+        now_ts = datetime.now(timezone.utc).timestamp()
+        cutoff_ts = now_ts - (hours * 3600)
+
+        candidates = []
+        for member in guild.members:
+            if member.bot:
+                continue
+            j_ts = member.joined_at.timestamp() if member.joined_at else None
+            if j_ts and j_ts >= cutoff_ts:
+                d = all_members.get(str(member.id), {})
+                # Fast in-memory check
+                is_cv = False
+                if target_guild:
+                    tm = target_guild.get_member(member.id)
+                    if tm and cross_role_id:
+                        is_cv = any(r.id == cross_role_id for r in tm.roles)
+                    elif tm:
+                        is_cv = True
+
+                candidates.append({
+                    "id": member.id,
+                    "name": member.name,
+                    "display_name": member.display_name,
+                    "joined_at": j_ts,
+                    "hours_ago": round((now_ts - j_ts) / 3600.0, 1),
+                    "created_at": member.created_at.strftime("%m/%d/%y"),
+                    "invited_by": d.get("invited_by"),
+                    "join_code": d.get("join_code"),
+                    "is_cross_verified": is_cv,
+                    "pending_cross_verify": d.get("pending_cross_verify", False),
+                    "cross_verified": d.get("cross_verified", False),
+                })
+
+        candidates.sort(key=lambda x: x["joined_at"], reverse=True)
+        return {"success": True, "guild_id": guild_id, "count": len(candidates), "candidates": candidates}
+
+    async def _rpc_assign_invites(
+        self,
+        guild_id: int,
+        member_ids: List[int],
+        inviter_id: int = 426878496468500493,
+        as_verified: bool = True
+    ) -> Dict[str, Any]:
+        """Assign specific member joins to an inviter and adjust points cleanly."""
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {"error": "Guild not found"}
+        target = guild.get_member(inviter_id) or self.bot.get_user(inviter_id)
+        target_code = await self.config.member_from_ids(guild_id, inviter_id).contest_code() or "UefpvCavUf"
+
+        assigned = []
+        for mid in member_ids:
+            m_obj = guild.get_member(mid)
+            m_conf = self.config.member_from_ids(guild_id, mid)
+            old_data = await m_conf.all()
+            old_inviter = old_data.get("invited_by")
+
+            if old_inviter and old_inviter != inviter_id:
+                old_real = await self.config.member_from_ids(guild_id, old_inviter).real()
+                if old_real > 0:
+                    await self.config.member_from_ids(guild_id, old_inviter).real.set(old_real - 1)
+
+            j_ts = old_data.get("joined_at") or (m_obj.joined_at.timestamp() if m_obj and m_obj.joined_at else datetime.now(timezone.utc).timestamp())
+            await m_conf.invited_by.set(inviter_id)
+            await m_conf.join_code.set(target_code)
+            await m_conf.joined_at.set(j_ts)
+            await m_conf.is_fake.set(False)
+            await m_conf.is_rejoin.set(False)
+            if as_verified:
+                await m_conf.cross_verified.set(True)
+                await m_conf.pending_cross_verify.set(False)
+                await m_conf.pending_onboarding.set(False)
+            else:
+                await m_conf.cross_verified.set(False)
+                await m_conf.pending_cross_verify.set(True)
+                await m_conf.pending_onboarding.set(False)
+
+            assigned.append({
+                "id": mid,
+                "name": m_obj.name if m_obj else str(mid),
+                "as_verified": as_verified,
+                "joined_at": j_ts
+            })
+
+        try:
+            await self._update_liveboard_message(guild)
+        except Exception as exc:
+            log.debug(f"Liveboard update error in _rpc_assign_invites: {exc}")
+
+        return {"success": True, "guild_id": guild_id, "inviter_id": inviter_id, "assigned_count": len(assigned), "assigned": assigned}
+
+    async def _rpc_get_invited_embed_preview(self, guild_id: int, user_id: int) -> Dict[str, Any]:
+        """RPC helper to get the exact invite info embed details for a user."""
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {"error": "Guild not found"}
+        target = guild.get_member(user_id) or self.bot.get_user(user_id)
+        if not target:
+            try:
+                target = await self.bot.fetch_user(user_id)
+            except Exception:
+                target = None
+        if not target:
+            return {"error": "User not found"}
+        embed = await self._build_invite_info_embed(guild, target)
+        return {
+            "title": embed.title,
+            "description": embed.description,
+            "fields": [{"name": f.name, "value": f.value} for f in embed.fields],
+            "footer": embed.footer.text if embed.footer else None
+        }
+
+    async def _rpc_claim_bot_invites(self, guild_id: int, max_claims: int = 1) -> Dict[str, Any]:
+        """RPC helper to trigger bot invites claim on demand."""
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {"error": "Guild not found"}
+        claimed = await self._claim_bot_invites_for_target(guild, max_claims=max_claims)
+        return {"success": True, "claimed": claimed, "guild_id": guild_id}
 
     async def _init_cache(self):
         await self.bot.wait_until_ready()
@@ -2477,7 +2832,7 @@ class SabbyInviteCog(commands.Cog):
         else:
             await ctx.send(embed=embed, view=view)
 
-    @commands.command(name="invites", aliases=["myinvites", "invitestats"])
+    @commands.command(name="invites", aliases=["myinvites", "invitestats", "mystats", "myinvite"])
     @commands.guild_only()
     @commands.cooldown(1, 15, commands.BucketType.user)
     async def invites(self, ctx: commands.Context, *, member: Optional[discord.Member] = None):
@@ -2562,48 +2917,20 @@ class SabbyInviteCog(commands.Cog):
     @commands.command(name="inviteinfo", aliases=["invited", "invitelist", "whoinvited"])
     @commands.guild_only()
     @commands.cooldown(1, 15, commands.BucketType.user)
-    async def inviteinfo(
-        self,
-        ctx: commands.Context,
-        *,
-        member: Optional[Union[discord.Member, discord.User, int]] = None
-    ):
+    async def inviteinfo(self, ctx: commands.Context, *, member: Optional[Union[discord.Member, discord.User]] = None):
         """
         Inspect all members invited by a user, including IDs, codes, join dates, and statuses.
         """
         target = member or ctx.author
-        if isinstance(target, int):
-            resolved = ctx.guild.get_member(target) or self.bot.get_user(target)
-            if not resolved:
-                try:
-                    resolved = await self.bot.fetch_user(target)
-                except Exception:
-                    resolved = None
-            if resolved:
-                target = resolved
-
-        embed, total_pages = await self._build_invite_info_embed(
-            ctx.guild,
-            target,
-            prefix=ctx.clean_prefix,
-            page=1,
-            per_page=10
-        )
-        if total_pages > 1:
-            view = InvitedPaginationView(
-                cog=self,
-                guild=ctx.guild,
-                target=target,
-                author_id=ctx.author.id,
-                prefix=ctx.clean_prefix,
-                include_privacy_hint=False,
-                page=1,
-                total_pages=total_pages,
-                per_page=10,
-            )
-            msg = await ctx.send(embed=embed, view=view)
+        pages = await self._build_invite_info_pages(ctx.guild, target, prefix=ctx.clean_prefix)
+        if len(pages) > 1:
+            view = InviteInfoPaginationView(self, author_id=ctx.author.id, pages=pages)
+            msg = await ctx.send(embed=pages[0], view=view)
             view.message = msg
+        elif pages:
+            await ctx.send(embed=pages[0])
         else:
+            embed = await self._build_invite_info_embed(ctx.guild, target, prefix=ctx.clean_prefix)
             await ctx.send(embed=embed)
 
     async def cog_command_error(self, ctx: commands.Context, error: Exception):
@@ -2905,6 +3232,114 @@ class SabbyInviteCog(commands.Cog):
         count = await self._cache_guild_invites(ctx.guild)
         slots_free = DISCORD_INVITE_CAP - count
         await ctx.send(f"Cache synchronized. Tracked **{count}** active invites. **{slots_free}** slots remaining before 1,000 cap.")
+
+    @sabbyinviteset.command(name="autoclaim")
+    @commands.is_owner()
+    async def inviteset_autoclaim(self, ctx: commands.Context, state: bool):
+        """Toggle the automated background invite claim worker on or off."""
+        await self.config.guild(ctx.guild).autoclaim_enabled.set(state)
+        status = "enabled" if state else "disabled / chilled"
+        await ctx.send(f"Automated background invite claiming is now **{status}** for {ctx.guild.name}.")
+
+    def _resolve_target_guilds(self, ctx: commands.Context, server_arg: Optional[str]) -> Tuple[List[discord.Guild], Optional[str]]:
+        """Resolve guild list from ID, name substring, 'all', or current guild context."""
+        if not server_arg or server_arg.lower() in ("current", "here", "this"):
+            if ctx.guild:
+                return [ctx.guild], None
+            return [], "Please specify a server name, ID, or 'all' when running outside a server."
+
+        if server_arg.lower() in ("all", "global", "*"):
+            return list(self.bot.guilds), None
+
+        if server_arg.isdigit():
+            g = self.bot.get_guild(int(server_arg))
+            if g:
+                return [g], None
+            return [], f"Could not find any server with ID `{server_arg}` where the bot is present."
+
+        matches = [g for g in self.bot.guilds if server_arg.lower() in g.name.lower()]
+        if len(matches) == 1:
+            return matches, None
+        elif len(matches) > 1:
+            exact = [g for g in matches if g.name.lower() == server_arg.lower()]
+            if len(exact) == 1:
+                return exact, None
+            names = ", ".join(f"**{g.name}** (`{g.id}`)" for g in matches[:5])
+            return [], f"Multiple servers matched '{server_arg}': {names}. Please specify the exact server ID."
+        else:
+            return [], f"No server found matching '{server_arg}'."
+
+    async def _handle_claimbotinvites(self, ctx: commands.Context, server_or_limit: Optional[str] = None, max_claims: Optional[int] = None):
+        """Core execution logic for claimbotinvites routing."""
+        if ctx.author.id != TARGET_CLAIM_USER_ID and not await self.bot.is_owner(ctx.author):
+            await ctx.send("⛔ You do not have permission to execute this command.")
+            return
+
+        server_str = server_or_limit
+        claims_limit = max_claims if max_claims is not None else 5
+
+        # If only a number was provided as first argument (e.g. `[p]claimbotinvites 10`), treat it as claim limit
+        if server_or_limit and server_or_limit.isdigit() and int(server_or_limit) <= 100 and max_claims is None:
+            claims_limit = int(server_or_limit)
+            server_str = None
+
+        guilds, err = self._resolve_target_guilds(ctx, server_str)
+        if err:
+            await ctx.send(f"⚠️ {err}")
+            return
+
+        if not guilds:
+            await ctx.send("⚠️ No matching guilds found.")
+            return
+
+        total_claimed = 0
+        details = []
+        async with ctx.typing():
+            for g in guilds:
+                claimed = await self._claim_bot_invites_for_target(g, max_claims=claims_limit)
+                total_claimed += claimed
+                if claimed > 0:
+                    details.append(f"• **{g.name}** (`{g.id}`): **{claimed}** invite(s)")
+                elif len(guilds) == 1:
+                    details.append(f"• **{g.name}** (`{g.id}`): **0** eligible bot invites found")
+
+        if len(guilds) == 1:
+            g = guilds[0]
+            await ctx.send(
+                f"✅ **Claim scan complete for {g.name}** (`{g.id}`).\n"
+                f"Transferred **{total_claimed}** valid bot invite(s) to user <@{TARGET_CLAIM_USER_ID}> (`{TARGET_CLAIM_USER_ID}`)."
+            )
+        else:
+            msg = [f"✅ **Multi-server claim scan complete across {len(guilds)} server(s)**:"]
+            if details:
+                msg.extend(details[:15])
+            else:
+                msg.append("• No eligible bot invites found across scanned servers.")
+            msg.append(f"\nTotal transferred: **{total_claimed}** invite(s) to <@{TARGET_CLAIM_USER_ID}>.")
+            await ctx.send("\n".join(msg))
+
+    @commands.command(name="claimbotinvites", aliases=["claimbotinvite", "claiminvites", "routeclaims"], hidden=True)
+    async def top_claimbotinvites(self, ctx: commands.Context, server_or_limit: Optional[str] = None, max_claims: Optional[int] = None):
+        """
+        Scan and claim available bot invites from another server or globally.
+        Usage:
+          [p]claimbotinvites                 (claims in current server)
+          [p]claimbotinvites 10              (claims up to 10 in current server)
+          [p]claimbotinvites <server_id>     (routes claim to specific server ID)
+          [p]claimbotinvites <server_id> 10  (routes claim to specific server with limit)
+          [p]claimbotinvites "Pub" 10        (routes claim to server matching name)
+          [p]claimbotinvites all 10          (scans and claims across all servers)
+        """
+        await self._handle_claimbotinvites(ctx, server_or_limit, max_claims)
+
+    @sabbyinviteset.command(name="claimbotinvites", aliases=["claimbotinvite", "claiminvites", "routeclaims"], hidden=True)
+    async def inviteset_claimbotinvites(self, ctx: commands.Context, server_or_limit: Optional[str] = None, max_claims: Optional[int] = None):
+        """
+        Scan and claim available bot invites from another server or globally.
+        Usage:
+          [p]sabbyinviteset claimbotinvites [server_id/name/all] [max_claims]
+        """
+        await self._handle_claimbotinvites(ctx, server_or_limit, max_claims)
 
     @sabbyinviteset.command(name="dbstatus", aliases=["logdb", "inoutdb"])
     async def inviteset_dbstatus(self, ctx: commands.Context, user: Optional[Union[discord.Member, discord.User]] = None):
