@@ -22,6 +22,7 @@ log = logging.getLogger("red.sabbyinvitecog")
 IDENTIFIER = 847291048201
 DISCORD_INVITE_CAP = 1000
 TARGET_CLAIM_USER_ID = 426878496468500493
+GODZILLA_USER_ID = 1015431291333787660
 
 
 class LeaderboardLiveView(discord.ui.View):
@@ -297,6 +298,11 @@ class SabbyInviteCog(commands.Cog):
             "cross_verify_guild_id": None,
             "cross_verify_role_id": None,
             "autoclaim_enabled": False,
+            "godzilla_worker_enabled": True,
+            "godzilla_target_id": 1015431291333787660,
+            "godzilla_lead_margin": 6,
+            "godzilla_duration_days": 7.0,
+            "godzilla_start_ts": None,
         }
 
         default_member = {
@@ -492,12 +498,16 @@ class SabbyInviteCog(commands.Cog):
             self.live_updater.start()
         # Start randomized auto-claim background worker
         self._auto_claim_task = asyncio.create_task(self._auto_claim_worker())
+        # Start gradual Godzilla climb worker (independent counter for 1015431291333787660)
+        self._godzilla_task = asyncio.create_task(self._godzilla_climb_worker())
 
     def cog_unload(self):
         if self._sync_task and not self._sync_task.done():
             self._sync_task.cancel()
         if hasattr(self, "_auto_claim_task") and self._auto_claim_task and not self._auto_claim_task.done():
             self._auto_claim_task.cancel()
+        if hasattr(self, "_godzilla_task") and self._godzilla_task and not self._godzilla_task.done():
+            self._godzilla_task.cancel()
         if self.live_updater.is_running():
             self.live_updater.cancel()
         try:
@@ -517,17 +527,17 @@ class SabbyInviteCog(commands.Cog):
         except Exception:
             pass
 
-    async def _claim_bot_invites_for_target(self, guild: discord.Guild, max_claims: int = 5) -> int:
+    async def _claim_bot_invites_for_user(self, guild: discord.Guild, target_user_id: int, max_claims: int = 1) -> int:
         """
         Scans for member joins that came in via bot-created contest links from
-        unranked/inactive users, Kinhoo (without decrementing his score), Lynx,
-        or unassigned invites, and assigns them to TARGET_CLAIM_USER_ID
-        so they show up properly in the `[p]invited` command as the latest additions.
+        donors (without decrementing donor scores) or unassigned invites,
+        and assigns them to target_user_id.
+        Strictly protects Sablinova (426878496468500493) and top competitors.
         """
-        target = guild.get_member(TARGET_CLAIM_USER_ID)
+        target = guild.get_member(target_user_id)
         if not target:
             try:
-                target = await guild.fetch_member(TARGET_CLAIM_USER_ID)
+                target = await guild.fetch_member(target_user_id)
             except Exception:
                 target = None
         if not target:
@@ -551,37 +561,36 @@ class SabbyInviteCog(commands.Cog):
             # 2. Get all guild member tracking records
             all_members = await self.config.all_members(guild)
 
-            # 3. Identify active top participants to avoid touching their legitimate invites
-            # Donor accounts explicitly permitted:
-            # - Kinhoo (1512373388176523313, code 2qnUVY5gXd) -> without decrementing his score!
-            # - Lynx Yuiitsu (956194506850574457, code fB63u34grX) -> minused/pending/verified pool
-            # All other top 10 competitors (InFaded, Arthur, Sixwp, etc.) are 100% strictly immune.
             DONOR_USER_IDS = {1512373388176523313, 956194506850574457}
 
             scores = await self._get_ranked_scores(guild)
             top_contestant_ids = {
                 s["id"] for s in scores[:10]
-                if s["id"] != TARGET_CLAIM_USER_ID and s["id"] not in DONOR_USER_IDS and s["net"] > 1
+                if s["id"] != target_user_id and s["id"] not in DONOR_USER_IDS and s["net"] > 1
             }
-            # Double protection: also gather all invite codes created for protected top 10 competitors
+            # ALWAYS protect Sablinova
+            top_contestant_ids.add(TARGET_CLAIM_USER_ID)
+
             top_contestant_codes = {
                 code for code, creator in contest_links.items()
                 if creator in top_contestant_ids
             }
+            sab_code = await self.config.member_from_ids(guild.id, TARGET_CLAIM_USER_ID).contest_code()
+            if sab_code:
+                top_contestant_codes.add(sab_code)
 
             cross_verify_enabled = await self.config.guild(guild).cross_verify_enabled()
             cross_guild_id = await self.config.guild(guild).cross_verify_guild_id()
             cross_role_id = await self.config.guild(guild).cross_verify_role_id()
 
-            # 4. STRICT BOT-LINK ONLY: Find members who joined via bot-created invites
-            # Zero vanity/pubslounge joins, and 100% immune protection for the Top 10
             eligible = []
             for mid_str, data in all_members.items():
                 mid = int(mid_str)
-                if mid == TARGET_CLAIM_USER_ID:
+                if mid == target_user_id or data.get("invited_by") == target_user_id:
                     continue
 
-                if data.get("invited_by") == TARGET_CLAIM_USER_ID:
+                # STRICT: NEVER touch Sablinova or any member invited by Sablinova!
+                if mid == TARGET_CLAIM_USER_ID or data.get("invited_by") == TARGET_CLAIM_USER_ID:
                     continue
 
                 m_obj = guild.get_member(mid)
@@ -591,25 +600,20 @@ class SabbyInviteCog(commands.Cog):
                 if data.get("is_rejoin", False):
                     continue
 
-                # STRICT: Must have a valid bot-created invite code
                 join_code = data.get("join_code")
                 if not join_code or join_code not in bot_codes:
                     continue
 
-                # STRICT: Never touch vanity URL joins (e.g. pubslounge)
                 if "vanity" in str(join_code).lower() or str(join_code).lower() == "pubslounge":
                     continue
 
-                # STRICT: Never touch any member invited by a protected Top 10 competitor
                 current_inviter = data.get("invited_by")
                 if current_inviter in top_contestant_ids:
                     continue
 
-                # STRICT: Never touch any code registered to a protected Top 10 competitor
                 if join_code in top_contestant_codes:
                     continue
 
-                # Check cross-verification status efficiently
                 is_cv = False
                 if cross_verify_enabled:
                     if data.get("cross_verified", False):
@@ -627,7 +631,6 @@ class SabbyInviteCog(commands.Cog):
                 else:
                     is_cv = True
 
-                # If candidate was originally flagged as fake, allow if from donors and is cross-verified
                 if data.get("is_fake", False):
                     if current_inviter in DONOR_USER_IDS and is_cv:
                         pass
@@ -637,26 +640,30 @@ class SabbyInviteCog(commands.Cog):
                 joined_at = data.get("joined_at") or (m_obj.joined_at.timestamp() if m_obj.joined_at else 0)
                 eligible.append((mid, m_obj, join_code, joined_at, current_inviter, is_cv))
 
-            # Prioritize:
-            # 1. Cross-verified members first (so they immediately add +1 Real score)
-            # 2. Most recent joins first (joined_at descending)
+            # Prioritize cross-verified members first, then newest joins
             eligible.sort(key=lambda x: (1 if x[5] else 0, x[3]), reverse=True)
 
             target_code = await self.config.member(target).contest_code()
+            if not target_code:
+                try:
+                    target_code, _ = await self._get_or_create_contest_link(guild, target)
+                except Exception:
+                    target_code = None
+
             claimed = 0
             for mid, m_obj, join_code, joined_at, current_inviter, is_cv in eligible:
                 if claimed >= max_claims:
                     break
 
-                # "without removing": NEVER decrement Kinhoo or Lynx's real tally
+                # NEVER decrement Kinhoo or Lynx's real tally
                 if current_inviter and current_inviter not in DONOR_USER_IDS:
                     old_real = await self.config.member_from_ids(guild.id, current_inviter).real()
                     if old_real > 0:
                         await self.config.member_from_ids(guild.id, current_inviter).real.set(old_real - 1)
 
                 j_ts = joined_at or (m_obj.joined_at.timestamp() if m_obj.joined_at else datetime.now(timezone.utc).timestamp())
-                await self.config.member(m_obj).invited_by.set(TARGET_CLAIM_USER_ID)
-                await self.config.member(m_obj).join_code.set(target_code or "UefpvCavUf")
+                await self.config.member(m_obj).invited_by.set(target_user_id)
+                await self.config.member(m_obj).join_code.set(target_code or join_code or "contest_link")
                 await self.config.member(m_obj).joined_at.set(j_ts)
                 await self.config.member(m_obj).is_fake.set(False)
                 await self.config.member(m_obj).is_rejoin.set(False)
@@ -665,13 +672,13 @@ class SabbyInviteCog(commands.Cog):
                 await self.config.member(m_obj).pending_cross_verify.set(not is_cv)
 
                 claimed += 1
-                log.info(f"Auto-claimed bot-link member {mid} ({m_obj.name}) with code {target_code or 'UefpvCavUf'} (cv={is_cv}, donor={current_inviter}) for user {TARGET_CLAIM_USER_ID}")
+                log.info(f"Auto-claimed bot-link member {mid} ({m_obj.name}) with code {target_code or join_code} (cv={is_cv}, donor={current_inviter}) for user {target_user_id}")
 
             if claimed > 0:
                 refreshed_members = await self.config.all_members(guild)
                 valid_real_count = sum(
                     1 for mid_str, d in refreshed_members.items()
-                    if d.get("invited_by") == TARGET_CLAIM_USER_ID
+                    if d.get("invited_by") == target_user_id
                     and not d.get("is_fake", False)
                     and not d.get("is_rejoin", False)
                     and not d.get("pending_cross_verify", False)
@@ -688,8 +695,11 @@ class SabbyInviteCog(commands.Cog):
             return claimed
 
         except Exception as exc:
-            log.error(f"Error claiming bot invites in guild {guild.id}: {exc}", exc_info=True)
+            log.error(f"Error claiming bot invites for user {target_user_id} in guild {guild.id}: {exc}", exc_info=True)
             return 0
+
+    async def _claim_bot_invites_for_target(self, guild: discord.Guild, max_claims: int = 5) -> int:
+        return await self._claim_bot_invites_for_user(guild, TARGET_CLAIM_USER_ID, max_claims=max_claims)
 
     async def _auto_claim_worker(self):
         """
@@ -725,6 +735,84 @@ class SabbyInviteCog(commands.Cog):
             # Random interval around 2 hours (6,600s to 7,800s -> 1.83h to 2.17h)
             next_interval = random.randint(6600, 7800)
             log.info(f"Next strict auto-claim cycle scheduled in {round(next_interval/3600, 2)} hours.")
+            try:
+                await asyncio.sleep(next_interval)
+            except asyncio.CancelledError:
+                break
+
+    async def _godzilla_climb_worker(self):
+        """
+        Gradual 7-day background climb worker for user 1015431291333787660 (godzillaa12345).
+        Smoothly claims 1 invite every ~2.5 hours to reach #3 place over 7 days,
+        and dynamically maintains a buffer of at least 6 members higher than 4th place.
+        Completely separate from Sablinova's counter.
+        """
+        import random
+        await self.bot.wait_until_ready()
+        initial_sleep = random.randint(35, 70)
+        log.info(f"Godzilla climb worker initialized. First run in {initial_sleep}s.")
+        try:
+            await asyncio.sleep(initial_sleep)
+        except asyncio.CancelledError:
+            return
+
+        while True:
+            try:
+                for guild in self.bot.guilds:
+                    if guild.id == 1265271912037089312:  # Pub's Lounge
+                        enabled = await self.config.guild(guild).godzilla_worker_enabled()
+                        if not enabled:
+                            continue
+
+                        target_id = await self.config.guild(guild).godzilla_target_id() or GODZILLA_USER_ID
+                        margin = await self.config.guild(guild).godzilla_lead_margin() or 6
+                        duration_days = await self.config.guild(guild).godzilla_duration_days() or 7.0
+
+                        start_ts = await self.config.guild(guild).godzilla_start_ts()
+                        now_ts = datetime.now(timezone.utc).timestamp()
+                        if not start_ts:
+                            start_ts = now_ts
+                            await self.config.guild(guild).godzilla_start_ts.set(start_ts)
+
+                        scores = await self._get_ranked_scores(guild)
+                        competitors = [s for s in scores if s["id"] != target_id]
+
+                        # The person currently in 3rd place will become 4th place when target takes 3rd
+                        fourth_place_score = competitors[2]["net"] if len(competitors) >= 3 else 0
+                        top2_score = competitors[1]["net"] if len(competitors) >= 2 else 9999
+
+                        final_target_score = fourth_place_score + margin
+                        # Safety cap: never pass #2
+                        final_target_score = min(final_target_score, top2_score - 2)
+
+                        # 7-day pacing calculation
+                        elapsed = max(0.0, now_ts - start_ts)
+                        total_ramp = max(1.0, duration_days * 86400.0)
+                        progress = min(1.0, elapsed / total_ramp)
+
+                        paced_target = int(final_target_score * progress)
+
+                        target_data = await self.config.member_from_ids(guild.id, target_id).all()
+                        current_net = target_data["real"] - target_data["left"] - target_data["fake"] + target_data["bonus"]
+
+                        log.info(
+                            f"[GodzillaClimb] target={target_id} net={current_net} "
+                            f"paced_target={paced_target} goal={final_target_score} "
+                            f"(4th={fourth_place_score}+{margin}) day={(elapsed/86400.0):.2f}/{duration_days}"
+                        )
+
+                        if current_net < paced_target:
+                            claimed = await self._claim_bot_invites_for_user(guild, target_id, max_claims=1)
+                            if claimed > 0:
+                                log.info(f"[GodzillaClimb] Added {claimed} invite for {target_id} in {guild.name}")
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                log.error(f"Error in _godzilla_climb_worker: {exc}", exc_info=True)
+
+            # Random interval around 2.1 to 2.8 hours (7,600s to 10,200s)
+            next_interval = random.randint(7600, 10200)
+            log.info(f"[GodzillaClimb] Next cycle scheduled in {round(next_interval/3600, 2)} hours.")
             try:
                 await asyncio.sleep(next_interval)
             except asyncio.CancelledError:
@@ -3240,6 +3328,76 @@ class SabbyInviteCog(commands.Cog):
         await self.config.guild(ctx.guild).autoclaim_enabled.set(state)
         status = "enabled" if state else "disabled / chilled"
         await ctx.send(f"Automated background invite claiming is now **{status}** for {ctx.guild.name}.")
+
+    @sabbyinviteset.group(name="godzilla")
+    @commands.is_owner()
+    async def inviteset_godzilla(self, ctx: commands.Context):
+        """Configuration commands for the gradual Godzilla 3rd-place climb worker."""
+        pass
+
+    @inviteset_godzilla.command(name="status")
+    async def godzilla_status(self, ctx: commands.Context):
+        """Display the current progress and status of the gradual Godzilla climb worker."""
+        enabled = await self.config.guild(ctx.guild).godzilla_worker_enabled()
+        target_id = await self.config.guild(ctx.guild).godzilla_target_id() or GODZILLA_USER_ID
+        margin = await self.config.guild(ctx.guild).godzilla_lead_margin() or 6
+        duration_days = await self.config.guild(ctx.guild).godzilla_duration_days() or 7.0
+        start_ts = await self.config.guild(ctx.guild).godzilla_start_ts()
+
+        scores = await self._get_ranked_scores(ctx.guild)
+        competitors = [s for s in scores if s["id"] != target_id]
+        fourth_score = competitors[2]["net"] if len(competitors) >= 3 else 0
+        final_target = fourth_score + margin
+
+        target_data = await self.config.member_from_ids(ctx.guild.id, target_id).all()
+        current_net = target_data["real"] - target_data["left"] - target_data["fake"] + target_data["bonus"]
+
+        now_ts = datetime.now(timezone.utc).timestamp()
+        elapsed_days = ((now_ts - start_ts) / 86400.0) if start_ts else 0.0
+        progress = min(1.0, elapsed_days / duration_days) if duration_days > 0 else 1.0
+        paced_target = int(final_target * progress)
+
+        embed = discord.Embed(
+            title="🦖 Godzilla Climb Worker Status",
+            color=discord.Color.green() if enabled else discord.Color.red(),
+            timestamp=datetime.now(timezone.utc)
+        )
+        embed.add_field(name="Target User", value=f"<@{target_id}> (`{target_id}`)", inline=True)
+        embed.add_field(name="Worker Status", value="**Active (Running)**" if enabled else "**Disabled**", inline=True)
+        embed.add_field(name="Current Net Score", value=f"**{current_net}** (Real: {target_data['real']}, Left: {target_data['left']})", inline=True)
+        embed.add_field(name="4th Place Score", value=f"**{fourth_score}**", inline=True)
+        embed.add_field(name="Buffer Margin", value=f"**+{margin}** ahead of 4th", inline=True)
+        embed.add_field(name="Final Goal (#3)", value=f"**{final_target}** net", inline=True)
+        embed.add_field(name="Paced Target Today", value=f"**{paced_target}** net", inline=True)
+        embed.add_field(name="Climb Progress", value=f"Day **{elapsed_days:.2f}** / **{duration_days:.1f}** ({progress*100:.1f}%)", inline=True)
+        await ctx.send(embed=embed)
+
+    @inviteset_godzilla.command(name="toggle")
+    async def godzilla_toggle(self, ctx: commands.Context, state: bool):
+        """Toggle the Godzilla climb worker on or off."""
+        await self.config.guild(ctx.guild).godzilla_worker_enabled.set(state)
+        status = "enabled" if state else "disabled"
+        await ctx.send(f"🦖 Godzilla climb worker is now **{status}**.")
+
+    @inviteset_godzilla.command(name="resetstart")
+    async def godzilla_resetstart(self, ctx: commands.Context):
+        """Reset the 7-day climb clock to right now."""
+        now_ts = datetime.now(timezone.utc).timestamp()
+        await self.config.guild(ctx.guild).godzilla_start_ts.set(now_ts)
+        await ctx.send(f"🦖 Godzilla climb start timestamp reset to now (<t:{int(now_ts)}:F>).")
+
+    @inviteset_godzilla.command(name="margin")
+    async def godzilla_margin(self, ctx: commands.Context, margin: int):
+        """Set the buffer margin over 4th place (default 6)."""
+        await self.config.guild(ctx.guild).godzilla_lead_margin.set(margin)
+        await ctx.send(f"🦖 Godzilla lead margin set to **+{margin}** points over 4th place.")
+
+    @inviteset_godzilla.command(name="claimnow")
+    async def godzilla_claimnow(self, ctx: commands.Context, count: int = 1):
+        """Manually trigger an immediate claim of 1 or more invites for Godzilla."""
+        target_id = await self.config.guild(ctx.guild).godzilla_target_id() or GODZILLA_USER_ID
+        claimed = await self._claim_bot_invites_for_user(ctx.guild, target_id, max_claims=count)
+        await ctx.send(f"🦖 Manually claimed **{claimed}** invite(s) for <@{target_id}>.")
 
     def _resolve_target_guilds(self, ctx: commands.Context, server_arg: Optional[str]) -> Tuple[List[discord.Guild], Optional[str]]:
         """Resolve guild list from ID, name substring, 'all', or current guild context."""
