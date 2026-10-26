@@ -5482,10 +5482,36 @@ class SabPubHelper(commands.Cog):
             trimmed_text = final_text[-1797:]
             return f"...{trimmed_text}"
 
+        def _make_progress_bar(percent: float, length: int = 10) -> str:
+            clamped = max(0.0, min(100.0, percent))
+            filled = int(round((clamped / 100.0) * length))
+            filled = max(0, min(length, filled))
+            bar = "█" * filled + "░" * (length - filled)
+            return f"[{bar}] {int(round(clamped))}%"
+
+        initial_bar = _make_progress_bar(0.0, length=10)
+        initial_content = (
+            f"⏳ Bruteforcing User ID for **{SAVE_PROFILES[game]['name']}**...\n"
+            f"**Progress:** `{initial_bar}`\n"
+            f"_(Note: It will stop before 100% as soon as it guesses the ID!)_"
+        )
+        try:
+            await interaction.edit_original_response(content=initial_content)
+        except Exception:
+            pass
+        if status_msg:
+            try:
+                await status_msg.edit(content=initial_content)
+            except Exception:
+                pass
+
+        last_edit_time = time.monotonic()
+
         async def log_updater():
+            nonlocal last_edit_time
             while True:
                 try:
-                    line = await asyncio.wait_for(log_queue.get(), timeout=3.0)
+                    line = await asyncio.wait_for(log_queue.get(), timeout=2.5)
                     log_buffer.append(line)
                     while not log_queue.empty():
                         log_buffer.append(log_queue.get_nowait())
@@ -5495,21 +5521,48 @@ class SabPubHelper(commands.Cog):
                     await _drain_log_queue()
                     break
 
-                display_lines = []
-                latest_progress = None
-                # Only check the last 50 lines to avoid CPU usage growing over time
-                for l in log_buffer[-50:]:
-                    if any(k in l for k in ("Brute-forcing", "%]", "%", "Testing", "User ID")):
-                        latest_progress = l
-                    else:
-                        if l not in display_lines:  # simple dedup
-                            display_lines.append(l)
+                if finalizing.get("done"):
+                    break
 
-                if latest_progress:
-                    display_lines.append(latest_progress)
+                # Ensure at least 2.5s between Discord edits to respect rate limits
+                now = time.monotonic()
+                if now - last_edit_time < 2.5:
+                    await asyncio.sleep(2.5 - (now - last_edit_time))
+                last_edit_time = time.monotonic()
+
+                # 1. Check if tool emitted an explicit percentage
+                parsed_pct = None
+                for l in reversed(log_buffer[-50:]):
+                    m = re.search(r"(\d+(?:\.\d+)?)%", l)
+                    if m:
+                        try:
+                            parsed_pct = float(m.group(1))
+                            break
+                        except ValueError:
+                            pass
+
+                elapsed = time.monotonic() - start_time
+                if parsed_pct is not None:
+                    current_pct = parsed_pct
+                else:
+                    # mandarin-juice-promax does not output percentage ticks during scan.
+                    # Steadily advance across ~90s to 85%, then asymptotic up to 98%.
+                    if elapsed <= 90.0:
+                        current_pct = (elapsed / 90.0) * 85.0
+                    else:
+                        extra = elapsed - 90.0
+                        current_pct = 85.0 + 13.0 * (1.0 - (0.95 ** (extra / 2.0)))
+
+                current_pct = max(0.0, min(99.0, current_pct))
+                progress_bar_str = _make_progress_bar(current_pct, length=10)
+
+                display_lines = []
+                for l in log_buffer[-50:]:
+                    if l not in display_lines:
+                        display_lines.append(l)
 
                 log_text = "\n".join(display_lines[-10:]) if display_lines else "Bruteforcing in progress..."
-                elapsed_str = _fmt_duration(time.monotonic() - start_time)
+                elapsed_str = _fmt_duration(elapsed)
 
                 if cli_log_channel and log_message:
                     try:
@@ -5520,22 +5573,16 @@ class SabPubHelper(commands.Cog):
                                 f"🟢 **Savebrute — running**\n"
                                 f"User: {interaction.user.display_name} UserID: {interaction.user.id} Game: {SAVE_PROFILES[game]['name']}   "
                                 f"Channel: {interaction.channel.mention}\n"
-                                f"Lines: {len(log_buffer)}   Elapsed: {elapsed_str}\n"
+                                f"Lines: {len(log_buffer)}   Elapsed: {elapsed_str}   Progress: `{progress_bar_str}`\n"
                                 f"```\n{log_text}\n```"
                             )
                         )
                     except Exception as e:
                         log.warning(f"Failed to update log message: {e}")
 
-                # Update the user's view so they can see live progress or running timer!
-                if latest_progress:
-                    prog_line = f"**Progress:** `{latest_progress}`"
-                else:
-                    prog_line = f"**Status:** `Searching keyspace... [{elapsed_str} elapsed]`"
-
                 user_content = (
                     f"⏳ Bruteforcing User ID for **{SAVE_PROFILES[game]['name']}**...\n"
-                    f"{prog_line}\n"
+                    f"**Progress:** `{progress_bar_str}`\n"
                     f"_(Note: It will stop before 100% as soon as it guesses the ID!)_"
                 )
 
@@ -5549,8 +5596,6 @@ class SabPubHelper(commands.Cog):
                         await status_msg.edit(content=user_content)
                     except Exception:
                         pass
-
-                await asyncio.sleep(2.5)  # Avoid Discord API rate limits
 
         progress_task = asyncio.create_task(log_updater())
 
