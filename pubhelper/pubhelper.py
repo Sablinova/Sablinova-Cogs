@@ -1697,20 +1697,25 @@ class SabPubHelper(commands.Cog):
                         item["new_id"],
                         item["save_archive"],
                         item.get("notify"),
+                        status_msg=item.get("status_msg"),
                     )
                 )
                 self.active_brutes[user_id] = task
 
+                queue_start_msg = (
+                    f"⏳ Bruteforcing User ID for **{SAVE_PROFILES[item['game']]['name']}**...\n"
+                    f"Queue position: `#1`\n"
+                    f"_Your job reached the front of the queue. I'll update you when done._"
+                )
                 try:
-                    await item["interaction"].edit_original_response(
-                        content=(
-                            f"⏳ Bruteforcing User ID for **{SAVE_PROFILES[item['game']]['name']}**...\n"
-                            f"Queue position: `#1`\n"
-                            f"_Your job reached the front of the queue. I'll update you when done._"
-                        )
-                    )
+                    await item["interaction"].edit_original_response(content=queue_start_msg)
                 except Exception:
                     pass
+                if item.get("status_msg"):
+                    try:
+                        await item["status_msg"].edit(content=queue_start_msg)
+                    except Exception:
+                        pass
 
                 try:
                     await task
@@ -5243,18 +5248,20 @@ class SabPubHelper(commands.Cog):
 
         queue_position = self._get_bruteforce_queue_position(interaction.user.id)
         if queue_position == 1:
-            await interaction.followup.send(
+            status_msg = await interaction.followup.send(
                 f"⏳ Bruteforce queued for **{SAVE_PROFILES[game]['name']}**.\n"
                 f"Queue position: `#1`\n"
                 f"_Starting now. I'll update you when done._"
             )
+            queue_item["status_msg"] = status_msg
         else:
-            await interaction.followup.send(
+            status_msg = await interaction.followup.send(
                 f"⏳ **Savebrute queued**\n"
                 f"Game: {SAVE_PROFILES[game]['name']}\n"
                 f"Queue position: `#{queue_position}`\n"
                 f"_Your bruteforce will start automatically when earlier jobs finish._"
             )
+            queue_item["status_msg"] = status_msg
             await self._send_bruteforce_queue_log(
                 interaction,
                 game,
@@ -5271,6 +5278,7 @@ class SabPubHelper(commands.Cog):
         new_id: str,
         save_archive: bytes,
         notify: discord.Member = None,
+        status_msg: discord.Message = None,
     ):
         """Background task for savebrute with timeout handling."""
         start_time = asyncio.get_event_loop().time()
@@ -5345,6 +5353,11 @@ class SabPubHelper(commands.Cog):
             if elapsed < inline_timeout:
                 try:
                     await interaction.edit_original_response(content=content)
+                    if status_msg:
+                        try:
+                            await status_msg.edit(content=content)
+                        except Exception:
+                            pass
                     if file:
                         await _send_file_with_fallback(
                             interaction.followup.send,
@@ -5472,7 +5485,7 @@ class SabPubHelper(commands.Cog):
         async def log_updater():
             while True:
                 try:
-                    line = await asyncio.wait_for(log_queue.get(), timeout=15.0)
+                    line = await asyncio.wait_for(log_queue.get(), timeout=3.0)
                     log_buffer.append(line)
                     while not log_queue.empty():
                         log_buffer.append(log_queue.get_nowait())
@@ -5482,53 +5495,62 @@ class SabPubHelper(commands.Cog):
                     await _drain_log_queue()
                     break
 
-                if log_buffer:
-                    display_lines = []
-                    latest_progress = None
-                    # Only check the last 50 lines to avoid CPU usage growing over time
-                    for l in log_buffer[-50:]:
-                        if "Brute-forcing:" in l or "%]" in l:
-                            latest_progress = l
-                        else:
-                            if l not in display_lines:  # simple dedup
-                                display_lines.append(l)
+                display_lines = []
+                latest_progress = None
+                # Only check the last 50 lines to avoid CPU usage growing over time
+                for l in log_buffer[-50:]:
+                    if any(k in l for k in ("Brute-forcing", "%]", "%", "Testing", "User ID")):
+                        latest_progress = l
+                    else:
+                        if l not in display_lines:  # simple dedup
+                            display_lines.append(l)
 
-                    if latest_progress:
-                        display_lines.append(latest_progress)
+                if latest_progress:
+                    display_lines.append(latest_progress)
 
-                    log_text = "\n".join(display_lines[-10:])
+                log_text = "\n".join(display_lines[-10:]) if display_lines else "Bruteforcing in progress..."
+                elapsed_str = _fmt_duration(time.monotonic() - start_time)
 
-                    if cli_log_channel and log_message:
-                        try:
-                            if finalizing["done"]:
-                                return
-                            await log_message.edit(
-                                content=(
-                                    f"🟢 **Savebrute — running**\n"
-                                    f"User: {interaction.user.display_name} UserID: {interaction.user.id} Game: {SAVE_PROFILES[game]['name']}   "
-                                    f"Channel: {interaction.channel.mention}\n"
-                                    f"Lines: {len(log_buffer)}   Elapsed: "
-                                    f"{_fmt_duration(time.monotonic() - start_time)}\n"
-                                    f"```\n{log_text}\n```"
-                                )
+                if cli_log_channel and log_message:
+                    try:
+                        if finalizing["done"]:
+                            return
+                        await log_message.edit(
+                            content=(
+                                f"🟢 **Savebrute — running**\n"
+                                f"User: {interaction.user.display_name} UserID: {interaction.user.id} Game: {SAVE_PROFILES[game]['name']}   "
+                                f"Channel: {interaction.channel.mention}\n"
+                                f"Lines: {len(log_buffer)}   Elapsed: {elapsed_str}\n"
+                                f"```\n{log_text}\n```"
                             )
-                        except Exception as e:
-                            log.warning(f"Failed to update log message: {e}")
+                        )
+                    except Exception as e:
+                        log.warning(f"Failed to update log message: {e}")
 
-                    # Update the user's view so they can see the counting live!
-                    if latest_progress:
-                        try:
-                            await interaction.edit_original_response(
-                                content=(
-                                    f"⏳ Bruteforcing User ID for **{SAVE_PROFILES[game]['name']}**...\n"
-                                    f"**Progress:** `{latest_progress}`\n"
-                                    f"_(Note: It will stop before 100% as soon as it guesses the ID!)_"
-                                )
-                            )
-                        except Exception:
-                            pass
+                # Update the user's view so they can see live progress or running timer!
+                if latest_progress:
+                    prog_line = f"**Progress:** `{latest_progress}`"
+                else:
+                    prog_line = f"**Status:** `Searching keyspace... [{elapsed_str} elapsed]`"
 
-                    await asyncio.sleep(2.5)  # Avoid Discord API rate limits
+                user_content = (
+                    f"⏳ Bruteforcing User ID for **{SAVE_PROFILES[game]['name']}**...\n"
+                    f"{prog_line}\n"
+                    f"_(Note: It will stop before 100% as soon as it guesses the ID!)_"
+                )
+
+                try:
+                    await interaction.edit_original_response(content=user_content)
+                except Exception:
+                    pass
+
+                if status_msg:
+                    try:
+                        await status_msg.edit(content=user_content)
+                    except Exception:
+                        pass
+
+                await asyncio.sleep(2.5)  # Avoid Discord API rate limits
 
         progress_task = asyncio.create_task(log_updater())
 

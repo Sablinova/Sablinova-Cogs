@@ -369,6 +369,7 @@ class SaveSigner:
 
             if known_ids:
                 cmd.extend(["-u", ",".join(known_ids)])
+            cmd.append("-q")
 
             proc = None
             try:
@@ -541,6 +542,7 @@ class SaveSigner:
                 old_id,
                 "-uO",
                 new_id,
+                "-q",
             ]
 
             proc = None
