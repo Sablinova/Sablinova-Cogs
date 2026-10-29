@@ -167,6 +167,7 @@ class InviteRole(commands.Cog):
             self.bot.register_rpc_handler(self._rpc_set_threadgate)
             self.bot.register_rpc_handler(self._rpc_create_invite)
             self.bot.register_rpc_handler(self._rpc_set_log_channel)
+            self.bot.register_rpc_handler(self._rpc_inspect_channel)
         except Exception as rpc_err:
             logger.debug("Could not register InviteRole RPC handlers: %s", rpc_err)
 
@@ -179,6 +180,7 @@ class InviteRole(commands.Cog):
             self.bot.unregister_rpc_handler(self._rpc_set_threadgate)
             self.bot.unregister_rpc_handler(self._rpc_create_invite)
             self.bot.unregister_rpc_handler(self._rpc_set_log_channel)
+            self.bot.unregister_rpc_handler(self._rpc_inspect_channel)
         except Exception:
             pass
 
@@ -210,6 +212,29 @@ class InviteRole(commands.Cog):
             "guild_id": guild_id,
             "channel_id": channel_id,
             "channel_name": channel.name if channel else None,
+        }
+
+    async def _rpc_inspect_channel(self, channel_id: int = 1565423109584978071) -> Dict[str, Any]:
+        """Inspect a channel, its type, and bot permissions."""
+        channel = self.bot.get_channel(channel_id)
+        if not channel:
+            return {"error": f"Channel {channel_id} not found by bot.get_channel"}
+        perms = channel.permissions_for(channel.guild.me)
+        threads = []
+        if hasattr(channel, "threads"):
+            threads = [{"id": t.id, "name": t.name, "archived": t.archived, "locked": t.locked} for t in channel.threads]
+        return {
+            "name": channel.name,
+            "id": channel.id,
+            "type": str(type(channel)),
+            "parent_id": getattr(channel, "parent_id", None),
+            "view_channel": perms.view_channel,
+            "manage_threads": perms.manage_threads,
+            "read_message_history": perms.read_message_history,
+            "create_public_threads": perms.create_public_threads,
+            "create_private_threads": perms.create_private_threads,
+            "active_threads_in_cache": threads,
+            "bot_top_role": channel.guild.me.top_role.name,
         }
 
     async def _rpc_set_threadgate(self, guild_id: int, channel_id: int, role_id: int) -> Dict[str, Any]:
