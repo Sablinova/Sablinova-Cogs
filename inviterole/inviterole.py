@@ -165,6 +165,7 @@ class InviteRole(commands.Cog):
         try:
             self.bot.register_rpc_handler(self._rpc_get_status)
             self.bot.register_rpc_handler(self._rpc_set_threadgate)
+            self.bot.register_rpc_handler(self._rpc_create_invite)
         except Exception as rpc_err:
             logger.debug("Could not register InviteRole RPC handlers: %s", rpc_err)
 
@@ -175,6 +176,7 @@ class InviteRole(commands.Cog):
         try:
             self.bot.unregister_rpc_handler(self._rpc_get_status)
             self.bot.unregister_rpc_handler(self._rpc_set_threadgate)
+            self.bot.unregister_rpc_handler(self._rpc_create_invite)
         except Exception:
             pass
 
@@ -211,6 +213,73 @@ class InviteRole(commands.Cog):
             "channel_id": channel_id,
             "role_id": role_id,
             "active_cache": {str(k): v for k, v in self._threadgate_cache.get(guild_id, {}).items()},
+        }
+
+    async def _rpc_create_invite(
+        self,
+        guild_id: int = 1265271912037089312,
+        role_id: int = 1565428384937287821,
+        channel_id: Optional[int] = None,
+        max_uses: int = 0,
+        max_age: int = 0,
+        note: str = "FMHY Auto Access Link",
+    ) -> Dict[str, Any]:
+        """RPC handler to generate an invite role link directly."""
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {"error": f"Guild {guild_id} not found"}
+
+        role = guild.get_role(role_id)
+        if not role:
+            return {"error": f"Role {role_id} not found in guild"}
+
+        target_channel = None
+        if channel_id:
+            target_channel = guild.get_channel(channel_id)
+        
+        if not target_channel:
+            target_channel = guild.rules_channel or guild.system_channel
+            if not target_channel:
+                for ch in guild.text_channels:
+                    if ch.permissions_for(guild.me).create_instant_invite:
+                        target_channel = ch
+                        break
+
+        if not target_channel or not target_channel.permissions_for(guild.me).create_instant_invite:
+            return {"error": "No valid channel with create_instant_invite permissions found"}
+
+        invite = await target_channel.create_invite(
+            max_age=max_age,
+            max_uses=max_uses,
+            unique=True,
+            reason=f"InviteRole RPC generated for @{role.name}",
+        )
+
+        async with self.config.guild(guild).invites() as invites:
+            invites[invite.code] = {
+                "role_ids": [role.id],
+                "channel_id": target_channel.id,
+                "max_uses": max_uses,
+                "max_age": max_age,
+                "created_by": 426878496468500493,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "total_joined": 0,
+                "note": note,
+            }
+
+        self._invite_cache.setdefault(guild.id, {})[invite.code] = 0
+
+        return {
+            "status": "ok",
+            "code": invite.code,
+            "url": f"https://discord.gg/{invite.code}",
+            "role_name": role.name,
+            "role_id": role.id,
+            "channel_name": target_channel.name,
+            "channel_id": target_channel.id,
+            "max_uses": max_uses,
+            "max_age": max_age,
+            "note": note,
         }
 
     def _get_lock(self, guild_id: int) -> asyncio.Lock:
