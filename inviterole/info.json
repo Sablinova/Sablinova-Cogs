@@ -1,0 +1,15 @@
+{
+    "name": "InviteRole",
+    "short": "Assign roles automatically to users who join via specific invite links",
+    "description": "Create unique Discord invite links or link existing ones to automatically assign designated roles upon member join. Includes real-time invite caching, single-use tracking, logging, and DM notifications.",
+    "end_user_data_statement": "This cog stores server invite codes and assigned role IDs. It does not store personal user data.",
+    "install_msg": "InviteRole loaded. Use `[p]inviterole create <role>` to create your first invite-bound role.",
+    "author": ["Sablinova"],
+    "required_cogs": {},
+    "requirements": [],
+    "tags": ["invite", "roles", "autorole", "inviterole", "invites"],
+    "min_bot_version": "3.5.0",
+    "hidden": false,
+    "disabled": false,
+    "type": "COG"
+}
