@@ -219,7 +219,10 @@ class InviteRole(commands.Cog):
         channel = self.bot.get_channel(channel_id)
         if not channel:
             return {"error": f"Channel {channel_id} not found by bot.get_channel"}
-        perms = channel.permissions_for(channel.guild.me)
+        guild = channel.guild
+        perms = channel.permissions_for(guild.me)
+        g_perms = guild.me.guild_permissions
+
         threads = []
         if hasattr(channel, "threads"):
             threads = [{"id": t.id, "name": t.name, "archived": t.archived, "locked": t.locked} for t in channel.threads]
@@ -228,13 +231,14 @@ class InviteRole(commands.Cog):
             "id": channel.id,
             "type": str(type(channel)),
             "parent_id": getattr(channel, "parent_id", None),
-            "view_channel": perms.view_channel,
-            "manage_threads": perms.manage_threads,
-            "read_message_history": perms.read_message_history,
-            "create_public_threads": perms.create_public_threads,
-            "create_private_threads": perms.create_private_threads,
+            "channel_view_channel": perms.view_channel,
+            "channel_manage_threads": perms.manage_threads,
+            "channel_read_message_history": perms.read_message_history,
+            "guild_admin": g_perms.administrator,
+            "guild_manage_channels": g_perms.manage_channels,
+            "guild_manage_roles": g_perms.manage_roles,
+            "bot_top_role": guild.me.top_role.name,
             "active_threads_in_cache": threads,
-            "bot_top_role": channel.guild.me.top_role.name,
         }
 
     async def _rpc_set_threadgate(self, guild_id: int, channel_id: int, role_id: int) -> Dict[str, Any]:
