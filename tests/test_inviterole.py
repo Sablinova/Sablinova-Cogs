@@ -611,3 +611,103 @@ async def test_threadgate_revoke_on_raw_thread_delete(mock_bot, mock_guild):
 
     # Active tracking should be cleaned up
     assert thread_id not in cog._active_thread_users.get(mock_guild.id, {})
+
+
+@pytest.mark.asyncio
+async def test_on_member_join_fmhy_unverified_sends_dm(mock_bot, mock_guild):
+    """Test that joiners with FMHY role must verify before receiving the role."""
+    cog = InviteRole(mock_bot)
+    FMHY_ROLE_ID = 1565428384937287821
+    fmhy_role = MagicMock(spec=discord.Role)
+    fmhy_role.id = FMHY_ROLE_ID
+    fmhy_role.position = 10
+    fmhy_role.name = "Fmhy"
+    fmhy_role.is_bot_managed.return_value = False
+    fmhy_role.is_integration.return_value = False
+
+    mock_guild.get_role.side_effect = lambda rid: fmhy_role if rid == FMHY_ROLE_ID else None
+
+    # Setup configured invite
+    await cog.config.guild(mock_guild).invites.set({
+        "testCode": {
+            "role_ids": [FMHY_ROLE_ID],
+            "channel_id": 111,
+            "max_uses": 0,
+            "total_joined": 0,
+        }
+    })
+    cog._invite_cache[mock_guild.id] = {"testCode": 0}
+
+    inv = MagicMock(spec=discord.Invite)
+    inv.code = "testCode"
+    inv.uses = 1
+    mock_guild.invites = AsyncMock(return_value=[inv])
+
+    member = MagicMock(spec=discord.Member)
+    member.guild = mock_guild
+    member.bot = False
+    member.id = 55667788
+    member.mention = "<@55667788>"
+    member.add_roles = AsyncMock()
+    member.send = AsyncMock()
+
+    # User is NOT verified
+    cog._check_oauth_verified = AsyncMock(return_value=False)
+
+    await cog.on_member_join(member)
+
+    # Should NOT have assigned FMHY role
+    member.add_roles.assert_not_awaited()
+    # Should have sent DM with verify link
+    member.send.assert_awaited_once()
+    assert "fmhy.pubslounge.xyz/verify" in member.send.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_on_member_join_fmhy_verified_assigns_role(mock_bot, mock_guild):
+    """Test that pre-verified joiners receive the FMHY role immediately."""
+    cog = InviteRole(mock_bot)
+    FMHY_ROLE_ID = 1565428384937287821
+    fmhy_role = MagicMock(spec=discord.Role)
+    fmhy_role.id = FMHY_ROLE_ID
+    fmhy_role.position = 10
+    fmhy_role.name = "Fmhy"
+    fmhy_role.is_bot_managed.return_value = False
+    fmhy_role.is_integration.return_value = False
+
+    mock_guild.get_role.side_effect = lambda rid: fmhy_role if rid == FMHY_ROLE_ID else None
+
+    # Setup configured invite
+    await cog.config.guild(mock_guild).invites.set({
+        "testCode": {
+            "role_ids": [FMHY_ROLE_ID],
+            "channel_id": 111,
+            "max_uses": 0,
+            "total_joined": 0,
+        }
+    })
+    cog._invite_cache[mock_guild.id] = {"testCode": 0}
+
+    inv = MagicMock(spec=discord.Invite)
+    inv.code = "testCode"
+    inv.uses = 1
+    mock_guild.invites = AsyncMock(return_value=[inv])
+
+    member = MagicMock(spec=discord.Member)
+    member.guild = mock_guild
+    member.bot = False
+    member.id = 55667788
+    member.mention = "<@55667788>"
+    member.add_roles = AsyncMock()
+    member.send = AsyncMock()
+
+    # User IS verified
+    cog._check_oauth_verified = AsyncMock(return_value=True)
+
+    await cog.on_member_join(member)
+
+    # Should have assigned FMHY role!
+    member.add_roles.assert_awaited_once_with(
+        fmhy_role,
+        reason="InviteRole: Joined via invite link testCode",
+    )

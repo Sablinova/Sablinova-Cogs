@@ -188,6 +188,19 @@ class InviteRole(commands.Cog):
         except Exception:
             pass
 
+    async def _check_oauth_verified(self, user_id: int) -> bool:
+        """Query the verification backend to see if user has verified FMHY membership."""
+        verify_url = "https://fmhy.pubslounge.xyz/api/is_verified/"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{verify_url}{user_id}", timeout=aiohttp.ClientTimeout(total=4)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return bool(data.get("verified", False))
+        except Exception as exc:
+            logger.debug("Failed checking verification status for %s: %s", user_id, exc)
+        return False
+
     async def _rpc_get_status(self, guild_id: int = 1265271912037089312) -> Dict[str, Any]:
         """RPC handler to verify live in-memory state and config."""
         guild = self.bot.get_guild(guild_id)
@@ -570,6 +583,49 @@ class InviteRole(commands.Cog):
             logger.warning("No valid assignable roles found for invite %s in %s", used_code, guild.name)
             return
 
+        # Verification check: Role 1565428384937287821 requires prior FMHY OAuth2 verification
+        FMHY_ROLE_ID = 1565428384937287821
+        log_channel_id = guild_conf.get("log_channel_id")
+        log_channel = guild.get_channel(log_channel_id) if log_channel_id else None
+
+        if any(r.id == FMHY_ROLE_ID for r in roles_to_assign):
+            is_verified = await self._check_oauth_verified(member.id)
+            if not is_verified:
+                # Remove FMHY from immediate roles
+                roles_to_assign = [r for r in roles_to_assign if r.id != FMHY_ROLE_ID]
+
+                # Send verification DM to user
+                verify_msg = (
+                    f"Welcome to **Pub's Lounge**, {member.mention}! 👋\n\n"
+                    f"To unlock the FMHY channels and receive your **@Fmhy** role, please verify your Discord account here:\n"
+                    f"👉 https://fmhy.pubslounge.xyz/verify"
+                )
+                try:
+                    await member.send(verify_msg)
+                    logger.info("Sent verification DM to %s (%s)", member, member.id)
+                except (discord.Forbidden, discord.HTTPException):
+                    pass
+
+                # Log to log_channel
+                if log_channel and log_channel.permissions_for(guild.me).send_messages:
+                    emb = discord.Embed(
+                        title="🔗 Member Joined (Verification Required)",
+                        description=f"{member.mention} (`{member.id}`) joined via `{used_code}`.\nSent DM link for **fmhy.pubslounge.xyz** verification.",
+                        color=discord.Color.gold(),
+                        timestamp=datetime.now(timezone.utc),
+                    )
+                    emb.set_thumbnail(url=member.display_avatar.url)
+                    try:
+                        await log_channel.send(embed=emb)
+                    except discord.HTTPException:
+                        pass
+
+                if not roles_to_assign:
+                    # No other roles to assign, update counter and finish
+                    inv_data["total_joined"] = inv_data.get("total_joined", 0) + 1
+                    await self.config.guild(guild).invites.set(configured_invites)
+                    return
+
         # Assign roles to member
         try:
             await member.add_roles(
@@ -592,9 +648,7 @@ class InviteRole(commands.Cog):
         await self.config.guild(guild).invites.set(configured_invites)
 
         # Logging channel notification
-        log_channel_id = guild_conf.get("log_channel_id")
-        if log_channel_id:
-            log_channel = guild.get_channel(log_channel_id)
+        if log_channel:
             if log_channel and log_channel.permissions_for(guild.me).send_messages:
                 try:
                     embed = discord.Embed(
