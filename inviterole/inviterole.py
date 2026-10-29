@@ -168,6 +168,8 @@ class InviteRole(commands.Cog):
             self.bot.register_rpc_handler(self._rpc_create_invite)
             self.bot.register_rpc_handler(self._rpc_set_log_channel)
             self.bot.register_rpc_handler(self._rpc_inspect_channel)
+            self.bot.register_rpc_handler(self._rpc_fix_channel_permissions)
+            self.bot.register_rpc_handler(self._rpc_check_member)
         except Exception as rpc_err:
             logger.debug("Could not register InviteRole RPC handlers: %s", rpc_err)
 
@@ -181,6 +183,8 @@ class InviteRole(commands.Cog):
             self.bot.unregister_rpc_handler(self._rpc_create_invite)
             self.bot.unregister_rpc_handler(self._rpc_set_log_channel)
             self.bot.unregister_rpc_handler(self._rpc_inspect_channel)
+            self.bot.unregister_rpc_handler(self._rpc_fix_channel_permissions)
+            self.bot.unregister_rpc_handler(self._rpc_check_member)
         except Exception:
             pass
 
@@ -239,6 +243,55 @@ class InviteRole(commands.Cog):
             "guild_manage_roles": g_perms.manage_roles,
             "bot_top_role": guild.me.top_role.name,
             "active_threads_in_cache": threads,
+        }
+
+    async def _rpc_fix_channel_permissions(self, channel_id: int = 1565423109584978071) -> Dict[str, Any]:
+        """Grant bot View Channel and Manage Threads on the ThreadGate channel."""
+        channel = self.bot.get_channel(channel_id)
+        if not channel:
+            return {"error": f"Channel {channel_id} not found"}
+        guild = channel.guild
+        me = guild.me
+        try:
+            await channel.set_permissions(
+                me,
+                view_channel=True,
+                read_message_history=True,
+                manage_threads=True,
+                send_messages_in_threads=True,
+                reason="InviteRole ThreadGate: Auto-grant bot visibility to monitor threads",
+            )
+            perms = channel.permissions_for(me)
+            return {
+                "status": "ok",
+                "channel_name": channel.name,
+                "channel_id": channel.id,
+                "view_channel": perms.view_channel,
+                "manage_threads": perms.manage_threads,
+                "read_message_history": perms.read_message_history,
+            }
+        except Exception as exc:
+            return {"error": str(exc)}
+
+    async def _rpc_check_member(
+        self, guild_id: int = 1265271912037089312, user_id: int = 907142140298153994
+    ) -> Dict[str, Any]:
+        """Check member roles and status."""
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {"error": f"Guild {guild_id} not found"}
+        member = guild.get_member(user_id)
+        if not member:
+            try:
+                member = await guild.fetch_member(user_id)
+            except Exception:
+                return {"error": f"Member {user_id} not found in guild"}
+        return {
+            "user_id": member.id,
+            "name": str(member),
+            "display_name": member.display_name,
+            "roles": [{"id": r.id, "name": r.name} for r in member.roles],
+            "has_fmhy": any(r.id == 1565428384937287821 for r in member.roles),
         }
 
     async def _rpc_set_threadgate(self, guild_id: int, channel_id: int, role_id: int) -> Dict[str, Any]:
@@ -652,6 +705,36 @@ class InviteRole(commands.Cog):
         member = guild.get_member(thread_member.id)
         if member and not member.bot and any(r.id == role_id for r in member.roles):
             await self._register_thread_users(guild, thread.id, thread.parent_id, role_id, [member.id])
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message) -> None:
+        """Track participants and mentions in monitored threadgate threads."""
+        if not message.guild or not isinstance(message.channel, discord.Thread):
+            return
+
+        thread = message.channel
+        guild = message.guild
+        gates = self._threadgate_cache.get(guild.id, {})
+        if not gates or thread.parent_id not in gates:
+            return
+
+        role_id = gates[thread.parent_id]
+        new_users: Set[int] = set()
+
+        # 1. Author if human member with target role
+        if not message.author.bot and isinstance(message.author, discord.Member):
+            if any(r.id == role_id for r in message.author.roles):
+                new_users.add(message.author.id)
+
+        # 2. Mentions in message (e.g. ticket bot mentions user)
+        for user in message.mentions:
+            if not user.bot:
+                m = guild.get_member(user.id)
+                if m and any(r.id == role_id for r in m.roles):
+                    new_users.add(m.id)
+
+        if new_users:
+            await self._register_thread_users(guild, thread.id, thread.parent_id, role_id, list(new_users))
 
     @commands.Cog.listener()
     async def on_thread_update(self, before: discord.Thread, after: discord.Thread) -> None:
@@ -1316,6 +1399,26 @@ class InviteRole(commands.Cog):
 
         self._threadgate_cache.setdefault(ctx.guild.id, {})[channel.id] = role.id
 
+        # Verify and ensure bot has visibility into the channel and its threads
+        perm_note = None
+        ch_perms = channel.permissions_for(ctx.guild.me)
+        if not ch_perms.view_channel or not ch_perms.manage_threads or not ch_perms.read_message_history:
+            if ctx.guild.me.guild_permissions.manage_channels:
+                try:
+                    await channel.set_permissions(
+                        ctx.guild.me,
+                        view_channel=True,
+                        read_message_history=True,
+                        manage_threads=True,
+                        send_messages_in_threads=True,
+                        reason="InviteRole ThreadGate: Auto-grant bot visibility to monitor threads",
+                    )
+                    perm_note = "✅ Auto-granted bot **View Channel** and **Manage Threads** permissions on this channel."
+                except Exception as pe:
+                    perm_note = f"⚠️ Could not auto-grant bot permissions ({pe}). Please manually grant the bot **View Channel** and **Manage Threads** in channel settings."
+            else:
+                perm_note = "⚠️ **Warning:** The bot is currently missing **View Channel** or **Manage Threads** in this channel. Please grant them in Channel Settings so the bot can receive thread events."
+
         embed = discord.Embed(
             title="🚪 ThreadGate Configured",
             description=(
@@ -1326,6 +1429,8 @@ class InviteRole(commands.Cog):
         )
         embed.add_field(name="📍 Monitored Channel", value=f"{channel.mention} (`{channel.id}`)", inline=True)
         embed.add_field(name="🎭 Role to Revoke", value=f"{role.mention} (`{role.id}`)", inline=True)
+        if perm_note:
+            embed.add_field(name="🔑 Permissions Status", value=perm_note, inline=False)
         embed.set_footer(text=f"Configured by {ctx.author.display_name}")
         await ctx.send(embed=embed)
 
