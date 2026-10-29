@@ -445,3 +445,169 @@ async def test_inviterole_logchannel_and_toggledm(mock_bot, mock_ctx, mock_guild
     # Set DM template
     await cog.set_dm_message.callback(cog, mock_ctx, message="Hey {mention}, welcome!")
     assert await cog.config.guild(mock_guild).dm_message() == "Hey {mention}, welcome!"
+
+
+# =============================================================================
+# ThreadGate Feature Tests
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_threadgate_add_remove_commands(mock_bot, mock_ctx, mock_guild):
+    cog = InviteRole(mock_bot)
+
+    target_role = MagicMock(spec=discord.Role)
+    target_role.id = 1565428384937287821
+    target_role.position = 45
+    target_role.name = "fmhy"
+    target_role.mention = "@fmhy"
+    target_role.is_bot_managed.return_value = False
+    target_role.is_integration.return_value = False
+
+    test_channel = MagicMock(spec=discord.TextChannel)
+    test_channel.id = 1565423109584978071
+    test_channel.mention = "<#1565423109584978071>"
+
+    # Add threadgate
+    await cog.threadgate_add.callback(
+        cog,
+        mock_ctx,
+        channel=test_channel,
+        role=target_role,
+    )
+
+    gates = await cog.config.guild(mock_guild).threadgates()
+    assert str(test_channel.id) in gates
+    assert gates[str(test_channel.id)]["role_id"] == 1565428384937287821
+    assert cog._threadgate_cache[mock_guild.id][test_channel.id] == 1565428384937287821
+
+    # Remove threadgate
+    await cog.threadgate_remove.callback(
+        cog,
+        mock_ctx,
+        channel=test_channel,
+    )
+
+    gates = await cog.config.guild(mock_guild).threadgates()
+    assert str(test_channel.id) not in gates
+    assert test_channel.id not in cog._threadgate_cache.get(mock_guild.id, {})
+
+
+@pytest.mark.asyncio
+async def test_threadgate_revoke_on_thread_close(mock_bot, mock_guild):
+    cog = InviteRole(mock_bot)
+
+    channel_id = 1565423109584978071
+    role_id = 1565428384937287821
+
+    # Setup threadgate cache
+    cog._threadgate_cache[mock_guild.id] = {channel_id: role_id}
+
+    target_role = MagicMock(spec=discord.Role)
+    target_role.id = role_id
+    target_role.position = 45
+    target_role.name = "fmhy"
+    mock_guild.get_role.side_effect = lambda rid: target_role if rid == role_id else None
+
+    # Tracked member with fmhy role
+    user_id = 77889900
+    member = MagicMock(spec=discord.Member)
+    member.id = user_id
+    member.bot = False
+    member.roles = [target_role]
+    member.remove_roles = AsyncMock()
+    mock_guild.get_member.side_effect = lambda uid: member if uid == user_id else None
+
+    thread_id = 11223344
+    parent_channel = MagicMock(spec=discord.TextChannel)
+    parent_channel.id = channel_id
+
+    # Simulate thread member join
+    mock_thread = MagicMock(spec=discord.Thread)
+    mock_thread.id = thread_id
+    mock_thread.parent_id = channel_id
+    mock_thread.guild = mock_guild
+    mock_thread.name = "ticket-user123"
+
+    tm = MagicMock(spec=discord.ThreadMember)
+    tm.id = user_id
+    tm.thread = mock_thread
+
+    await cog.on_thread_member_join(tm)
+
+    # Verify user is tracked
+    assert user_id in cog._active_thread_users[mock_guild.id][thread_id]
+
+    # Simulate thread update: closing/archiving thread
+    before_thread = MagicMock(spec=discord.Thread)
+    before_thread.id = thread_id
+    before_thread.parent_id = channel_id
+    before_thread.guild = mock_guild
+    before_thread.archived = False
+    before_thread.locked = False
+
+    after_thread = MagicMock(spec=discord.Thread)
+    after_thread.id = thread_id
+    after_thread.parent_id = channel_id
+    after_thread.guild = mock_guild
+    after_thread.name = "ticket-user123"
+    after_thread.archived = True
+    after_thread.locked = False
+
+    await cog.on_thread_update(before_thread, after_thread)
+
+    # Member should have lost the fmhy role!
+    member.remove_roles.assert_awaited_once_with(
+        target_role,
+        reason=f"InviteRole ThreadGate: Thread #ticket-user123 ({thread_id}) closed/archived in parent channel",
+    )
+
+    # Active tracking should be cleaned up
+    assert thread_id not in cog._active_thread_users.get(mock_guild.id, {})
+
+
+@pytest.mark.asyncio
+async def test_threadgate_revoke_on_raw_thread_delete(mock_bot, mock_guild):
+    cog = InviteRole(mock_bot)
+
+    channel_id = 1565423109584978071
+    role_id = 1565428384937287821
+
+    cog._threadgate_cache[mock_guild.id] = {channel_id: role_id}
+    mock_bot.get_guild.return_value = mock_guild
+
+    target_role = MagicMock(spec=discord.Role)
+    target_role.id = role_id
+    target_role.position = 45
+    target_role.name = "fmhy"
+    mock_guild.get_role.side_effect = lambda rid: target_role if rid == role_id else None
+
+    user_id = 88990011
+    member = MagicMock(spec=discord.Member)
+    member.id = user_id
+    member.bot = False
+    member.roles = [target_role]
+    member.remove_roles = AsyncMock()
+    mock_guild.get_member.side_effect = lambda uid: member if uid == user_id else None
+
+    thread_id = 99887766
+
+    # Pre-register user in active_thread_users
+    await cog._register_thread_users(mock_guild, thread_id, channel_id, role_id, [user_id])
+    assert user_id in cog._active_thread_users[mock_guild.id][thread_id]
+
+    # Trigger raw thread delete
+    payload = MagicMock(spec=discord.RawThreadDeleteEvent)
+    payload.guild_id = mock_guild.id
+    payload.thread_id = thread_id
+    payload.parent_id = channel_id
+
+    await cog.on_raw_thread_delete(payload)
+
+    # Member should have lost the fmhy role!
+    member.remove_roles.assert_awaited_once_with(
+        target_role,
+        reason=f"InviteRole ThreadGate: Thread #{thread_id} deleted in parent channel",
+    )
+
+    # Active tracking should be cleaned up
+    assert thread_id not in cog._active_thread_users.get(mock_guild.id, {})

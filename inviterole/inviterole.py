@@ -1,13 +1,14 @@
 """
 InviteRole Cog for Red-DiscordBot.
-Assign roles automatically to users who join via specific invite links.
+Assign roles automatically to users who join via specific invite links,
+and manage ThreadGates to automatically revoke temporary panel/ticket roles.
 """
 
 import asyncio
 from datetime import datetime, timezone
 import logging
 import re
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Set, Tuple, Union
 from urllib.parse import urlparse
 
 import discord
@@ -103,11 +104,12 @@ def extract_invite_code(code_or_url: str) -> str:
 
 class InviteRole(commands.Cog):
     """
-    Assign roles automatically to users who join via specific Discord invites.
+    Assign roles automatically to users who join via specific Discord invites,
+    and monitor ThreadGates to revoke temporary roles when threads close/delete.
     """
 
     __author__ = "Sablinova"
-    __version__ = "1.0.0"
+    __version__ = "1.1.0"
 
     def __init__(self, bot: Red):
         self.bot = bot
@@ -133,17 +135,32 @@ class InviteRole(commands.Cog):
             "enabled": True,
             "dm_user": False,
             "dm_message": "Welcome to **{guild}**! You were assigned the role: **{roles}**.",
+            "threadgates": {},
+            # channel_id_str -> {
+            #     "role_id": int,
+            #     "created_by": int,
+            #     "created_at": str,
+            # }
+            "active_thread_users": {},
+            # thread_id_str -> {
+            #     "user_ids": [int],
+            #     "role_id": int,
+            #     "parent_channel_id": int,
+            #     "created_at": str,
+            # }
         }
 
         self.config.register_guild(**default_guild)
 
-        # In-memory cache of invite uses: guild_id -> {code: uses}
+        # In-memory caches for high-performance event lookups
         self._invite_cache: Dict[int, Dict[str, int]] = {}
+        self._threadgate_cache: Dict[int, Dict[int, int]] = {}  # guild_id -> {parent_channel_id: role_id}
+        self._active_thread_users: Dict[int, Dict[int, List[int]]] = {}  # guild_id -> {thread_id: [user_ids]}
         self._cache_locks: Dict[int, asyncio.Lock] = {}
         self._init_task: Optional[asyncio.Task] = None
 
     async def cog_load(self) -> None:
-        """Start background initialization of invite cache."""
+        """Start background initialization of invite and threadgate caches."""
         self._init_task = asyncio.create_task(self._initialize_cache())
 
     def cog_unload(self) -> None:
@@ -174,37 +191,58 @@ class InviteRole(commands.Cog):
             logger.error("Failed to fetch invites for guild %s (%s): %s", guild.name, guild.id, exc)
             return {}
 
+    async def _load_guild_threadgates(self, guild: discord.Guild) -> None:
+        """Load configured threadgates and active tracked thread users into memory."""
+        conf = await self.config.guild(guild).all()
+        tg_data = conf.get("threadgates", {})
+        self._threadgate_cache[guild.id] = {
+            int(ch_id): data["role_id"]
+            for ch_id, data in tg_data.items()
+            if isinstance(data, dict) and "role_id" in data
+        }
+        atu_data = conf.get("active_thread_users", {})
+        self._active_thread_users[guild.id] = {
+            int(th_id): data.get("user_ids", [])
+            for th_id, data in atu_data.items()
+            if isinstance(data, dict)
+        }
+
     async def _initialize_cache(self) -> None:
-        """Wait until bot is ready and cache invites for all connected guilds."""
+        """Wait until bot is ready and cache invites & threadgates for all connected guilds."""
         await self.bot.wait_until_ready()
         for guild in self.bot.guilds:
             try:
                 await self._fetch_and_cache_guild_invites(guild)
+                await self._load_guild_threadgates(guild)
             except Exception as exc:
                 logger.error("Error initialising cache for guild %s: %s", guild.id, exc)
 
     # -------------------------------------------------------------------------
-    # Event Listeners
+    # Event Listeners - Invite Tracking
     # -------------------------------------------------------------------------
 
     @commands.Cog.listener()
     async def on_ready(self) -> None:
-        """Refresh invite cache when bot reconnections occur."""
+        """Refresh invite & threadgate caches when bot reconnections occur."""
         for guild in self.bot.guilds:
             try:
                 await self._fetch_and_cache_guild_invites(guild)
+                await self._load_guild_threadgates(guild)
             except Exception:
                 pass
 
     @commands.Cog.listener()
     async def on_guild_join(self, guild: discord.Guild) -> None:
-        """Cache invites for a newly joined guild."""
+        """Cache invites and threadgates for a newly joined guild."""
         await self._fetch_and_cache_guild_invites(guild)
+        await self._load_guild_threadgates(guild)
 
     @commands.Cog.listener()
     async def on_guild_remove(self, guild: discord.Guild) -> None:
         """Clean up cache when leaving a guild."""
         self._invite_cache.pop(guild.id, None)
+        self._threadgate_cache.pop(guild.id, None)
+        self._active_thread_users.pop(guild.id, None)
         self._cache_locks.pop(guild.id, None)
 
     @commands.Cog.listener()
@@ -275,11 +313,9 @@ class InviteRole(commands.Cog):
                     if code not in live_map and code in configured_invites:
                         cfg = configured_invites[code]
                         max_uses = cfg.get("max_uses", 0)
-                        # If configured max_uses was 1 (or prev_uses was max_uses - 1)
                         if max_uses > 0 and (prev_uses == max_uses - 1 or max_uses == 1):
                             used_code = code
                             break
-                        # Even if max_uses was unknown, a vanished configured invite was consumed
                         used_code = code
                         break
 
@@ -296,6 +332,8 @@ class InviteRole(commands.Cog):
 
         # Hierarchy and existence validation
         roles_to_assign: List[discord.Role] = []
+        bot_top_pos = getattr(guild.me.top_role, "position", 0)
+
         for rid in role_ids:
             role = guild.get_role(rid)
             if not role:
@@ -304,7 +342,6 @@ class InviteRole(commands.Cog):
                 continue
             if role.is_bot_managed() or role.is_integration():
                 continue
-            bot_top_pos = getattr(guild.me.top_role, "position", 0)
             role_pos = getattr(role, "position", 0)
             if role_pos >= bot_top_pos:
                 logger.warning(
@@ -392,7 +429,238 @@ class InviteRole(commands.Cog):
                 pass
 
     # -------------------------------------------------------------------------
-    # Commands
+    # Event Listeners - ThreadGate
+    # -------------------------------------------------------------------------
+
+    @commands.Cog.listener()
+    async def on_thread_create(self, thread: discord.Thread) -> None:
+        """Track new threads created in monitored threadgate channels."""
+        if not thread.guild:
+            return
+        guild = thread.guild
+        gates = self._threadgate_cache.get(guild.id, {})
+        if not gates or thread.parent_id not in gates:
+            return
+
+        role_id = gates[thread.parent_id]
+        asyncio.create_task(self._process_new_thread_after_delay(thread, role_id))
+
+    async def _process_new_thread_after_delay(
+        self, thread: discord.Thread, role_id: int, delay: float = 2.5
+    ) -> None:
+        """Wait briefly for ticket/panel bot to populate thread members, then register candidates."""
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+        try:
+            guild = thread.guild
+            tracked_members: Set[int] = set()
+
+            if thread.owner_id:
+                owner = guild.get_member(thread.owner_id)
+                if owner and not owner.bot and any(r.id == role_id for r in owner.roles):
+                    tracked_members.add(owner.id)
+
+            try:
+                t_members = await thread.fetch_members()
+                for tm in t_members:
+                    m = guild.get_member(tm.id)
+                    if m and not m.bot and any(r.id == role_id for r in m.roles):
+                        tracked_members.add(m.id)
+            except Exception as exc:
+                logger.debug("Could not fetch thread members for thread %s: %s", thread.id, exc)
+
+            if tracked_members:
+                await self._register_thread_users(
+                    guild, thread.id, thread.parent_id, role_id, list(tracked_members)
+                )
+        except Exception as exc:
+            logger.error("Error processing new thread %s in threadgate: %s", thread.id, exc)
+
+    @commands.Cog.listener()
+    async def on_thread_member_join(self, thread_member: discord.ThreadMember) -> None:
+        """Track candidate member when added to a monitored thread."""
+        thread = thread_member.thread
+        if not thread or not thread.guild:
+            return
+        guild = thread.guild
+        gates = self._threadgate_cache.get(guild.id, {})
+        if not gates or thread.parent_id not in gates:
+            return
+
+        role_id = gates[thread.parent_id]
+        member = guild.get_member(thread_member.id)
+        if member and not member.bot and any(r.id == role_id for r in member.roles):
+            await self._register_thread_users(guild, thread.id, thread.parent_id, role_id, [member.id])
+
+    @commands.Cog.listener()
+    async def on_thread_update(self, before: discord.Thread, after: discord.Thread) -> None:
+        """Detect thread closure / archive / lock and revoke the gate role."""
+        if not after.guild:
+            return
+        guild = after.guild
+        gates = self._threadgate_cache.get(guild.id, {})
+        if not gates or after.parent_id not in gates:
+            return
+
+        role_id = gates[after.parent_id]
+        is_closing = (not before.archived and after.archived) or (not before.locked and after.locked)
+        if is_closing:
+            # If no users were tracked yet, inspect live members before closing
+            guild_atu = self._active_thread_users.get(guild.id, {})
+            if after.id not in guild_atu or not guild_atu[after.id]:
+                try:
+                    t_members = await after.fetch_members()
+                    found_users = [
+                        tm.id for tm in t_members
+                        if (m := guild.get_member(tm.id)) and not m.bot and any(r.id == role_id for r in m.roles)
+                    ]
+                    if found_users:
+                        await self._register_thread_users(guild, after.id, after.parent_id, role_id, found_users)
+                except Exception:
+                    pass
+
+            await self._revoke_thread_roles(
+                guild=guild,
+                thread_id=after.id,
+                default_role_id=role_id,
+                reason=f"InviteRole ThreadGate: Thread #{after.name} ({after.id}) closed/archived in parent channel",
+            )
+
+    @commands.Cog.listener()
+    async def on_raw_thread_delete(self, payload: discord.RawThreadDeleteEvent) -> None:
+        """Detect thread deletion and revoke the gate role from tracked users."""
+        guild = self.bot.get_guild(payload.guild_id)
+        if not guild:
+            return
+
+        gates = self._threadgate_cache.get(guild.id, {})
+        role_id = gates.get(payload.parent_id)
+
+        await self._revoke_thread_roles(
+            guild=guild,
+            thread_id=payload.thread_id,
+            default_role_id=role_id,
+            reason=f"InviteRole ThreadGate: Thread #{payload.thread_id} deleted in parent channel",
+        )
+
+    @commands.Cog.listener()
+    async def on_thread_delete(self, thread: discord.Thread) -> None:
+        """Backup thread deletion listener."""
+        if not thread.guild:
+            return
+        guild = thread.guild
+        gates = self._threadgate_cache.get(guild.id, {})
+        role_id = gates.get(thread.parent_id)
+
+        await self._revoke_thread_roles(
+            guild=guild,
+            thread_id=thread.id,
+            default_role_id=role_id,
+            reason=f"InviteRole ThreadGate: Thread #{thread.name} ({thread.id}) deleted in parent channel",
+        )
+
+    async def _register_thread_users(
+        self,
+        guild: discord.Guild,
+        thread_id: int,
+        parent_id: Optional[int],
+        role_id: int,
+        user_ids: List[int],
+    ) -> None:
+        """Register candidate users to be revoked when thread closes or is deleted."""
+        guild_atu = self._active_thread_users.setdefault(guild.id, {})
+        existing = set(guild_atu.get(thread_id, []))
+        new_set = existing.union(user_ids)
+        guild_atu[thread_id] = list(new_set)
+
+        async with self.config.guild(guild).active_thread_users() as atu:
+            record = atu.setdefault(str(thread_id), {
+                "user_ids": [],
+                "role_id": role_id,
+                "parent_channel_id": parent_id,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+            record["user_ids"] = list(new_set)
+
+    async def _revoke_thread_roles(
+        self,
+        guild: discord.Guild,
+        thread_id: int,
+        default_role_id: Optional[int],
+        reason: str,
+    ) -> None:
+        """Remove target role from tracked thread users upon thread deletion or archive."""
+        guild_atu = self._active_thread_users.get(guild.id, {})
+        tracked_user_ids = list(guild_atu.pop(thread_id, []))
+
+        async with self.config.guild(guild).active_thread_users() as atu:
+            saved_record = atu.pop(str(thread_id), None)
+            if saved_record:
+                if not tracked_user_ids:
+                    tracked_user_ids = saved_record.get("user_ids", [])
+                if not default_role_id:
+                    default_role_id = saved_record.get("role_id")
+
+        if not tracked_user_ids or not default_role_id:
+            return
+
+        target_role = guild.get_role(default_role_id)
+        if not target_role:
+            logger.warning("Target role %s for ThreadGate does not exist in %s", default_role_id, guild.name)
+            return
+
+        bot_pos = getattr(guild.me.top_role, "position", 0)
+        role_pos = getattr(target_role, "position", 0)
+        if role_pos >= bot_pos:
+            logger.warning("Cannot revoke role %s: higher or equal to bot top role", target_role.name)
+            return
+
+        conf = await self.config.guild(guild).all()
+        log_channel_id = conf.get("log_channel_id")
+        log_channel = guild.get_channel(log_channel_id) if log_channel_id else None
+
+        for uid in tracked_user_ids:
+            member = guild.get_member(uid)
+            if not member:
+                try:
+                    member = await guild.fetch_member(uid)
+                except Exception:
+                    member = None
+
+            if not member or target_role not in member.roles:
+                continue
+
+            try:
+                await member.remove_roles(target_role, reason=reason)
+                logger.info(
+                    "Revoked role %s from %s (%s) — %s",
+                    target_role.name,
+                    member,
+                    member.id,
+                    reason,
+                )
+
+                if log_channel and log_channel.permissions_for(guild.me).send_messages:
+                    try:
+                        embed = discord.Embed(
+                            title="🚪 ThreadGate Role Revoked",
+                            description=f"{member.mention} (`{member.id}`) lost the **{target_role.name}** role.",
+                            color=discord.Color.orange(),
+                            timestamp=datetime.now(timezone.utc),
+                        )
+                        embed.add_field(name="Revoked Role", value=target_role.mention, inline=True)
+                        embed.add_field(name="Thread ID", value=f"`{thread_id}`", inline=True)
+                        embed.add_field(name="Reason", value=reason, inline=False)
+                        embed.set_thumbnail(url=member.display_avatar.url)
+                        await log_channel.send(embed=embed)
+                    except Exception as le:
+                        logger.error("Failed to send log message for ThreadGate revoke: %s", le)
+            except Exception as re_err:
+                logger.error("Failed to revoke role %s from %s: %s", target_role.name, member, re_err)
+
+    # -------------------------------------------------------------------------
+    # Commands - Inviterole Group
     # -------------------------------------------------------------------------
 
     @commands.group(name="inviterole", aliases=["irole"])
@@ -740,10 +1008,10 @@ class InviteRole(commands.Cog):
         channel: Optional[discord.TextChannel] = None,
     ) -> None:
         """
-        Set or clear the logging channel for invite role joins.
+        Set or clear the logging channel for invite role joins and ThreadGate revokes.
 
         **Arguments:**
-        - `channel`: The text channel to send join notifications to (omit to disable logging).
+        - `channel`: The text channel to send notifications to (omit to disable logging).
 
         **Example:**
         `[p]inviterole logchannel #member-logs`
@@ -754,7 +1022,7 @@ class InviteRole(commands.Cog):
                 await ctx.send(f"❌ I don't have permission to send messages in {channel.mention}.")
                 return
             await self.config.guild(ctx.guild).log_channel_id.set(channel.id)
-            await ctx.send(f"✅ Invite role join events will now be logged to {channel.mention}.")
+            await ctx.send(f"✅ Invite role events will now be logged to {channel.mention}.")
         else:
             await self.config.guild(ctx.guild).log_channel_id.set(None)
             await ctx.send("✅ Invite role logging has been disabled.")
@@ -791,11 +1059,15 @@ class InviteRole(commands.Cog):
     @inviterole.command(name="sync")
     async def sync_cache(self, ctx: commands.Context) -> None:
         """
-        Force a refresh of the server's invite cache from Discord.
+        Force a refresh of the server's invite and threadgate caches.
         """
         async with ctx.typing():
             cache = await self._fetch_and_cache_guild_invites(ctx.guild)
-        await ctx.send(f"✅ Successfully refreshed invite cache. Currently tracking **{len(cache)}** live invites.")
+            await self._load_guild_threadgates(ctx.guild)
+        await ctx.send(
+            f"✅ Successfully refreshed caches. Currently tracking **{len(cache)}** live invites "
+            f"and **{len(self._threadgate_cache.get(ctx.guild.id, {}))}** thread gate channels."
+        )
 
     @inviterole.command(name="status")
     async def show_status(self, ctx: commands.Context) -> None:
@@ -810,6 +1082,8 @@ class InviteRole(commands.Cog):
         conf = await self.config.guild(guild).all()
         inv_count = len(conf.get("invites", {}))
         cached_count = len(self._invite_cache.get(guild.id, {}))
+        gates_count = len(conf.get("threadgates", {}))
+        active_th_count = len(conf.get("active_thread_users", {}))
         log_ch_id = conf.get("log_channel_id")
         log_ch = guild.get_channel(log_ch_id) if log_ch_id else None
         dm_enabled = conf.get("dm_user", False)
@@ -822,15 +1096,134 @@ class InviteRole(commands.Cog):
             name="Permissions",
             value=(
                 f"{'✅' if can_manage_guild else '❌'} Manage Server (read invites)\n"
-                f"{'✅' if can_manage_roles else '❌'} Manage Roles (assign roles)"
+                f"{'✅' if can_manage_roles else '❌'} Manage Roles (assign & revoke roles)"
             ),
             inline=False,
         )
         embed.add_field(name="Configured Links", value=str(inv_count), inline=True)
         embed.add_field(name="Cached Discord Invites", value=str(cached_count), inline=True)
+        embed.add_field(name="ThreadGates", value=f"{gates_count} channels ({active_th_count} active threads)", inline=True)
         embed.add_field(name="Logging Channel", value=log_ch.mention if log_ch else "Disabled", inline=True)
         embed.add_field(name="Welcome DM", value="Enabled" if dm_enabled else "Disabled", inline=True)
         embed.add_field(name="Bot Top Role", value=me.top_role.mention, inline=True)
+
+        await ctx.send(embed=embed)
+
+    # -------------------------------------------------------------------------
+    # Commands - ThreadGate Subgroup
+    # -------------------------------------------------------------------------
+
+    @inviterole.group(name="threadgate", aliases=["tgate", "gate"])
+    async def threadgate(self, ctx: commands.Context) -> None:
+        """
+        Configure thread gates that revoke a role when threads close or are deleted.
+
+        Ideal for panel/ticket access where users get access via an invite,
+        open a thread in a panel channel, and must lose their role when the thread finishes.
+        """
+        if ctx.invoked_subcommand is None:
+            await ctx.send_help()
+
+    @threadgate.command(name="add")
+    async def threadgate_add(
+        self,
+        ctx: commands.Context,
+        channel: Union[discord.TextChannel, discord.ForumChannel],
+        role: discord.Role,
+    ) -> None:
+        """
+        Add a channel to the thread gate system.
+
+        **Arguments:**
+        - `channel`: The text or forum channel containing the panel/threads.
+        - `role`: The role that will be automatically revoked when a thread closes or is deleted.
+
+        **Example:**
+        `[p]inviterole threadgate add #fmhy-panel @fmhy`
+        `[p]inviterole threadgate add 1565423109584978071 1565428384937287821`
+        """
+        val_err = self._validate_role_assignable(ctx, role)
+        if val_err:
+            await ctx.send(f"❌ {val_err}")
+            return
+
+        async with self.config.guild(ctx.guild).threadgates() as gates:
+            gates[str(channel.id)] = {
+                "role_id": role.id,
+                "created_by": ctx.author.id,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+
+        self._threadgate_cache.setdefault(ctx.guild.id, {})[channel.id] = role.id
+
+        embed = discord.Embed(
+            title="🚪 ThreadGate Configured",
+            description=(
+                f"Any member with {role.mention} who enters or creates a thread in {channel.mention} "
+                f"will automatically **lose {role.mention}** when that thread is **closed, archived, or deleted**."
+            ),
+            color=discord.Color.green(),
+        )
+        embed.add_field(name="📍 Monitored Channel", value=f"{channel.mention} (`{channel.id}`)", inline=True)
+        embed.add_field(name="🎭 Role to Revoke", value=f"{role.mention} (`{role.id}`)", inline=True)
+        embed.set_footer(text=f"Configured by {ctx.author.display_name}")
+        await ctx.send(embed=embed)
+
+    @threadgate.command(name="remove")
+    async def threadgate_remove(
+        self,
+        ctx: commands.Context,
+        channel: Union[discord.TextChannel, discord.ForumChannel],
+    ) -> None:
+        """
+        Remove a channel from the thread gate system.
+
+        **Example:**
+        `[p]inviterole threadgate remove #fmhy-panel`
+        """
+        async with self.config.guild(ctx.guild).threadgates() as gates:
+            if str(channel.id) not in gates:
+                await ctx.send(f"❌ {channel.mention} is not configured as a thread gate channel.")
+                return
+            gates.pop(str(channel.id))
+
+        if ctx.guild.id in self._threadgate_cache:
+            self._threadgate_cache[ctx.guild.id].pop(channel.id, None)
+
+        await ctx.send(f"✅ Successfully removed {channel.mention} from thread gate monitoring.")
+
+    @threadgate.command(name="list")
+    async def threadgate_list(self, ctx: commands.Context) -> None:
+        """
+        List all active thread gate channels and their target roles in this server.
+        """
+        gates = await self.config.guild(ctx.guild).threadgates()
+        if not gates:
+            await ctx.send("ℹ️ No thread gates configured in this server. Use `[p]inviterole threadgate add` to set one up.")
+            return
+
+        embed = discord.Embed(
+            title=f"🚪 ThreadGates for {ctx.guild.name}",
+            description=f"Total monitored channels: **{len(gates)}**",
+            color=discord.Color.blurple(),
+        )
+
+        guild_atu = self._active_thread_users.get(ctx.guild.id, {})
+
+        for ch_id_str, data in gates.items():
+            ch = ctx.guild.get_channel(int(ch_id_str))
+            ch_str = ch.mention if ch else f"`[Deleted Channel {ch_id_str}]`"
+            role = ctx.guild.get_role(data.get("role_id", 0))
+            role_str = role.mention if role else f"`[Deleted Role {data.get('role_id')}]`"
+
+            # Count active threads for this channel
+            active_count = sum(1 for tid in guild_atu.keys() if (th := ctx.guild.get_thread(tid)) and th.parent_id == int(ch_id_str))
+
+            embed.add_field(
+                name=f"Channel {ch_str}",
+                value=f"**Revoke Role:** {role_str}\n**Active Tracked Threads:** `{active_count}`",
+                inline=False,
+            )
 
         await ctx.send(embed=embed)
 
@@ -839,15 +1232,15 @@ class InviteRole(commands.Cog):
     # -------------------------------------------------------------------------
 
     def _validate_role_assignable(self, ctx: commands.Context, role: discord.Role) -> Optional[str]:
-        """Verify role can be safely managed and assigned."""
+        """Verify role can be safely managed, assigned, or revoked."""
         guild = ctx.guild
         me = guild.me
 
         if role == guild.default_role:
-            return "Cannot assign the `@everyone` role."
+            return "Cannot assign or revoke the `@everyone` role."
 
         if role.is_bot_managed() or role.is_integration():
-            return f"Role {role.mention} is managed by an external bot or integration and cannot be assigned."
+            return f"Role {role.mention} is managed by an external bot or integration and cannot be modified."
 
         bot_pos = getattr(me.top_role, "position", 0)
         role_pos = getattr(role, "position", 0)
