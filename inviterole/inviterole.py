@@ -8,7 +8,7 @@ import asyncio
 from datetime import datetime, timezone
 import logging
 import re
-from typing import Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 from urllib.parse import urlparse
 
 import discord
@@ -162,11 +162,56 @@ class InviteRole(commands.Cog):
     async def cog_load(self) -> None:
         """Start background initialization of invite and threadgate caches."""
         self._init_task = asyncio.create_task(self._initialize_cache())
+        try:
+            self.bot.register_rpc_handler(self._rpc_get_status)
+            self.bot.register_rpc_handler(self._rpc_set_threadgate)
+        except Exception as rpc_err:
+            logger.debug("Could not register InviteRole RPC handlers: %s", rpc_err)
 
     def cog_unload(self) -> None:
         """Cancel background tasks on unload."""
         if self._init_task and not self._init_task.done():
             self._init_task.cancel()
+        try:
+            self.bot.unregister_rpc_handler(self._rpc_get_status)
+            self.bot.unregister_rpc_handler(self._rpc_set_threadgate)
+        except Exception:
+            pass
+
+    async def _rpc_get_status(self, guild_id: int = 1265271912037089312) -> Dict[str, Any]:
+        """RPC handler to verify live in-memory state and config."""
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {"error": f"Guild {guild_id} not found on bot"}
+        conf = await self.config.guild(guild).all()
+        return {
+            "guild_id": guild_id,
+            "guild_name": guild.name,
+            "in_memory_threadgate_cache": {str(k): v for k, v in self._threadgate_cache.get(guild_id, {}).items()},
+            "in_memory_invite_cache_size": len(self._invite_cache.get(guild_id, {})),
+            "config_threadgates": conf.get("threadgates", {}),
+            "config_invites": conf.get("invites", {}),
+        }
+
+    async def _rpc_set_threadgate(self, guild_id: int, channel_id: int, role_id: int) -> Dict[str, Any]:
+        """RPC handler to directly set a threadgate in live bot memory and config."""
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            return {"error": f"Guild {guild_id} not found on bot"}
+        async with self.config.guild(guild).threadgates() as gates:
+            gates[str(channel_id)] = {
+                "role_id": role_id,
+                "created_by": 426878496468500493,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+        self._threadgate_cache.setdefault(guild_id, {})[channel_id] = role_id
+        return {
+            "status": "ok",
+            "guild_id": guild_id,
+            "channel_id": channel_id,
+            "role_id": role_id,
+            "active_cache": {str(k): v for k, v in self._threadgate_cache.get(guild_id, {}).items()},
+        }
 
     def _get_lock(self, guild_id: int) -> asyncio.Lock:
         """Get or create an asyncio lock for guild invite cache mutations."""
