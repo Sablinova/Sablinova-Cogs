@@ -56,6 +56,7 @@ SUBDLC_APPIDS = {
     "1490890": ["1777140"],
     "491540": ["3544250"],
     "2361770": ["3381250"],
+    "637650": ["977611", "771561"],
 }
 
 OSLIST_FILTER = ["windows"]
@@ -1251,6 +1252,8 @@ class DenuvoWatch(commands.Cog):
                 if build_actually_changed or not old_build:
                     update_fields["build_id"] = new["build_id"]
                     update_fields["build_time"] = new.get("build_time")
+                elif not old.get("build_time") and new.get("build_time") and new_build == old_build:
+                    update_fields["build_time"] = new["build_time"]
                 games[appid_str].update(update_fields)
 
                 if new.get("coming_soon"):
