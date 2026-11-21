@@ -2596,9 +2596,9 @@ async def _anondrop_register(session: aiohttp.ClientSession) -> Optional[str]:
                 log.warning("AnonDrop register HTTP %s", resp.status)
                 return None
             html = await resp.text()
-            # Look for localStorage.setItem('userkey', '<number>')
+            # Look for localStorage.setItem('userkey', '<key>')
             match = re.search(
-                r"localStorage\.setItem\(['\"]userkey['\"],\s*['\"](\d+)['\"]", html
+                r"localStorage\.setItem\(['\"]userkey['\"],\s*['\"]([a-zA-Z0-9_-]+)['\"]", html
             )
             if match:
                 return match.group(1)
@@ -3621,6 +3621,23 @@ class SabDownloader(commands.Cog):
 
             links_text = "\n".join(anondrop_links)
             await ctx.send(links_text)
+
+        if not successfully_uploaded and not anondrop_links:
+            err_msg = (
+                f"❌ Could not deliver download: `{os.path.basename(files[0]) if files else 'file'}` "
+                f"({_human_size(total_original_size)}) exceeds Discord's file size limit and external upload (AnonDrop) failed."
+            )
+            log.warning("[SabDownloader] %s", err_msg)
+            try:
+                if ctx.interaction:
+                    await ctx.interaction.edit_original_response(content=err_msg, view=None)
+                else:
+                    await status_msg.edit(content=err_msg)
+            except Exception:
+                await ctx.send(err_msg)
+            if done_event:
+                done_event.set()
+            return
 
         # Delete command message if configured (not applicable for slash commands)
         if should_delete and not ctx.interaction:
