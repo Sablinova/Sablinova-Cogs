@@ -51,7 +51,7 @@ def _patch_user_install(cmd) -> None:
 # Discord 20MB Upload Limit Patch
 # ===========================================================================
 
-DISCORD_MIN_FILESIZE_LIMIT = 20 * 1024 * 1024  # 20 MiB (20,971,520 bytes)
+DISCORD_MIN_FILESIZE_LIMIT = 25 * 1024 * 1024  # 25 MiB (standard Discord bot limit)
 
 try:
     for _tier in (None, 0, 1):
@@ -3397,9 +3397,12 @@ class SabDownloader(commands.Cog):
                 ready_files.append(fp)
                 continue
 
-            if is_too_large:
+            # Attempt direct upload to Discord first (taking advantage of Nitro/boosted upload limits).
+            # Only bypass direct Discord attempt if the file exceeds a hard 500 MB ceiling.
+            hard_max_discord_attempt = 500 * 1024 * 1024  # 500 MiB
+            if file_size > hard_max_discord_attempt:
                 if anondrop_enabled:
-                    log.info("Falling back to AnonDrop for %s", fname)
+                    log.info("File %s exceeds hard limit (500MB), sending directly to AnonDrop", fname)
                     link = await _anondrop_upload(
                         file_path=fp,
                         progress_tracker=tracker,
@@ -3411,7 +3414,7 @@ class SabDownloader(commands.Cog):
                         anondrop_used = True
                 else:
                     log.warning(
-                        "File %s too large and AnonDrop disabled, skipping", fname
+                        "File %s exceeds 500MB and AnonDrop disabled, skipping", fname
                     )
             else:
                 ready_files.append(fp)
@@ -3555,12 +3558,20 @@ class SabDownloader(commands.Cog):
                         log.error(
                             "Single file upload error for %s: %s", fp, single_err
                         )
-                        if single_err.status == 413 and anondrop_enabled:
+                        is_too_large_error = (
+                            single_err.status in (413, 400)
+                            or getattr(single_err, "code", None) == 40005
+                            or "too large" in str(single_err).lower()
+                            or "entity too large" in str(single_err).lower()
+                        )
+                        if is_too_large_error and anondrop_enabled:
                             fname = os.path.basename(fp)
                             log.info(
-                                "Discord upload rejected with 413 for %s, uploading to AnonDrop as fallback",
+                                "Discord upload rejected (too large) for %s, uploading to AnonDrop as fallback",
                                 fname,
                             )
+                            if tracker:
+                                tracker.stage = "Uploading to AnonDrop"
                             link = await _anondrop_upload(
                                 file_path=fp,
                                 progress_tracker=tracker,
