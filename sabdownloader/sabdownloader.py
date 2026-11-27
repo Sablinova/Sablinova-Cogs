@@ -1,10 +1,13 @@
 import asyncio
+import importlib
+import importlib.metadata
 import ipaddress
 import json as _json
 import logging
 import os
 import re
 import shutil
+import sys
 import tempfile
 import time
 import uuid
@@ -14,6 +17,7 @@ from urllib.parse import quote, urlparse
 
 import aiohttp
 import discord
+from discord.ext import tasks
 from discord.ui import Select, View
 from redbot.core import app_commands, commands, Config, modlog
 from redbot.core.bot import Red
@@ -2727,9 +2731,12 @@ class SabDownloader(commands.Cog):
             delete_command=True,
             deezer_arl=None,
             qobuz_token=None,
+            auto_update_ytdlp=True,
         )
         self._semaphore: Optional[asyncio.Semaphore] = None
         self._cooldowns: Dict[int, float] = {}  # user_id -> last_use timestamp
+        self._ytdlp_update_lock = asyncio.Lock()
+        self._last_ytdlp_auto_update: float = 0.0
 
         # Register RPC handler
         if hasattr(self.bot, "register_rpc_handler"):
@@ -2782,9 +2789,11 @@ class SabDownloader(commands.Cog):
                 _patch_user_install(app_cmd)
 
         self._sanitize_tree_descriptions()
+        self._ytdlp_autoupdate_loop.start()
 
     async def cog_unload(self) -> None:
-        """Clean up context menu on unload."""
+        """Clean up context menu and background tasks on unload."""
+        self._ytdlp_autoupdate_loop.cancel()
         if hasattr(self.bot, "unregister_rpc_handler"):
             try:
                 self.bot.unregister_rpc_handler(self.sync_slash_commands_rpc)
@@ -2793,6 +2802,114 @@ class SabDownloader(commands.Cog):
         self.bot.tree.remove_command(
             self._context_menu.name, type=self._context_menu.type
         )
+
+    @staticmethod
+    def _get_installed_pkg_version(pkg: str) -> str:
+        """Return installed version of a Python distribution package."""
+        try:
+            return importlib.metadata.version(pkg)
+        except Exception:
+            return "unknown"
+
+    @staticmethod
+    def _reload_ytdlp_in_memory() -> None:
+        """Purge cached yt_dlp/yt_dlp_ejs modules so the next import loads updated code."""
+        importlib.invalidate_caches()
+        for mod_name in list(sys.modules.keys()):
+            if mod_name == "yt_dlp" or mod_name.startswith("yt_dlp.") or mod_name == "yt_dlp_ejs" or mod_name.startswith("yt_dlp_ejs."):
+                sys.modules.pop(mod_name, None)
+
+    @staticmethod
+    async def _fetch_pypi_version(pkg: str) -> Optional[str]:
+        """Fetch latest release version string for a package from PyPI JSON API."""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"https://pypi.org/pypi/{pkg}/json",
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return str(data.get("info", {}).get("version") or "").strip() or None
+        except Exception as e:
+            log.debug("Failed to fetch PyPI version for %s: %s", pkg, e)
+        return None
+
+    async def _update_ytdlp(self, force: bool = False) -> Tuple[bool, str, str, str]:
+        """Upgrade yt-dlp and yt-dlp-ejs in the bot's Python environment and reload them.
+
+        Returns (updated, old_version, new_version, detail_output).
+        """
+        async with self._ytdlp_update_lock:
+            old_ver = self._get_installed_pkg_version("yt-dlp")
+            old_ejs = self._get_installed_pkg_version("yt-dlp-ejs")
+
+            if not force:
+                latest_ytdlp, latest_ejs = await asyncio.gather(
+                    self._fetch_pypi_version("yt-dlp"),
+                    self._fetch_pypi_version("yt-dlp-ejs"),
+                )
+                if (
+                    latest_ytdlp
+                    and latest_ytdlp == old_ver
+                    and (not latest_ejs or latest_ejs == old_ejs)
+                ):
+                    return False, old_ver, old_ver, f"Already up to date (yt-dlp {old_ver}, yt-dlp-ejs {old_ejs})."
+
+            commands_to_try = [
+                [sys.executable, "-m", "pip", "install", "--upgrade", "--quiet", "yt-dlp", "yt-dlp-ejs"],
+            ]
+            uv_bin = shutil.which("uv")
+            if uv_bin:
+                commands_to_try.append(
+                    [uv_bin, "pip", "install", "--upgrade", "--python", sys.executable, "yt-dlp", "yt-dlp-ejs"]
+                )
+
+            last_output = ""
+            succeeded = False
+            for cmd in commands_to_try:
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        *cmd,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.STDOUT,
+                    )
+                    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=120)
+                    last_output = stdout.decode("utf-8", errors="replace").strip()
+                    if proc.returncode == 0:
+                        succeeded = True
+                        break
+                    log.warning("yt-dlp upgrade command failed (%s): %s", cmd[0], last_output[:300])
+                except Exception as exc:
+                    last_output = str(exc)
+                    log.warning("yt-dlp upgrade command error (%s): %s", cmd[0], exc)
+
+            if not succeeded:
+                return False, old_ver, old_ver, last_output or "Upgrade command failed."
+
+            self._reload_ytdlp_in_memory()
+            new_ver = self._get_installed_pkg_version("yt-dlp")
+            new_ejs = self._get_installed_pkg_version("yt-dlp-ejs")
+            changed = (new_ver != old_ver) or (new_ejs != old_ejs)
+            summary = f"yt-dlp: {old_ver} -> {new_ver} | yt-dlp-ejs: {old_ejs} -> {new_ejs}"
+            if changed:
+                log.info("[SabDownloader] Auto-updated %s", summary)
+            return changed, old_ver, new_ver, summary
+
+    @tasks.loop(hours=12)
+    async def _ytdlp_autoupdate_loop(self) -> None:
+        """Periodically check PyPI and upgrade yt-dlp / yt-dlp-ejs when enabled."""
+        try:
+            if not await self.config.auto_update_ytdlp():
+                return
+            await self._update_ytdlp(force=False)
+        except Exception as exc:
+            log.warning("[SabDownloader] Scheduled yt-dlp auto-update failed: %s", exc)
+
+    @_ytdlp_autoupdate_loop.before_loop
+    async def _before_ytdlp_autoupdate_loop(self) -> None:
+        await self.bot.wait_until_ready()
+        await asyncio.sleep(30)
 
     def _extract_urls_from_message(self, message: discord.Message) -> List[str]:
         """Extract all potential media URLs from a message."""
@@ -3133,6 +3250,51 @@ class SabDownloader(commands.Cog):
                     # Duration exceeded - re-raise as-is
                     raise
                 except Exception as e:
+                    err_low = str(e).lower()
+                    is_yt_solver_err = any(
+                        sig in err_low
+                        for sig in (
+                            "addondisposecallback",
+                            "signature solving failed",
+                            "n challenge solving failed",
+                            "the page needs to be reloaded",
+                            "nsig extraction failed",
+                            "unable to extract",
+                        )
+                    )
+                    now_ts = time.monotonic()
+                    if (
+                        is_yt_solver_err
+                        and await self.config.auto_update_ytdlp()
+                        and (now_ts - self._last_ytdlp_auto_update) > 1800
+                    ):
+                        self._last_ytdlp_auto_update = now_ts
+                        log.info("[_try_download] Detected yt-dlp YouTube extraction breakage; checking for yt-dlp update...")
+                        _purge_temp_files(temp_dir)
+                        updated, old_v, new_v, _ = await self._update_ytdlp(force=False)
+                        if updated:
+                            log.info("[_try_download] Updated yt-dlp (%s -> %s); retrying download...", old_v, new_v)
+                            try:
+                                files, info_dict = await self.bot.loop.run_in_executor(
+                                    None,
+                                    partial(
+                                        _ytdlp_download,
+                                        url=url,
+                                        temp_dir=temp_dir,
+                                        progress_tracker=tracker,
+                                        cookies_file=cookies_file,
+                                        max_filesize=max_filesize,
+                                        max_duration=max_duration,
+                                        audio_only=audio_only,
+                                        hd_mode=hd_mode,
+                                        format_id=format_id,
+                                        target_filesize=target_filesize,
+                                    ),
+                                )
+                                if files:
+                                    return files, info_dict
+                            except Exception as retry_err:
+                                e = retry_err
                     last_error = e
                     log.warning("[_try_download] yt-dlp failed: %s", e)
 
@@ -3846,6 +4008,12 @@ class SabDownloader(commands.Cog):
             embed.add_field(name="Deezer ARL (Tier 2)", value=deezer_arl_status, inline=True)
             qobuz_token_status = "Configured" if global_config.get("qobuz_token") else "Not set"
             embed.add_field(name="Qobuz Token (Tier 3)", value=qobuz_token_status, inline=True)
+            auto_upd = "Enabled" if global_config.get("auto_update_ytdlp", True) else "Disabled"
+            embed.add_field(
+                name="yt-dlp Version / Auto-Update",
+                value=f"`{self._get_installed_pkg_version('yt-dlp')}` ({auto_upd})",
+                inline=True,
+            )
 
         embed.set_footer(
             text=ctx.guild.name,
@@ -3904,6 +4072,27 @@ class SabDownloader(commands.Cog):
         await self.config.delete_command.set(new_val)
         state = "enabled" if new_val else "disabled"
         await ctx.send(f"Global delete command message is now **{state}**.")
+
+    @sabdownloader.command(name="updateytdlp", aliases=["ytdlpupdate", "updateyt"])
+    @commands.is_owner()
+    async def sd_updateytdlp(self, ctx: commands.Context):
+        """(Bot Owner) Update yt-dlp and yt-dlp-ejs immediately without restarting."""
+        async with ctx.typing():
+            changed, old_ver, new_ver, detail = await self._update_ytdlp(force=True)
+        if changed:
+            await ctx.send(f"✅ Updated `yt-dlp` live in memory: **{detail}**")
+        else:
+            await ctx.send(f"ℹ️ `yt-dlp` check finished: **{detail}**")
+
+    @sabdownloader.command(name="autoupdate")
+    @commands.is_owner()
+    async def sd_autoupdate(self, ctx: commands.Context):
+        """(Bot Owner) Toggle automatic yt-dlp updates (12h check + on-failure self-heal)."""
+        current = await self.config.auto_update_ytdlp()
+        new_val = not current
+        await self.config.auto_update_ytdlp.set(new_val)
+        state = "enabled" if new_val else "disabled"
+        await ctx.send(f"Automatic `yt-dlp` updates are now **{state}**.")
 
     @sabdownloader.group(name="allowedchannels", invoke_without_command=True)
     async def sd_allowedchannels(self, ctx: commands.Context):
