@@ -1,0 +1,22 @@
+{
+    "$schema": "https://raw.githubusercontent.com/Cog-Creators/Red-DiscordBot/refs/heads/V3/develop/schema/red_cog.schema.json",
+    "author": [
+        "Sablinova"
+    ],
+    "install_msg": "Policy cog loaded. Users can view the Privacy Policy anytime with `[p]policy` or `/policy`.",
+    "name": "Policy",
+    "short": "Displays Project Sablinova's Privacy Policy and data usage summary.",
+    "description": "Provides the [p]policy / /policy hybrid command linking directly to Project Sablinova's public Privacy Policy and explaining opt-out and deletion options.",
+    "end_user_data_statement": "This cog does not store end-user data; it only stores the configured policy URL globally.",
+    "hidden": false,
+    "disabled": false,
+    "min_bot_version": "3.5.6",
+    "min_python_version": [3, 9, 0],
+    "requirements": [],
+    "tags": [
+        "privacy",
+        "policy",
+        "info",
+        "utility"
+    ]
+}
